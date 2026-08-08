@@ -1,0 +1,36 @@
+{
+  "schema_version": "1.0",
+  "first_child_scene_seconds": 8,
+  "target_duration_seconds": [
+    60,
+    90
+  ],
+  "motion": {
+    "walk": true,
+    "body_bob": true,
+    "gesture_motion": true,
+    "mouth_flap": true,
+    "limb_rig_mode": "segmented_assets_when_available"
+  },
+  "companions": {
+    "enabled": true,
+    "min": 1,
+    "max": 3,
+    "dialogue_scenes_min": 2,
+    "dialogue_scenes_max": 4,
+    "catalog_ids": [
+      "fox",
+      "robot",
+      "cat",
+      "dragon",
+      "star",
+      "explorer"
+    ]
+  },
+  "credits_enabled": true,
+  "motion_cache_enabled": true,
+  "motion_library_mode": "reuse_before_generate",
+  "timeline_instruction_enabled": true,
+  "lip_sync_requested": true,
+  "segmented_character_required_for_full_limb_animation": true
+}

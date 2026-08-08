@@ -1,0 +1,47 @@
+{
+  "schema_version": "1.0",
+  "course_id": "demo_english",
+  "title": "Разговорный английский",
+  "description": "Демонстрационный курс. Доступ к каждому курсу хранится отдельно.",
+  "price": null,
+  "currency": "EUR",
+  "active": true,
+  "lesson_ids": [
+    "demo_001"
+  ],
+  "metadata": {
+    "access_model": "per_course"
+  },
+  "seasonal": {
+    "periods": [
+      {
+        "id": "summer",
+        "title": "Лето",
+        "start": "06-01",
+        "end": "08-31",
+        "priority": 20,
+        "enabled": true,
+        "lesson_ids": []
+      },
+      {
+        "id": "halloween",
+        "title": "Halloween",
+        "start": "10-17",
+        "end": "11-03",
+        "priority": 10,
+        "enabled": true,
+        "lesson_ids": []
+      },
+      {
+        "id": "winter",
+        "title": "Зима / Новый год",
+        "start": "12-01",
+        "end": "02-28",
+        "priority": 15,
+        "enabled": true,
+        "lesson_ids": []
+      }
+    ]
+  },
+  "lessons_per_week": 2
+}

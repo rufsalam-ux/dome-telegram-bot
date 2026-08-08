@@ -1,0 +1,48 @@
+{
+  "schema_version": "1.0",
+  "enabled": true,
+  "min_slides": 18,
+  "max_slides": 25,
+  "default_slides": 21,
+  "allow_test_payment_bypass": true,
+  "test_payment_bypass_label": "⏭ Пропустить оплату — тестовый режим",
+  "include_video": true,
+  "min_interactive_tasks": 7,
+  "max_interactive_tasks": 12,
+  "activity_mix": [
+    "passive",
+    "voice_answer",
+    "choice",
+    "drag_drop",
+    "memory",
+    "drawing",
+    "video",
+    "roleplay",
+    "mini_game"
+  ],
+  "cartoon": {
+    "enabled": true,
+    "duration_min_seconds": 60,
+    "duration_max_seconds": 90,
+    "first_child_scene_seconds": 8,
+    "companion_characters_min": 1,
+    "companion_characters_max": 3,
+    "dialogue_scenes_min": 2,
+    "dialogue_scenes_max": 4
+  },
+  "homework": {
+    "enabled": true,
+    "source": "manual_if_present_else_ai",
+    "optional": true
+  },
+  "max_runs_per_purchased_lesson": 3,
+  "max_cartoon_runs": 2,
+  "max_two_cartoons_cost_usd": 5.0,
+  "estimated_cartoon_cost_usd": 2.5,
+  "repeat_same_lesson": true,
+  "cartoon_runs": [
+    1,
+    2
+  ],
+  "third_run_cartoon": false
+}

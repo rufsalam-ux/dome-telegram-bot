@@ -1,0 +1,11 @@
+{
+  "schema_version": "1.0",
+  "save_card_once": true,
+  "future_package_confirmation": "sms_otp",
+  "require_amount_and_package_before_otp": true,
+  "allow_test_free_topic_bypass": true,
+  "prevent_duplicate_charge": true,
+  "idempotency_window_seconds": 300,
+  "require_course_payment_before_lesson": true,
+  "allow_test_course_payment_bypass": true
+}

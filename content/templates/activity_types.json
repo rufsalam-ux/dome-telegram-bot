@@ -1,0 +1,602 @@
+[
+  {
+    "id": "speak",
+    "title_ru": "Ответ голосом",
+    "category": "speech",
+    "input_modes": [
+      "voice"
+    ],
+    "description_ru": "Свободный или направляемый устный ответ.",
+    "implemented_now": true,
+    "renderer": "telegram_voice",
+    "future_safe": true
+  },
+  {
+    "id": "repeat",
+    "title_ru": "Повтори слово/фразу",
+    "category": "speech",
+    "input_modes": [
+      "voice"
+    ],
+    "description_ru": "Повторение модели с мягкой проверкой произношения.",
+    "implemented_now": true,
+    "renderer": "telegram_voice",
+    "future_safe": true
+  },
+  {
+    "id": "dialogue",
+    "title_ru": "AI-диалог",
+    "category": "speech",
+    "input_modes": [
+      "voice",
+      "text"
+    ],
+    "description_ru": "Естественный диалог с уточняющими вопросами и контекстом.",
+    "implemented_now": true,
+    "renderer": "telegram_voice",
+    "future_safe": true
+  },
+  {
+    "id": "roleplay",
+    "title_ru": "Ролевая ситуация",
+    "category": "speech",
+    "input_modes": [
+      "voice"
+    ],
+    "description_ru": "Магазин, кафе, поездка, врач, аэропорт и другие сценарии.",
+    "implemented_now": false,
+    "renderer": "generic",
+    "future_safe": true
+  },
+  {
+    "id": "guess_from_description",
+    "title_ru": "Угадай по описанию",
+    "category": "speech",
+    "input_modes": [
+      "voice",
+      "tap"
+    ],
+    "description_ru": "AI описывает объект, ребёнок угадывает.",
+    "implemented_now": false,
+    "renderer": "generic",
+    "future_safe": true
+  },
+  {
+    "id": "describe_ai_guess",
+    "title_ru": "Опиши — AI угадает",
+    "category": "speech",
+    "input_modes": [
+      "voice"
+    ],
+    "description_ru": "Ребёнок описывает скрытый объект, AI угадывает.",
+    "implemented_now": false,
+    "renderer": "generic",
+    "future_safe": true
+  },
+  {
+    "id": "twenty_questions",
+    "title_ru": "20 вопросов",
+    "category": "speech",
+    "input_modes": [
+      "voice"
+    ],
+    "description_ru": "Угадывание через вопросы да/нет.",
+    "implemented_now": false,
+    "renderer": "generic",
+    "future_safe": true
+  },
+  {
+    "id": "read_aloud",
+    "title_ru": "Чтение вслух",
+    "category": "reading",
+    "input_modes": [
+      "voice"
+    ],
+    "description_ru": "Слежение за текстом, редкая мягкая коррекция и подсветка.",
+    "implemented_now": false,
+    "renderer": "generic",
+    "future_safe": true
+  },
+  {
+    "id": "read_roles",
+    "title_ru": "Чтение по ролям",
+    "category": "reading",
+    "input_modes": [
+      "voice"
+    ],
+    "description_ru": "Ребёнок и AI читают разные роли.",
+    "implemented_now": false,
+    "renderer": "generic",
+    "future_safe": true
+  },
+  {
+    "id": "phonics",
+    "title_ru": "Звуки и фонемы",
+    "category": "reading",
+    "input_modes": [
+      "voice",
+      "tap",
+      "drag"
+    ],
+    "description_ru": "Blending, segmenting, первый/последний звук.",
+    "implemented_now": false,
+    "renderer": "generic",
+    "future_safe": true
+  },
+  {
+    "id": "comprehension",
+    "title_ru": "Понимание прочитанного",
+    "category": "reading",
+    "input_modes": [
+      "voice",
+      "tap",
+      "text"
+    ],
+    "description_ru": "Вопросы, пересказ, изменение условия.",
+    "implemented_now": false,
+    "renderer": "generic",
+    "future_safe": true
+  },
+  {
+    "id": "tap_select",
+    "title_ru": "Нажми / выбери",
+    "category": "interactive",
+    "input_modes": [
+      "tap"
+    ],
+    "description_ru": "Подсветить, обвести, отметить или открыть выбранный объект.",
+    "implemented_now": true,
+    "renderer": "miniapp",
+    "future_safe": true
+  },
+  {
+    "id": "multi_select",
+    "title_ru": "Выбери несколько",
+    "category": "interactive",
+    "input_modes": [
+      "tap"
+    ],
+    "description_ru": "Выбор нескольких правильных объектов.",
+    "implemented_now": false,
+    "renderer": "generic",
+    "future_safe": true
+  },
+  {
+    "id": "remove_extra",
+    "title_ru": "Удали лишнее",
+    "category": "interactive",
+    "input_modes": [
+      "tap"
+    ],
+    "description_ru": "Найти и удалить лишний объект.",
+    "implemented_now": false,
+    "renderer": "generic",
+    "future_safe": true
+  },
+  {
+    "id": "drag_drop",
+    "title_ru": "Перетаскивание",
+    "category": "interactive",
+    "input_modes": [
+      "drag"
+    ],
+    "description_ru": "Универсальное drag-and-drop.",
+    "implemented_now": true,
+    "renderer": "miniapp",
+    "future_safe": true
+  },
+  {
+    "id": "matching",
+    "title_ru": "Сопоставление",
+    "category": "interactive",
+    "input_modes": [
+      "tap",
+      "drag"
+    ],
+    "description_ru": "Соединить пары: слово-картинка, звук-картинка и т.д.",
+    "implemented_now": false,
+    "renderer": "generic",
+    "future_safe": true
+  },
+  {
+    "id": "sorting",
+    "title_ru": "Сортировка",
+    "category": "interactive",
+    "input_modes": [
+      "drag"
+    ],
+    "description_ru": "Разложить элементы по группам/контейнерам.",
+    "implemented_now": false,
+    "renderer": "generic",
+    "future_safe": true
+  },
+  {
+    "id": "sequence",
+    "title_ru": "Последовательность",
+    "category": "interactive",
+    "input_modes": [
+      "drag"
+    ],
+    "description_ru": "Расположить события, слова или изображения по порядку.",
+    "implemented_now": false,
+    "renderer": "generic",
+    "future_safe": true
+  },
+  {
+    "id": "memory",
+    "title_ru": "Memory",
+    "category": "game",
+    "input_modes": [
+      "tap"
+    ],
+    "description_ru": "Переворачивать карточки и находить пары.",
+    "implemented_now": false,
+    "renderer": "generic",
+    "future_safe": true
+  },
+  {
+    "id": "puzzle",
+    "title_ru": "Пазл",
+    "category": "game",
+    "input_modes": [
+      "drag"
+    ],
+    "description_ru": "Собрать изображение или конструкцию.",
+    "implemented_now": false,
+    "renderer": "generic",
+    "future_safe": true
+  },
+  {
+    "id": "maze",
+    "title_ru": "Лабиринт",
+    "category": "game",
+    "input_modes": [
+      "draw"
+    ],
+    "description_ru": "Провести линию по маршруту.",
+    "implemented_now": false,
+    "renderer": "generic",
+    "future_safe": true
+  },
+  {
+    "id": "word_builder",
+    "title_ru": "Собери слово",
+    "category": "interactive",
+    "input_modes": [
+      "drag",
+      "tap"
+    ],
+    "description_ru": "Собрать слово из букв/звуков.",
+    "implemented_now": false,
+    "renderer": "generic",
+    "future_safe": true
+  },
+  {
+    "id": "sentence_builder",
+    "title_ru": "Собери предложение",
+    "category": "interactive",
+    "input_modes": [
+      "drag",
+      "tap"
+    ],
+    "description_ru": "Собрать предложение из слов.",
+    "implemented_now": false,
+    "renderer": "generic",
+    "future_safe": true
+  },
+  {
+    "id": "fill_gap",
+    "title_ru": "Вставь пропуск",
+    "category": "interactive",
+    "input_modes": [
+      "tap",
+      "drag",
+      "text"
+    ],
+    "description_ru": "Вставить букву, слово или часть предложения.",
+    "implemented_now": false,
+    "renderer": "generic",
+    "future_safe": true
+  },
+  {
+    "id": "coloring",
+    "title_ru": "Раскрашивание",
+    "category": "creative",
+    "input_modes": [
+      "draw"
+    ],
+    "description_ru": "Раскрасить по условию или свободно.",
+    "implemented_now": false,
+    "renderer": "generic",
+    "future_safe": true
+  },
+  {
+    "id": "draw",
+    "title_ru": "Рисование",
+    "category": "creative",
+    "input_modes": [
+      "draw"
+    ],
+    "description_ru": "Рисунок на экране с анализом результата.",
+    "implemented_now": false,
+    "renderer": "generic",
+    "future_safe": true
+  },
+  {
+    "id": "connect_lines",
+    "title_ru": "Соедини линиями",
+    "category": "interactive",
+    "input_modes": [
+      "draw"
+    ],
+    "description_ru": "Соединить соответствующие элементы.",
+    "implemented_now": false,
+    "renderer": "generic",
+    "future_safe": true
+  },
+  {
+    "id": "handwriting_screen",
+    "title_ru": "Письмо на экране",
+    "category": "writing",
+    "input_modes": [
+      "draw"
+    ],
+    "description_ru": "Обводка и письмо пальцем/стилусом с анализом траектории.",
+    "implemented_now": false,
+    "renderer": "generic",
+    "future_safe": true
+  },
+  {
+    "id": "handwriting_paper_photo",
+    "title_ru": "Письмо на бумаге — показать",
+    "category": "writing",
+    "input_modes": [
+      "camera"
+    ],
+    "description_ru": "После строки показать лист; AI мягко анализирует результат.",
+    "implemented_now": false,
+    "renderer": "generic",
+    "future_safe": true
+  },
+  {
+    "id": "handwriting_paper_live",
+    "title_ru": "Письмо на бумаге — камера",
+    "category": "writing",
+    "input_modes": [
+      "camera_video"
+    ],
+    "description_ru": "Камера наблюдает процесс письма; редкая дозированная коррекция.",
+    "implemented_now": false,
+    "renderer": "generic",
+    "future_safe": true
+  },
+  {
+    "id": "video_watch",
+    "title_ru": "Просмотр видео",
+    "category": "media",
+    "input_modes": [
+      "video"
+    ],
+    "description_ru": "Просмотр ролика целиком или по сегментам.",
+    "implemented_now": false,
+    "renderer": "generic",
+    "future_safe": true
+  },
+  {
+    "id": "video_pause_question",
+    "title_ru": "Видео с остановками",
+    "category": "media",
+    "input_modes": [
+      "video",
+      "voice",
+      "tap"
+    ],
+    "description_ru": "Видео останавливается и задаёт вопрос/прогноз.",
+    "implemented_now": false,
+    "renderer": "generic",
+    "future_safe": true
+  },
+  {
+    "id": "camera_action",
+    "title_ru": "Покажи в камеру",
+    "category": "vision",
+    "input_modes": [
+      "camera_video"
+    ],
+    "description_ru": "Показ эмоции, жеста, предмета или действия; AI угадывает.",
+    "implemented_now": false,
+    "renderer": "generic",
+    "future_safe": true
+  },
+  {
+    "id": "pose_action",
+    "title_ru": "Движение телом",
+    "category": "vision",
+    "input_modes": [
+      "camera_video"
+    ],
+    "description_ru": "Проверка позы/движения с анатомическим лево/право.",
+    "implemented_now": false,
+    "renderer": "generic",
+    "future_safe": true
+  },
+  {
+    "id": "spatial_orientation",
+    "title_ru": "Лево/право и пространство",
+    "category": "vision",
+    "input_modes": [
+      "camera_video",
+      "drag"
+    ],
+    "description_ru": "Нормализация зеркальности и ориентации относительно ребёнка.",
+    "implemented_now": false,
+    "renderer": "generic",
+    "future_safe": true
+  },
+  {
+    "id": "real_world_find",
+    "title_ru": "Найди предмет вокруг себя",
+    "category": "vision",
+    "input_modes": [
+      "camera",
+      "camera_video"
+    ],
+    "description_ru": "Найти реальный предмет и показать/описать его.",
+    "implemented_now": false,
+    "renderer": "generic",
+    "future_safe": true
+  },
+  {
+    "id": "paper_scan",
+    "title_ru": "Работа с бумажной страницей",
+    "category": "vision",
+    "input_modes": [
+      "camera"
+    ],
+    "description_ru": "Показать страницу, найти/прочитать/указать объект.",
+    "implemented_now": false,
+    "renderer": "generic",
+    "future_safe": true
+  },
+  {
+    "id": "song_rhythm",
+    "title_ru": "Песня и ритм",
+    "category": "media",
+    "input_modes": [
+      "audio",
+      "voice",
+      "tap"
+    ],
+    "description_ru": "Песня, хлопки по слогам, ударение и ритм.",
+    "implemented_now": false,
+    "renderer": "generic",
+    "future_safe": true
+  },
+  {
+    "id": "dictation",
+    "title_ru": "Диктант",
+    "category": "writing",
+    "input_modes": [
+      "text",
+      "draw",
+      "camera"
+    ],
+    "description_ru": "AI диктует; ребёнок пишет на экране или бумаге.",
+    "implemented_now": false,
+    "renderer": "generic",
+    "future_safe": true
+  },
+  {
+    "id": "explain_to_ai",
+    "title_ru": "Объясни персонажу",
+    "category": "proof",
+    "input_modes": [
+      "voice",
+      "text"
+    ],
+    "description_ru": "Ребёнок учит AI и объясняет правило своими словами.",
+    "implemented_now": false,
+    "renderer": "generic",
+    "future_safe": true
+  },
+  {
+    "id": "find_ai_mistake",
+    "title_ru": "Исправь ошибку AI",
+    "category": "proof",
+    "input_modes": [
+      "voice",
+      "tap",
+      "text"
+    ],
+    "description_ru": "Персонаж намеренно ошибается, ребёнок исправляет.",
+    "implemented_now": false,
+    "renderer": "generic",
+    "future_safe": true
+  },
+  {
+    "id": "proof_transfer",
+    "title_ru": "Проверка переноса знания",
+    "category": "proof",
+    "input_modes": [
+      "voice",
+      "tap",
+      "drag",
+      "text"
+    ],
+    "description_ru": "Изменённое условие и повторная проверка навыка.",
+    "implemented_now": false,
+    "renderer": "generic",
+    "future_safe": true
+  },
+  {
+    "id": "branching_story",
+    "title_ru": "Ветвящаяся история",
+    "category": "story",
+    "input_modes": [
+      "voice",
+      "tap"
+    ],
+    "description_ru": "Выбор ребёнка меняет продолжение сюжета.",
+    "implemented_now": false,
+    "renderer": "generic",
+    "future_safe": true
+  },
+  {
+    "id": "quest",
+    "title_ru": "Квест",
+    "category": "story",
+    "input_modes": [
+      "voice",
+      "tap",
+      "drag",
+      "camera"
+    ],
+    "description_ru": "Несколько активностей объединены общей целью.",
+    "implemented_now": false,
+    "renderer": "generic",
+    "future_safe": true
+  },
+  {
+    "id": "creative_product",
+    "title_ru": "Создание продукта",
+    "category": "creative",
+    "input_modes": [
+      "voice",
+      "draw",
+      "text",
+      "camera"
+    ],
+    "description_ru": "Комикс, мини-книга, мультфильм, аудиоистория или постер.",
+    "implemented_now": false,
+    "renderer": "generic",
+    "future_safe": true
+  },
+  {
+    "id": "math_manipulatives",
+    "title_ru": "Математика с объектами",
+    "category": "math",
+    "input_modes": [
+      "drag",
+      "camera",
+      "tap"
+    ],
+    "description_ru": "Счёт, группы, сравнение и действия с объектами.",
+    "implemented_now": false,
+    "renderer": "generic",
+    "future_safe": true
+  },
+  {
+    "id": "experiment",
+    "title_ru": "Наблюдение/эксперимент",
+    "category": "science",
+    "input_modes": [
+      "camera",
+      "voice",
+      "tap"
+    ],
+    "description_ru": "Предсказать, выполнить безопасное наблюдение, объяснить результат.",
+    "implemented_now": false,
+    "renderer": "generic",
+    "future_safe": true
+  }
+]
