@@ -77,13 +77,13 @@ export function AuthScreen(){
   const action=(compact:boolean)=><Button compact={compact} disabled={blocked} title={busy?'Подождите…':mode==='login'?'Войти':mode==='register'?'Создать аккаунт':mode==='verify'?'Подтвердить email':mode==='forgot'?'Отправить код':'Сохранить новый пароль'} onPress={submit}/>;
   return <KeyboardAwareForm primaryAction={action}>
     {({compact,onFieldFocus},inlineAction)=><>
-      <H1 compact={compact}>DOME</H1>
+      {!compact?<H1>DOME</H1>:null}
       <Card compact={compact}><H2 compact={compact}>{title}</H2>
         {mode==='register'?<TextInput ref={nameRef} value={name} onChangeText={setName} placeholder='Имя' autoCapitalize='words' returnKeyType='next' onFocus={onFieldFocus} onSubmitEditing={()=>emailRef.current?.focus()} style={[input,compact&&compactInput]}/>:null}
-        <TextInput ref={emailRef} value={email} onChangeText={setEmail} placeholder='Email' keyboardType='email-address' autoCapitalize='none' autoCorrect={false} returnKeyType={(mode==='forgot')?'done':'next'} onFocus={onFieldFocus} onSubmitEditing={()=>mode==='verify'?codeRef.current?.focus():mode==='forgot'?submit():passwordRef.current?.focus()} style={[input,compact&&compactInput]}/>
+        {mode==='verify'?<Body compact={compact}>Код отправлен на {cleanEmail}</Body>:<TextInput ref={emailRef} value={email} onChangeText={setEmail} placeholder='Email' keyboardType='email-address' autoCapitalize='none' autoCorrect={false} returnKeyType={(mode==='forgot')?'done':'next'} onFocus={onFieldFocus} onSubmitEditing={()=>mode==='forgot'?submit():passwordRef.current?.focus()} style={[input,compact&&compactInput]}/>}
         {(mode==='login'||mode==='register'||mode==='reset')?<TextInput ref={passwordRef} value={password} onChangeText={setPassword} placeholder={mode==='reset'?'Новый пароль (минимум 8 символов)':'Пароль (минимум 8 символов)'} secureTextEntry autoCapitalize='none' returnKeyType={mode==='reset'?'next':'done'} onFocus={onFieldFocus} onSubmitEditing={()=>mode==='reset'?codeRef.current?.focus():submit()} style={[input,compact&&compactInput]}/>:null}
-        {(mode==='verify'||mode==='reset')?<TextInput ref={codeRef} value={code} onChangeText={value=>setCode(value.replace(/\D/g,'').slice(0,6))} placeholder='000000' keyboardType='number-pad' maxLength={6} returnKeyType='done' onFocus={onFieldFocus} onSubmitEditing={submit} style={[input,compact&&compactInput,codeInput]}/>:null}
-        {mode==='verify'?<Body compact={compact}>Код действует 10 минут. Если он истёк, запросите новый.</Body>:null}
+        {(mode==='verify'||mode==='reset')?<TextInput ref={codeRef} value={code} onChangeText={value=>setCode(value.replace(/\D/g,'').slice(0,6))} placeholder='000000' keyboardType='number-pad' maxLength={6} returnKeyType='done' onFocus={onFieldFocus} onSubmitEditing={submit} style={[input,compact&&compactInput,codeInput,compact&&compactCodeInput]}/>:null}
+        {mode==='verify'?<Body compact={compact}>{compact?'Код действует 10 минут.':'Код действует 10 минут. Если он истёк, запросите новый.'}</Body>:null}
         {inlineAction}
         {mode==='verify'?<Button compact={compact} secondary disabled={busy||!cleanEmail} title='Отправить код ещё раз' onPress={resend}/>:null}
         {mode==='login'?<><Button compact={compact} secondary title='Создать новый аккаунт' onPress={()=>{Keyboard.dismiss();setMode('register')}}/><Button compact={compact} secondary title='Забыли пароль?' onPress={()=>{Keyboard.dismiss();setMode('forgot')}}/></>:<Button compact={compact} secondary title='Вернуться ко входу' onPress={()=>{Keyboard.dismiss();setMode('login');setCode('')}}/>}
@@ -94,5 +94,6 @@ export function AuthScreen(){
 }
 
 const input={borderWidth:1,borderColor:'#CCC',borderRadius:14,padding:14,fontSize:16,marginBottom:12} as const;
-const compactInput={borderRadius:11,paddingVertical:9,paddingHorizontal:12,fontSize:15,marginBottom:6} as const;
+const compactInput={borderRadius:9,paddingVertical:6,paddingHorizontal:10,fontSize:14,lineHeight:17,marginBottom:3} as const;
 const codeInput={textAlign:'center',fontSize:24,letterSpacing:8} as const;
+const compactCodeInput={fontSize:19,lineHeight:22,letterSpacing:6,paddingVertical:4} as const;

@@ -63,22 +63,24 @@ export function AddChildScreen(){
   const action=(compact:boolean)=><Button compact={compact} disabled={busy||!name.trim()||!validAge} title={busy?'Добавляю…':'Добавить ребёнка'} onPress={save}/>;
   return <KeyboardAwareForm primaryAction={action}>
     {({compact,onFieldFocus},inlineAction)=><>
-      <H1 compact={compact}>Добавить ребёнка</H1>
+      {!compact?<H1>Добавить ребёнка</H1>:null}
       <Card compact={compact}>
-        <H2 compact={compact}>Знакомство с DOME</H2>
-        <Body compact={compact}>Укажите основные данные — их можно будет изменить позже.</Body>
+        <H2 compact={compact}>{compact?'Добавить ребёнка':'Знакомство с DOME'}</H2>
+        {!compact?<Body>Укажите основные данные — их можно будет изменить позже.</Body>:null}
         <TextInput value={name} onChangeText={setName} placeholder='Имя ребёнка' autoCapitalize='words' returnKeyType='next' onFocus={onFieldFocus} onSubmitEditing={()=>ageRef.current?.focus()} style={[input,compact&&compactInput]}/>
         <TextInput ref={ageRef} value={age} onChangeText={value=>setAge(value.replace(/\D/g,'').slice(0,2))} placeholder='Возраст (2–18)' keyboardType='number-pad' returnKeyType='done' onFocus={onFieldFocus} onSubmitEditing={Keyboard.dismiss} style={[input,compact&&compactInput]}/>
-        <H2 compact={compact}>Язык занятий</H2>
-        <LanguagePicker compact={compact} value={targetLanguage} onChange={setTargetLanguage}/>
-        <H2 compact={compact}>Язык объяснений</H2>
-        <LanguagePicker compact={compact} value={nativeLanguage} onChange={setNativeLanguage}/>
+        {compact?<Body compact>Языки: {targetLanguage.toUpperCase()} · объяснения: {nativeLanguage.toUpperCase()}. Закройте клавиатуру, чтобы изменить.</Body>:<>
+          <H2>Язык занятий</H2>
+          <LanguagePicker compact={false} value={targetLanguage} onChange={setTargetLanguage}/>
+          <H2>Язык объяснений</H2>
+          <LanguagePicker compact={false} value={nativeLanguage} onChange={setNativeLanguage}/>
+        </>}
         {inlineAction}
-        <Button compact={compact} secondary disabled={busy} title='Назад' onPress={()=>{Keyboard.dismiss();store.setScreen('children')}}/>
+        {!compact?<Button secondary disabled={busy} title='Назад' onPress={()=>{Keyboard.dismiss();store.setScreen('children')}}/>:null}
       </Card>
     </>}
   </KeyboardAwareForm>
 }
 
 const input={borderWidth:1,borderColor:'#CCC',borderRadius:14,padding:14,fontSize:16,marginBottom:12,backgroundColor:'#FFF'} as const;
-const compactInput={borderRadius:11,paddingVertical:9,paddingHorizontal:12,fontSize:15,marginBottom:6} as const;
+const compactInput={borderRadius:9,paddingVertical:6,paddingHorizontal:10,fontSize:14,lineHeight:17,marginBottom:3} as const;

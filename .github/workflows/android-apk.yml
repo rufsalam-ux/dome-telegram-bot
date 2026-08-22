@@ -54,7 +54,7 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: DOME-mobile-3.0.1-apk
+          name: DOME-mobile-3.0.2-apk
           path: DOME_MOBILE_77/android/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
           retention-days: 14
