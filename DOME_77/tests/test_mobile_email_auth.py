@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+import json
 
 import pytest
 from aiohttp import web
@@ -9,7 +10,8 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app.core.config import Settings, settings
 from app.db.models import Base, Parent
 from app.db.session import _add_columns
-from app.services.email_reports import _message
+from app.services import email_reports
+from app.services.email_reports import _deliver, _message
 from app.services.password_auth import (
     hash_verification_code,
     verify_password,
@@ -79,6 +81,57 @@ def test_smtp_message_uses_configured_sender_name(monkeypatch):
 
     assert message["From"] == "DOME <sender@example.test>"
     assert message["To"] == "parent@example.com"
+
+
+def test_brevo_https_delivery_uses_existing_message_and_sender(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class Response:
+        status = 201
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    def fake_urlopen(request, timeout):
+        captured["request"] = request
+        captured["timeout"] = timeout
+        return Response()
+
+    monkeypatch.setattr(settings, "email_delivery_provider", "brevo")
+    monkeypatch.setattr(settings, "brevo_api_key", "test-brevo-key-not-a-real-secret")
+    monkeypatch.setattr(settings, "brevo_api_url", "https://api.brevo.com/v3/smtp/email")
+    monkeypatch.setattr(settings, "email_api_timeout_seconds", 30)
+    monkeypatch.setattr(settings, "smtp_from_email", "bilinguadom@gmail.com")
+    monkeypatch.setattr(settings, "smtp_from_name", "DOME")
+    monkeypatch.setattr(email_reports, "urlopen", fake_urlopen)
+
+    message = _message("parent@example.com", "Verification", "Code: 123456")
+    _deliver(message)
+
+    request = captured["request"]
+    payload = json.loads(request.data.decode("utf-8"))
+    assert request.full_url == "https://api.brevo.com/v3/smtp/email"
+    assert captured["timeout"] == 30
+    assert payload == {
+        "sender": {"email": "bilinguadom@gmail.com", "name": "DOME"},
+        "to": [{"email": "parent@example.com"}],
+        "subject": "Verification",
+        "textContent": "Code: 123456\n",
+    }
+
+
+def test_brevo_configuration_reports_only_missing_variable_names(monkeypatch):
+    monkeypatch.setattr(settings, "email_delivery_provider", "brevo")
+    monkeypatch.setattr(settings, "brevo_api_key", "")
+    monkeypatch.setattr(settings, "smtp_from_email", "")
+
+    with pytest.raises(RuntimeError) as error:
+        _message("parent@example.com", "Subject", "Body")
+
+    assert str(error.value).endswith("BREVO_API_KEY, SMTP_FROM_EMAIL")
 
 
 @pytest.mark.asyncio

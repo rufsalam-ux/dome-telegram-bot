@@ -1,8 +1,12 @@
 from __future__ import annotations
 import asyncio
+import base64
+import json
 import smtplib
 from email.message import EmailMessage
-from email.utils import formataddr
+from email.utils import formataddr, getaddresses
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 from app.core.config import settings
 
 
@@ -38,10 +42,10 @@ DOME
 
 
 def _message(to_email: str, subject: str, body: str) -> EmailMessage:
-    missing = settings.smtp_missing_variables
+    missing = settings.email_delivery_missing_variables
     if missing:
         raise RuntimeError(
-            "SMTP configuration is incomplete; missing Railway variables: "
+            "Email delivery configuration is incomplete; missing Railway variables: "
             + ", ".join(missing)
         )
     msg = EmailMessage()
@@ -52,7 +56,7 @@ def _message(to_email: str, subject: str, body: str) -> EmailMessage:
     return msg
 
 
-def _deliver(msg: EmailMessage) -> None:
+def _deliver_smtp(msg: EmailMessage) -> None:
     with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=30) as smtp:
         smtp.ehlo()
         if settings.smtp_starttls:
@@ -61,6 +65,70 @@ def _deliver(msg: EmailMessage) -> None:
         if settings.smtp_username:
             smtp.login(settings.smtp_username, settings.smtp_password)
         smtp.send_message(msg)
+
+
+def _mailboxes(header_value: str | None) -> list[dict[str, str]]:
+    mailboxes: list[dict[str, str]] = []
+    for name, email in getaddresses([header_value or ""]):
+        if email:
+            mailbox = {"email": email}
+            if name:
+                mailbox["name"] = name
+            mailboxes.append(mailbox)
+    return mailboxes
+
+
+def _deliver_brevo(msg: EmailMessage) -> None:
+    text_part = msg.get_body(preferencelist=("plain",))
+    payload: dict[str, object] = {
+        "sender": {
+            "email": settings.smtp_from_email.strip(),
+            "name": settings.smtp_from_name.strip() or "DOME",
+        },
+        "to": _mailboxes(str(msg["To"])),
+        "subject": str(msg["Subject"]),
+        "textContent": text_part.get_content() if text_part else "",
+    }
+    attachments = []
+    for attachment in msg.iter_attachments():
+        content = attachment.get_payload(decode=True)
+        if content is not None:
+            attachments.append({
+                "content": base64.b64encode(content).decode("ascii"),
+                "name": attachment.get_filename() or "attachment.bin",
+            })
+    if attachments:
+        payload["attachment"] = attachments
+
+    request = Request(
+        settings.brevo_api_url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "api-key": settings.brevo_api_key,
+        },
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=settings.email_api_timeout_seconds) as response:
+            if not 200 <= response.status < 300:
+                raise RuntimeError(f"Brevo email API returned HTTP {response.status}")
+    except HTTPError as error:
+        raise RuntimeError(f"Brevo email API returned HTTP {error.code}") from error
+    except URLError as error:
+        raise RuntimeError("Brevo email API is unreachable") from error
+
+
+def _deliver(msg: EmailMessage) -> None:
+    provider = settings.email_delivery_provider.strip().lower()
+    if provider == "smtp":
+        _deliver_smtp(msg)
+        return
+    if provider == "brevo":
+        _deliver_brevo(msg)
+        return
+    raise RuntimeError("Unsupported EMAIL_DELIVERY_PROVIDER")
 
 
 def _send_sync(to_email: str, subject: str, body: str) -> None:

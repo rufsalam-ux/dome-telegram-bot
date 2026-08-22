@@ -72,6 +72,10 @@ class Settings(BaseSettings):
     support_chat_url: str = ""
     support_call_label: str = "+995000000000"
     mobile_auth_secret: str = ""
+    email_delivery_provider: str = "smtp"
+    brevo_api_key: str = ""
+    brevo_api_url: str = "https://api.brevo.com/v3/smtp/email"
+    email_api_timeout_seconds: int = 30
     smtp_host: str = ""
     smtp_port: int = 587
     smtp_username: str = ""
@@ -106,6 +110,20 @@ class Settings(BaseSettings):
             ("SMTP_FROM_EMAIL", self.smtp_from_email),
         )
         return tuple(name for name, value in required if not str(value).strip())
+
+    @property
+    def email_delivery_missing_variables(self) -> tuple[str, ...]:
+        """Return provider-specific missing variable names without exposing secrets."""
+        provider = self.email_delivery_provider.strip().lower()
+        if provider == "smtp":
+            return self.smtp_missing_variables
+        if provider == "brevo":
+            required = (
+                ("BREVO_API_KEY", self.brevo_api_key),
+                ("SMTP_FROM_EMAIL", self.smtp_from_email),
+            )
+            return tuple(name for name, value in required if not str(value).strip())
+        return ("EMAIL_DELIVERY_PROVIDER",)
 
     @model_validator(mode="after")
     def _resolve_persistent_storage(self):
