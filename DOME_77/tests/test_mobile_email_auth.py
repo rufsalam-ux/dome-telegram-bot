@@ -134,6 +134,7 @@ def test_resend_https_delivery_uses_existing_message_and_sender(monkeypatch):
         "text": "Code: 123456\n",
     }
     assert request.get_header("Authorization") == "Bearer test-resend-key-not-a-real-secret"
+    assert request.get_header("User-agent") == "DOME/1.0"
 
 
 def test_resend_configuration_reports_only_missing_variable_names(monkeypatch):

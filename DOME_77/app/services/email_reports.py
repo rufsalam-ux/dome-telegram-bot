@@ -96,6 +96,7 @@ def _deliver_resend(msg: EmailMessage) -> None:
             "Accept": "application/json",
             "Content-Type": "application/json",
             "Authorization": f"Bearer {settings.resend_api_key}",
+            "User-Agent": "DOME/1.0",
         },
         method="POST",
     )
