@@ -1,0 +1,3 @@
+import { UiLanguage } from '../types/domain';
+const d={ru:{choose:'Выберите язык',welcome:'Добро пожаловать в DOME',lessons:'Мои уроки',children:'Дети',continue:'Продолжить',history:'Пройденные и закрытые',profile:'Профиль'},en:{choose:'Choose language',welcome:'Welcome to DOME',lessons:'My lessons',children:'Children',continue:'Continue',history:'Completed & closed',profile:'Profile'},de:{choose:'Sprache wählen',welcome:'Willkommen bei DOME',lessons:'Meine Lektionen',children:'Kinder',continue:'Fortsetzen',history:'Abgeschlossen',profile:'Profil'}};
+export function t(l:UiLanguage,k:keyof typeof d.ru){return d[l][k]||d.en[k];}

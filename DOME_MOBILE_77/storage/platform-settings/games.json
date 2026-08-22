@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.1",
+  "menu_title": "Игры DOME",
+  "design": "bright_light_saturated",
+  "weekly_budget_usd_per_user": 0.5,
+  "reuse_existing_language_version_first": true,
+  "cache_generated_game_versions": true,
+  "cache_tts_audio": true,
+  "stop_paid_generation_at_budget": true,
+  "paid_generation_soft_limit_usd": 0.4,
+  "games": []
+}

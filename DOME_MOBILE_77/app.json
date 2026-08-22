@@ -1,0 +1,30 @@
+{
+  "expo": {
+    "name": "DOME",
+    "slug": "dome-mobile",
+    "version": "3.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.bilingvadom.dome",
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "DOME uses the microphone during speaking activities when the parent has consented.",
+        "NSCameraUsageDescription": "DOME may use the camera for optional learning activities when the parent has enabled them.",
+        "NSPhotoLibraryUsageDescription": "DOME uses the photo library only when a parent chooses to upload a child hero."
+      }
+    },
+    "android": {
+      "package": "com.bilingvadom.dome",
+      "softwareKeyboardLayoutMode": "resize",
+      "permissions": [
+        "RECORD_AUDIO"
+      ]
+    },
+    "plugins": [
+      "expo-secure-store",
+      "expo-status-bar",
+      "expo-audio"
+    ]
+  }
+}

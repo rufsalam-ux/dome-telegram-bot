@@ -1,0 +1,36 @@
+{
+  "product": "DOME Mobile",
+  "platform": "React Native + Expo",
+  "mobile": [
+    "android",
+    "ios"
+  ],
+  "distribution": {
+    "android_now": "APK",
+    "android_store": "AAB",
+    "ios_now": "TestFlight",
+    "ios_store": "App Store"
+  },
+  "backend": "Railway HTTP API",
+  "database": "PostgreSQL",
+  "object_storage": "S3-compatible",
+  "source_control": "GitHub code only",
+  "content_model": "server-driven manifests",
+  "lesson_update_requires_rebuild": false,
+  "new_engine_component_requires_rebuild": true,
+  "version": "2.0.0",
+  "movie_policy": "each_completion",
+  "homework_policy": "first_completion_only",
+  "consent_ledger": true,
+  "purchase_evidence": true,
+  "dispute_evidence_bundle": true,
+  "parent_verification": [
+    "phone_otp",
+    "email_otp"
+  ],
+  "legal_languages": [
+    "ru",
+    "en",
+    "de"
+  ]
+}

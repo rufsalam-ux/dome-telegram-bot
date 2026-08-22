@@ -20,6 +20,7 @@ from app.services.ai_speech import synthesize_speech, translate_text
 from app.services.password_auth import hash_password, hash_verification_code, verify_password, verify_verification_code
 
 log=logging.getLogger('dome.mobile_api')
+MOBILE_LANGUAGES={'ru','en','es','de','fr','it','pt','tr','ar','zh'}
 
 
 def _utcnow() -> datetime:
@@ -58,6 +59,21 @@ async def bootstrap(request:web.Request)->web.Response:
     p=await _parent(request)
     async with SessionLocal() as db:cs=(await db.scalars(select(Child).where(Child.parent_id==p.id).order_by(Child.id))).all()
     return web.json_response({'parent':{'id':p.id,'name':p.display_name,'email':p.email,'email_verified':bool(p.email_verified),'phone':p.phone},'children':[_child_json(request,c) for c in cs]})
+
+async def create_child(request:web.Request)->web.Response:
+    p=await _parent(request);data=await request.json();name=str(data.get('name') or '').strip()
+    try:age=int(data.get('age_years'))
+    except (TypeError,ValueError):raise web.HTTPBadRequest(text=json.dumps({'error':'Укажите возраст ребёнка'}),content_type='application/json')
+    target=str(data.get('target_language') or '').strip().lower();native=str(data.get('native_language') or '').strip().lower()
+    if not name or len(name)>120:raise web.HTTPBadRequest(text=json.dumps({'error':'Введите имя ребёнка'}),content_type='application/json')
+    if age<2 or age>18:raise web.HTTPBadRequest(text=json.dumps({'error':'Возраст должен быть от 2 до 18 лет'}),content_type='application/json')
+    if target not in MOBILE_LANGUAGES or native not in MOBILE_LANGUAGES:raise web.HTTPBadRequest(text=json.dumps({'error':'Выберите язык из списка'}),content_type='application/json')
+    async with SessionLocal() as db:
+        count=await db.scalar(select(func.count(Child.id)).where(Child.parent_id==p.id))
+        if int(count or 0)>=5:raise web.HTTPConflict(text=json.dumps({'error':'Можно добавить не более 5 детей'}),content_type='application/json')
+        child=Child(parent_id=p.id,display_name=name,age_years=age,target_language=target,native_language=native)
+        db.add(child);await db.commit();await db.refresh(child)
+    return web.json_response(_child_json(request,child),status=201)
 
 async def lesson(request:web.Request)->web.Response:
     await _parent(request); lid=request.match_info['lesson_id']; data=load_lesson(lid)
@@ -394,7 +410,7 @@ async def confirm_password_reset(request:web.Request)->web.Response:
     return web.json_response({'ok':True})
 
 def register_mobile_routes(app:web.Application):
-    app.router.add_post('/api/mobile/register',register);app.router.add_post('/api/mobile/verify-email',verify_email);app.router.add_post('/api/mobile/resend-verification',resend_verification);app.router.add_post('/api/mobile/login',login);app.router.add_post('/api/mobile/password-reset/request',request_password_reset);app.router.add_post('/api/mobile/password-reset/confirm',confirm_password_reset);app.router.add_get('/api/mobile/bootstrap',bootstrap);app.router.add_get('/api/mobile/lesson/{lesson_id}',lesson)
+    app.router.add_post('/api/mobile/register',register);app.router.add_post('/api/mobile/verify-email',verify_email);app.router.add_post('/api/mobile/resend-verification',resend_verification);app.router.add_post('/api/mobile/login',login);app.router.add_post('/api/mobile/password-reset/request',request_password_reset);app.router.add_post('/api/mobile/password-reset/confirm',confirm_password_reset);app.router.add_get('/api/mobile/bootstrap',bootstrap);app.router.add_post('/api/mobile/children',create_child);app.router.add_get('/api/mobile/lesson/{lesson_id}',lesson)
     app.router.add_get('/api/mobile/hero/file/{child_id}/{character_id}',hero_file);app.router.add_post('/api/mobile/child/{child_id}/hero/preset',hero_preset);app.router.add_post('/api/mobile/child/{child_id}/hero/upload',hero_upload)
     app.router.add_post('/api/mobile/session/start',session_start);app.router.add_post('/api/mobile/session/{session_id}/voice',voice);app.router.add_post('/api/mobile/session/{session_id}/interactive',interactive);app.router.add_post('/api/mobile/session/{session_id}/complete',complete)
     app.router.add_get('/api/mobile/tts',tts);app.router.add_post('/api/mobile/translate',translate);app.router.add_patch('/api/mobile/child/{child_id}/language',update_child_language);app.router.add_get('/api/mobile/child/{child_id}/movies',movies);app.router.add_get('/api/mobile/movie/{child_id}/{filename}',movie_file)

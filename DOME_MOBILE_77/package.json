@@ -1,0 +1,32 @@
+{
+  "name": "dome-mobile",
+  "version": "3.0.0",
+  "private": true,
+  "main": "node_modules/expo/AppEntry.js",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "check": "tsc --noEmit",
+    "build:apk": "eas build -p android --profile preview",
+    "build:android-store": "eas build -p android --profile production",
+    "build:ios-store": "eas build -p ios --profile production",
+    "install:mobile": "npx expo install expo-av expo-speech expo-image-picker"
+  },
+  "dependencies": {
+    "expo": "~56.0.0",
+    "expo-audio": "~56.0.13",
+    "expo-file-system": "~56.0.10",
+    "expo-image-picker": "~56.0.24",
+    "expo-secure-store": "~56.0.4",
+    "expo-speech": "~56.0.3",
+    "expo-status-bar": "~56.0.4",
+    "react": "19.2.3",
+    "react-native": "0.85.3"
+  },
+  "devDependencies": {
+    "@expo/ngrok": "^4.1.0",
+    "@types/react": "~19.2.0",
+    "typescript": "~6.0.3"
+  }
+}

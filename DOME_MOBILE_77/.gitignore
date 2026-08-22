@@ -1,0 +1,14 @@
+node_modules/
+.expo/
+.npm-cache/
+graphify-out/
+dist/
+.env
+.env.*
+!.env.example
+*.jks
+*.keystore
+*.p8
+*.p12
+*.mobileprovision
+*.pem

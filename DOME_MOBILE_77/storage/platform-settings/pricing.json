@@ -1,0 +1,123 @@
+{
+  "schema_version": "1.0",
+  "currency": "EUR",
+  "regular_course": {
+    "monthly_markup_per_lesson": 6.0,
+    "monthly_minimum": 49.0,
+    "annual_markup_per_lesson": 5.8,
+    "annual_minimum": 490.0,
+    "lesson_access_months": 10,
+    "max_replays": 2,
+    "max_completed_runs": 2,
+    "subscription_plans": [
+      {
+        "id": "weekly1",
+        "lessons_per_week": 1,
+        "monthly_price": 39
+      },
+      {
+        "id": "weekly2",
+        "lessons_per_week": 2,
+        "monthly_price": 79
+      },
+      {
+        "id": "weekly3",
+        "lessons_per_week": 3,
+        "monthly_price": 109
+      },
+      {
+        "id": "weekly4",
+        "lessons_per_week": 4,
+        "monthly_price": 139
+      }
+    ],
+    "cartoon_on_first_run_only": true,
+    "trial_days": 7
+  },
+  "interest_lessons": {
+    "profit_per_lesson": 30.0,
+    "cost_buffer_percent": 15.0,
+    "include_generation_cost": true,
+    "include_cartoon_cost": true,
+    "include_three_runs_cost": false,
+    "include_two_runs_cost": true,
+    "include_homework_cost": true,
+    "round_to": 0.01
+  },
+  "cost_engine": {
+    "pricing_window_days": 30,
+    "use_rolling_average": true,
+    "services": {
+      "ai_text": {
+        "enabled": true,
+        "mode": "automatic",
+        "fixed_cost": 0.0
+      },
+      "speech_to_text": {
+        "enabled": true,
+        "mode": "automatic",
+        "fixed_cost": 0.0
+      },
+      "text_to_speech": {
+        "enabled": true,
+        "mode": "automatic",
+        "fixed_cost": 0.0
+      },
+      "vision": {
+        "enabled": true,
+        "mode": "automatic",
+        "fixed_cost": 0.0
+      },
+      "memory_database": {
+        "enabled": true,
+        "mode": "fixed",
+        "fixed_cost": 0.0
+      },
+      "storage": {
+        "enabled": true,
+        "mode": "fixed",
+        "fixed_cost": 0.0
+      },
+      "bandwidth": {
+        "enabled": true,
+        "mode": "fixed",
+        "fixed_cost": 0.0
+      },
+      "render_compute": {
+        "enabled": true,
+        "mode": "fixed",
+        "fixed_cost": 0.0
+      },
+      "hosting": {
+        "enabled": true,
+        "mode": "fixed",
+        "fixed_cost": 0.0
+      },
+      "sms": {
+        "enabled": true,
+        "mode": "fixed",
+        "fixed_cost": 0.0
+      },
+      "email": {
+        "enabled": true,
+        "mode": "fixed",
+        "fixed_cost": 0.0
+      },
+      "payments": {
+        "enabled": true,
+        "mode": "fixed",
+        "fixed_cost": 0.0
+      },
+      "monitoring": {
+        "enabled": true,
+        "mode": "fixed",
+        "fixed_cost": 0.0
+      },
+      "other": {
+        "enabled": true,
+        "mode": "fixed",
+        "fixed_cost": 0.0
+      }
+    }
+  }
+}

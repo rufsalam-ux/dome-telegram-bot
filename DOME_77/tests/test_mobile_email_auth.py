@@ -8,7 +8,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.config import Settings, settings
-from app.db.models import Base, Parent
+from app.db.models import Base, Child, Parent
 from app.db.session import _add_columns
 from app.services import email_reports
 from app.services.email_reports import _deliver, _message
@@ -254,11 +254,33 @@ async def test_mobile_register_resend_verify_and_login_flow(monkeypatch):
         assert verified["token"]
         assert verified["parent"]["email_verified"] is True
 
+        response = await client.post("/api/mobile/children", headers={
+            "Authorization": f"Bearer {verified['token']}",
+        }, json={
+            "name": "Mila",
+            "age_years": 8,
+            "target_language": "en",
+            "native_language": "ru",
+        })
+        assert response.status == 201
+        created_child = await response.json()
+        assert created_child["name"] == "Mila"
+        assert created_child["age_years"] == 8
+        assert created_child["target_language"] == "en"
+
+        response = await client.get("/api/mobile/bootstrap", headers={
+            "Authorization": f"Bearer {verified['token']}",
+        })
+        assert response.status == 200
+        assert [child["name"] for child in (await response.json())["children"]] == ["Mila"]
+
         async with sessions() as db:
             parent = await db.scalar(select(Parent))
+            child = await db.scalar(select(Child))
             assert parent.email_verified is True
             assert parent.email_verification_code_hash is None
             assert parent.email_verification_expires_at is None
+            assert child is not None and child.parent_id == parent.id
 
         response = await client.post("/api/mobile/login", json={
             "email": "PARENT@EXAMPLE.COM",
