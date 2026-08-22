@@ -1,9 +1,8 @@
 import React,{useRef,useState} from 'react';
 import {Alert,Keyboard,TextInput} from 'react-native';
-import * as SecureStore from 'expo-secure-store';
 import {Body,Button,Card,H1,H2} from '../components/Ui';
 import {KeyboardAwareForm} from '../components/KeyboardAwareForm';
-import {confirmPasswordReset,loginAccount,registerAccount,resendVerification,requestPasswordReset,setApiToken,verifyEmail} from '../api/mobile';
+import {confirmPasswordReset,loginAccount,registerAccount,resendVerification,requestPasswordReset,verifyEmail} from '../api/mobile';
 import {useAppStore} from '../store/AppStore';
 
 type Mode='login'|'register'|'verify'|'forgot'|'reset';
@@ -24,8 +23,6 @@ export function AuthScreen(){
 
   const finish=async(result:any)=>{
     if(!result?.token)throw new Error('Сервер не вернул сессию');
-    setApiToken(result.token);
-    await SecureStore.setItemAsync('dome_mobile_token',result.token);
     await store.hydrate(result,result.token);
   };
 

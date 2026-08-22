@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app.core.config import Settings, settings
 from app.db.models import Base, Child, LessonEntitlement, Parent
 from app.db.session import _add_columns
-from app.services import email_reports
+from app.services import email_reports, lesson_access
 from app.services.email_reports import _deliver, _message
 from app.services.password_auth import (
     hash_verification_code,
@@ -194,6 +194,7 @@ async def test_mobile_register_resend_verify_and_login_flow(monkeypatch):
         sent_codes.append(code)
 
     monkeypatch.setattr(mobile_api, "SessionLocal", sessions)
+    monkeypatch.setattr(lesson_access, "SessionLocal", sessions)
     monkeypatch.setattr(mobile_api, "send_verification_email", capture_verification_email)
     monkeypatch.setattr(settings, "mobile_auth_secret", "test-secret-that-is-long-enough-for-mobile-auth")
 
@@ -273,6 +274,19 @@ async def test_mobile_register_resend_verify_and_login_flow(monkeypatch):
         })
         assert response.status == 200
         assert [child["name"] for child in (await response.json())["children"]] == ["Mila"]
+
+        response = await client.get("/api/mobile/lesson/demo_001", headers={
+            "Authorization": f"Bearer {verified['token']}",
+        })
+        assert response.status == 200
+
+        response = await client.post("/api/mobile/session/start", headers={
+            "Authorization": f"Bearer {verified['token']}",
+        }, json={"child_id": created_child["id"], "lesson_id": "demo_001"})
+        assert response.status == 200
+        started = await response.json()
+        assert started["resumed"] is False
+        assert started["current_step"] == 0
 
         async with sessions() as db:
             parent = await db.scalar(select(Parent))

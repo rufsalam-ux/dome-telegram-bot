@@ -36,10 +36,12 @@ def _bearer(request:web.Request)->str:
 
 async def _parent(request:web.Request)->Parent:
     pid=verify_session_token(_bearer(request))
-    if not pid: raise web.HTTPUnauthorized(text=json.dumps({'error':'Mobile session expired'}),content_type='application/json')
+    if not pid:
+        raise web.HTTPUnauthorized(text=json.dumps({'error':'Mobile session expired','code':'MOBILE_SESSION_INVALID'}),content_type='application/json')
     async with SessionLocal() as db:
         p=await db.get(Parent,pid)
-        if not p: raise web.HTTPUnauthorized()
+        if not p:
+            raise web.HTTPUnauthorized(text=json.dumps({'error':'Mobile session is no longer valid','code':'MOBILE_SESSION_REVOKED'}),content_type='application/json')
         return p
 
 async def _owned_child(parent_id:int, child_id:int)->Child:
@@ -133,8 +135,24 @@ async def session_start(request:web.Request)->web.Response:
     ok,reason,ent=await can_start(cid,lid,course)
     if not ok: raise web.HTTPForbidden(text=json.dumps({'error':f'Урок недоступен: {reason}'}),content_type='application/json')
     async with SessionLocal() as db:
+        existing=await db.scalar(select(LessonSession).where(LessonSession.child_id==cid,LessonSession.lesson_id==lid,LessonSession.status=='IN_PROGRESS').order_by(LessonSession.id.desc()))
+        if existing:
+            return web.json_response({'session_id':existing.id,'run_number':int(ent.completed_runs or 0)+1,'lesson_id':lid,'current_step':int(existing.current_step or 0),'resumed':True})
         sess=LessonSession(child_id=cid,lesson_id=lid,current_step=0,status='IN_PROGRESS',level_at_start=c.language_level or 'PRE_A1',lesson_revision=int(lesson_data.get('revision') or 1),runtime_state_json=json.dumps({'source':'mobile'},ensure_ascii=False));db.add(sess);await db.commit();await db.refresh(sess)
-    return web.json_response({'session_id':sess.id,'run_number':int(ent.completed_runs or 0)+1,'lesson_id':lid})
+    return web.json_response({'session_id':sess.id,'run_number':int(ent.completed_runs or 0)+1,'lesson_id':lid,'current_step':0,'resumed':False})
+
+async def session_progress(request:web.Request)->web.Response:
+    p=await _parent(request);sid=int(request.match_info['session_id']);data=await request.json()
+    try:current_step=int(data.get('current_step'))
+    except (TypeError,ValueError):raise web.HTTPBadRequest(text=json.dumps({'error':'current_step must be an integer'}),content_type='application/json')
+    async with SessionLocal() as db:
+        sess=await db.get(LessonSession,sid);c=await db.get(Child,sess.child_id) if sess else None
+        if not sess:raise web.HTTPNotFound()
+        if not c or c.parent_id!=p.id:raise web.HTTPForbidden()
+        slides=load_lesson(sess.lesson_id).get('slides',[])
+        if current_step<0 or current_step>=max(len(slides),1):raise web.HTTPBadRequest(text=json.dumps({'error':'current_step is outside the lesson'}),content_type='application/json')
+        sess.current_step=current_step;await db.commit()
+    return web.json_response({'ok':True,'session_id':sid,'current_step':current_step})
 
 def _slide(lesson_data:dict,slide_id:str)->dict:
     return next((x for x in lesson_data.get('slides',[]) if x.get('slide_id')==slide_id),{})
@@ -194,12 +212,6 @@ async def interactive(request:web.Request)->web.Response:
         row=InteractiveResult(lesson_session_id=sid,slide_id=str(data.get('slide_id') or ''),task_type=str(data.get('task_type') or 'choice'),result_json=json.dumps(data.get('result') or {},ensure_ascii=False),score=1.0);db.add(row);await db.commit()
     return web.json_response({'ok':True})
 
-async def _mobile_token_ok(request:web.Request)->bool:
-    tok=_bearer(request) or str(request.query.get('token') or '')
-    pid=verify_session_token(tok)
-    if not pid:return False
-    async with SessionLocal() as db:return bool(await db.get(Parent,pid))
-
 async def translate(request:web.Request)->web.Response:
     await _parent(request);data=await request.json();text=str(data.get('text') or '')[:2000];source=str(data.get('source_language') or 'ru');target=str(data.get('target_language') or 'ru')
     if not text:return web.json_response({'text':''})
@@ -215,7 +227,7 @@ async def update_child_language(request:web.Request)->web.Response:
     return web.json_response(_child_json(request,c))
 
 async def tts(request:web.Request)->web.StreamResponse:
-    if not await _mobile_token_ok(request):raise web.HTTPUnauthorized()
+    await _parent(request)
     text=str(request.query.get('text',''))[:1000];native_text=str(request.query.get('native_text',''))[:1000];source=str(request.query.get('source_language','ru'));target=str(request.query.get('target_language','ru'));native=str(request.query.get('native_language','ru'))
     if not text and not native_text:raise web.HTTPBadRequest()
     try:
@@ -412,5 +424,5 @@ async def confirm_password_reset(request:web.Request)->web.Response:
 def register_mobile_routes(app:web.Application):
     app.router.add_post('/api/mobile/register',register);app.router.add_post('/api/mobile/verify-email',verify_email);app.router.add_post('/api/mobile/resend-verification',resend_verification);app.router.add_post('/api/mobile/login',login);app.router.add_post('/api/mobile/password-reset/request',request_password_reset);app.router.add_post('/api/mobile/password-reset/confirm',confirm_password_reset);app.router.add_get('/api/mobile/bootstrap',bootstrap);app.router.add_post('/api/mobile/children',create_child);app.router.add_get('/api/mobile/lesson/{lesson_id}',lesson)
     app.router.add_get('/api/mobile/hero/file/{child_id}/{character_id}',hero_file);app.router.add_post('/api/mobile/child/{child_id}/hero/preset',hero_preset);app.router.add_post('/api/mobile/child/{child_id}/hero/upload',hero_upload)
-    app.router.add_post('/api/mobile/session/start',session_start);app.router.add_post('/api/mobile/session/{session_id}/voice',voice);app.router.add_post('/api/mobile/session/{session_id}/interactive',interactive);app.router.add_post('/api/mobile/session/{session_id}/complete',complete)
+    app.router.add_post('/api/mobile/session/start',session_start);app.router.add_post('/api/mobile/session/{session_id}/progress',session_progress);app.router.add_post('/api/mobile/session/{session_id}/voice',voice);app.router.add_post('/api/mobile/session/{session_id}/interactive',interactive);app.router.add_post('/api/mobile/session/{session_id}/complete',complete)
     app.router.add_get('/api/mobile/tts',tts);app.router.add_post('/api/mobile/translate',translate);app.router.add_patch('/api/mobile/child/{child_id}/language',update_child_language);app.router.add_get('/api/mobile/child/{child_id}/movies',movies);app.router.add_get('/api/mobile/movie/{child_id}/{filename}',movie_file)

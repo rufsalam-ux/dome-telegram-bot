@@ -160,3 +160,171 @@ async def test_mobile_start_has_no_telegram_admin_bypass(monkeypatch):
             assert await db.scalar(select(func.count(LessonSession.id))) == 1
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_mobile_session_auth_resume_progress_translate_and_tts(monkeypatch, tmp_path):
+    engine, sessions = await _memory_database()
+    try:
+        async with sessions() as db:
+            parent = Parent(
+                email="mobile-session@example.com",
+                password_hash="password-hash",
+                email_verified=True,
+            )
+            db.add(parent)
+            await db.flush()
+            child = Child(parent_id=parent.id, display_name="Test", language_level="PRE_A1")
+            db.add(child)
+            await db.flush()
+            await ensure_free_demo_entitlement(db, parent_id=parent.id, child_id=child.id)
+            await db.commit()
+            parent_id, child_id = parent.id, child.id
+
+        async def fake_translate(text, _source, _target):
+            return f"translated:{text}"
+
+        async def fake_synthesize(text, _language, _root, _prefix):
+            audio = tmp_path / "tts.mp3"
+            audio.write_bytes(text.encode("utf-8"))
+            return audio
+
+        monkeypatch.setattr(mobile_api, "SessionLocal", sessions)
+        monkeypatch.setattr(lesson_access, "SessionLocal", sessions)
+        monkeypatch.setattr(mobile_api, "translate_text", fake_translate)
+        monkeypatch.setattr(mobile_api, "synthesize_speech", fake_synthesize)
+        monkeypatch.setattr(settings, "mobile_auth_secret", "test-secret-that-is-long-enough-for-mobile-auth")
+        token = issue_session_token(parent_id)
+        headers = {"Authorization": f"Bearer {token}"}
+
+        app = web.Application()
+        mobile_api.register_mobile_routes(app)
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        try:
+            response = await client.post(
+                "/api/mobile/session/start",
+                json={"child_id": child_id, "lesson_id": "demo_001"},
+            )
+            assert response.status == 401
+            assert (await response.json())["code"] == "MOBILE_SESSION_INVALID"
+
+            response = await client.post(
+                "/api/mobile/session/start",
+                headers=headers,
+                json={"child_id": child_id, "lesson_id": "demo_001"},
+            )
+            assert response.status == 200
+            started = await response.json()
+            assert started["resumed"] is False
+            session_id = started["session_id"]
+
+            response = await client.post(
+                f"/api/mobile/session/{session_id}/progress",
+                headers=headers,
+                json={"current_step": 3},
+            )
+            assert response.status == 200
+            assert (await response.json())["current_step"] == 3
+
+            response = await client.post(
+                "/api/mobile/session/start",
+                headers=headers,
+                json={"child_id": child_id, "lesson_id": "demo_001"},
+            )
+            assert response.status == 200
+            resumed = await response.json()
+            assert resumed["session_id"] == session_id
+            assert resumed["resumed"] is True
+            assert resumed["current_step"] == 3
+
+            response = await client.post(
+                "/api/mobile/translate",
+                headers=headers,
+                json={"text": "hello", "source_language": "ru", "target_language": "en"},
+            )
+            assert response.status == 200
+            assert (await response.json())["text"] == "translated:hello"
+
+            response = await client.get(
+                f"/api/mobile/tts?text=hello&token={token}"
+            )
+            assert response.status == 401
+            response = await client.get(
+                "/api/mobile/tts?text=hello",
+                headers=headers,
+            )
+            assert response.status == 200
+            await response.read()
+        finally:
+            await client.close()
+
+        async with sessions() as db:
+            assert await db.scalar(select(func.count(LessonSession.id))) == 1
+            session = await db.get(LessonSession, session_id)
+            assert session.current_step == 3
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_persistent_mobile_account_survives_database_engine_restart(monkeypatch, tmp_path):
+    database_path = tmp_path / "persistent-app.db"
+    database_url = f"sqlite+aiosqlite:///{database_path.as_posix()}"
+    first_engine = create_async_engine(database_url)
+    first_sessions = async_sessionmaker(first_engine, expire_on_commit=False)
+    async with first_engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+
+    monkeypatch.setattr(settings, "mobile_auth_secret", "test-secret-that-is-long-enough-for-mobile-auth")
+    async with first_sessions() as db:
+        parent = Parent(
+            email="persistent@example.com",
+            password_hash="password-hash",
+            email_verified=True,
+        )
+        db.add(parent)
+        await db.flush()
+        child = Child(parent_id=parent.id, display_name="Persistent Test", language_level="PRE_A1")
+        db.add(child)
+        await db.flush()
+        entitlement, created = await ensure_free_demo_entitlement(
+            db, parent_id=parent.id, child_id=child.id
+        )
+        assert created is True
+        await db.commit()
+        parent_id, child_id, entitlement_id = parent.id, child.id, entitlement.id
+    token = issue_session_token(parent_id)
+    await first_engine.dispose()
+
+    second_engine = create_async_engine(database_url)
+    second_sessions = async_sessionmaker(second_engine, expire_on_commit=False)
+    monkeypatch.setattr(mobile_api, "SessionLocal", second_sessions)
+    monkeypatch.setattr(lesson_access, "SessionLocal", second_sessions)
+
+    app = web.Application()
+    mobile_api.register_mobile_routes(app)
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        headers = {"Authorization": f"Bearer {token}"}
+        response = await client.get("/api/mobile/bootstrap", headers=headers)
+        assert response.status == 200
+        assert [row["name"] for row in (await response.json())["children"]] == ["Persistent Test"]
+
+        response = await client.post(
+            "/api/mobile/session/start",
+            headers=headers,
+            json={"child_id": child_id, "lesson_id": "demo_001"},
+        )
+        assert response.status == 200
+
+        async with second_sessions() as db:
+            entitlement = await db.get(LessonEntitlement, entitlement_id)
+            assert entitlement is not None
+            assert entitlement.child_id == child_id
+            assert entitlement.lesson_id == "demo_001"
+            assert entitlement.source == "FREE_DEMO"
+    finally:
+        await client.close()
+        await second_engine.dispose()

@@ -1,9 +1,8 @@
 import React,{useEffect,useState} from 'react';
 import {Image,ScrollView,Text,View,Alert} from 'react-native';
-import * as SecureStore from 'expo-secure-store';
 import {Body,Button,Card,H1,H2} from '../components/Ui';
 import {useAppStore} from '../store/AppStore';
-import {setApiToken,bootstrap,listMovies,API_BASE,updateChildLanguages} from '../api/mobile';
+import {bootstrap,isUnauthorizedError,listMovies,API_BASE,restoreApiToken,updateChildLanguages} from '../api/mobile';
 import {PurchaseScreen} from './PurchaseScreen';
 import {LessonPlayer} from './LessonPlayer';
 import {AdminScreen} from './AdminScreen';
@@ -22,11 +21,28 @@ export function RootApp(){
   const[target,setTarget]=useState('ru');
   const[native,setNative]=useState('ru');
   const[savingLang,setSavingLang]=useState(false);
+  const[sessionReady,setSessionReady]=useState(false);
   const visibleChildren=s.children.filter(child=>Boolean(child?.id&&child?.name?.trim()));
 
-  useEffect(()=>{(async()=>{const t=await SecureStore.getItemAsync('dome_mobile_token');if(!t)return;try{setApiToken(t);const r=await bootstrap();await s.hydrate(r,t)}catch{await SecureStore.deleteItemAsync('dome_mobile_token')}})()},[]);
+  useEffect(()=>{
+    let active=true;
+    (async()=>{
+      try{
+        const token=await restoreApiToken();
+        if(!token)return;
+        const data=await bootstrap();
+        if(active)await s.hydrate(data,token);
+      }catch(error){
+        if(active&&isUnauthorizedError(error))await s.logout();
+      }finally{
+        if(active)setSessionReady(true);
+      }
+    })();
+    return()=>{active=false};
+  },[]);
   useEffect(()=>{if(s.selectedChild){setTarget(s.selectedChild.learningLanguage||'ru');setNative(s.selectedChild.nativeLanguage||'ru')}},[s.selectedChild?.id]);
 
+  if(!sessionReady)return <View style={{flex:1,alignItems:'center',justifyContent:'center',padding:24}}><Body>Восстанавливаем вход…</Body></View>;
   if(s.screen==='auth')return <AuthScreen/>;
   if(s.screen==='children')return <ScrollView contentContainerStyle={{padding:24,flexGrow:1}}>{visibleChildren.length?<><H1>Кто сегодня занимается?</H1><Body>Выберите ребёнка или добавьте новый профиль.</Body><Button testID='add-child-button' title='＋ Добавить ребёнка' onPress={()=>s.setScreen('add_child')}/>{visibleChildren.map(c=><Card key={c.id}><H2>{c.name}</H2><Body>{c.age?`${c.age} лет · `:''}изучает {c.learningLanguage||'ru'}</Body><Button title='Выбрать' onPress={()=>{s.setSelectedChild(c);s.setScreen(c.activeCharacterId?'home':'hero')}}/></Card>)}</>:<><H1>Добро пожаловать в DOME</H1><Body>Аккаунт подтверждён. Создайте первый профиль ребёнка, чтобы начать занятия.</Body><Button testID='add-child-onboarding-button' title='＋ Добавить ребёнка' onPress={()=>s.setScreen('add_child')}/><Card><H2>Первый шаг</H2><Body>Укажите имя, возраст и языки обучения. После этого вместе выберите героя.</Body></Card></>}<Button secondary title='Выйти из аккаунта' onPress={s.logout}/></ScrollView>;
   if(s.screen==='add_child')return <AddChildScreen/>;
