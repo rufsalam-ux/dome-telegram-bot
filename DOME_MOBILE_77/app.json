@@ -2,7 +2,7 @@
   "expo": {
     "name": "DOME",
     "slug": "dome-mobile",
-    "version": "3.0.2",
+    "version": "3.0.3",
     "orientation": "portrait",
     "userInterfaceStyle": "automatic",
     "ios": {
@@ -16,7 +16,7 @@
     },
     "android": {
       "package": "com.bilingvadom.dome",
-      "versionCode": 30002,
+      "versionCode": 30003,
       "softwareKeyboardLayoutMode": "resize",
       "permissions": [
         "RECORD_AUDIO"

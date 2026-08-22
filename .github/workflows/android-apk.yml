@@ -51,10 +51,36 @@ jobs:
         run: ./gradlew assembleRelease --no-daemon
         working-directory: DOME_MOBILE_77/android
 
+      - name: Restore stable DOME signing key
+        env:
+          DOME_ANDROID_KEYSTORE_BASE64: ${{ secrets.DOME_ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          test -n "$DOME_ANDROID_KEYSTORE_BASE64"
+          printf '%s' "$DOME_ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/dome-release.p12"
+
+      - name: Sign and verify stable release APK
+        env:
+          DOME_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.DOME_ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          test -n "$DOME_ANDROID_KEYSTORE_PASSWORD"
+          BUILD_TOOLS="$(find "$ANDROID_SDK_ROOT/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
+          SOURCE_APK="$GITHUB_WORKSPACE/DOME_MOBILE_77/android/app/build/outputs/apk/release/app-release.apk"
+          SIGNED_APK="$RUNNER_TEMP/DOME-mobile-3.0.3.apk"
+          "$BUILD_TOOLS/apksigner" sign \
+            --ks "$RUNNER_TEMP/dome-release.p12" \
+            --ks-type PKCS12 \
+            --ks-pass env:DOME_ANDROID_KEYSTORE_PASSWORD \
+            --key-pass env:DOME_ANDROID_KEYSTORE_PASSWORD \
+            --out "$SIGNED_APK" \
+            "$SOURCE_APK"
+          "$BUILD_TOOLS/apksigner" verify --verbose "$SIGNED_APK"
+          mv "$SIGNED_APK" "$SOURCE_APK"
+          rm -f "$RUNNER_TEMP/dome-release.p12"
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: DOME-mobile-3.0.2-apk
+          name: DOME-mobile-3.0.3-apk
           path: DOME_MOBILE_77/android/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
           retention-days: 14
