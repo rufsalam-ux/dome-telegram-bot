@@ -1,0 +1,14 @@
+{
+  "version": "v70",
+  "label": "RUNTIME_AUDITED",
+  "courses": ["conversation", "learn_to_read", "reading"],
+  "max_completed_runs_default": 2,
+  "lesson_access_months": 10,
+  "preview_does_not_consume_run": true,
+  "cartoon_first_completion_only": true,
+  "personal_weekly_release": [1, 2, 3, 4],
+  "staged_import": true,
+  "strict_publish_validation": true,
+  "lesson_versioning": true,
+  "billing_enabled_by_default": false
+}

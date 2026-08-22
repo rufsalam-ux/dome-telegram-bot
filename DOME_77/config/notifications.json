@@ -1,0 +1,16 @@
+{
+  "schema_version": "1.0",
+  "new_lesson_notice": true,
+  "unfinished_reminders": true,
+  "max_unfinished_reminders": 2,
+  "first_reminder_hours": 36,
+  "second_reminder_hours": 96,
+  "quiet_hours": {
+    "start": "20:00",
+    "end": "09:00"
+  },
+  "expiry_notice_days": [
+    30,
+    7
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DOME Character Rig v1",
+  "type": "object",
+  "required": ["character_id", "views", "capabilities"],
+  "properties": {
+    "character_id": {"type": "string"},
+    "provider": {"type": "string"},
+    "source_png": {"type": "string"},
+    "views": {
+      "type": "object",
+      "properties": {
+        "front": {"type": "string"},
+        "three_quarter_left": {"type": "string"},
+        "three_quarter_right": {"type": "string"},
+        "side_left": {"type": "string"},
+        "side_right": {"type": "string"},
+        "back": {"type": "string"}
+      }
+    },
+    "parts": {"type": "object"},
+    "joints": {"type": "object"},
+    "capabilities": {"type": "array", "items": {"type": "string"}}
+  }
+}

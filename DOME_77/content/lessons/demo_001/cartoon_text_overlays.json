@@ -1,0 +1,5 @@
+{
+  "enabled": true,
+  "note_ru": "Заполнить start/end/x/y/w/h и text_by_language для каждого русского текста, встроенного в cartoon-base.mp4. Без разметки видео остаётся неизменным.",
+  "overlays": []
+}

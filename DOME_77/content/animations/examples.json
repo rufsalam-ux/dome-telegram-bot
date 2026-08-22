@@ -1,0 +1,21 @@
+{
+  "walk_away_back_view": {
+    "actions": [
+      {"action": "turn", "from_view": "front", "to_view": "back", "duration": 0.5},
+      {"action": "walk", "view": "back", "direction": "forward", "speed": 0.8, "duration": 3.0}
+    ]
+  },
+  "happy_dance": {
+    "actions": [
+      {"action": "dance", "style": "happy", "energy": 0.8, "turns": true, "view": "front", "duration": 5.0}
+    ]
+  },
+  "walk_point_talk": {
+    "actions": [
+      {"action": "walk", "view": "side_right", "direction": "right", "duration": 2.0},
+      {"action": "turn", "from_view": "side_right", "to_view": "three_quarter_right", "duration": 0.4},
+      {"action": "point", "hand": "right", "target": "object", "duration": 1.2},
+      {"action": "talk", "view": "three_quarter_right", "lip_sync": true, "duration": 4.0}
+    ]
+  }
+}

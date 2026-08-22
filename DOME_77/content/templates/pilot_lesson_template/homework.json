@@ -1,0 +1,27 @@
+{
+  "title": "Домашнее задание",
+  "duration_minutes": 10,
+  "optional": false,
+  "summary": "Интерактивное домашнее задание после урока.",
+  "slides": [
+    {
+      "id": "hw_01",
+      "type": "choice",
+      "title": "Повторение",
+      "prompt": "Выбери правильный ответ.",
+      "options": ["Ответ 1", "Ответ 2", "Ответ 3"],
+      "correct_option_index": 0,
+      "expects_answer": true,
+      "can_skip": false
+    },
+    {
+      "id": "hw_02",
+      "type": "voice_answer",
+      "title": "Скажи своими словами",
+      "prompt": "Объясни одним предложением, что ты запомнил.",
+      "accepted_meaning": [],
+      "expects_answer": true,
+      "can_skip": true
+    }
+  ]
+}

@@ -1,0 +1,130 @@
+{
+  "schema_version": "1.0",
+  "features": {
+    "interest_lessons": {
+      "mode": "enabled",
+      "title": "Уроки по интересам"
+    },
+    "interest_generation": {
+      "mode": "enabled",
+      "title": "Генерация новых AI-уроков"
+    },
+    "interest_search_library_first": {
+      "mode": "enabled",
+      "title": "Сначала искать готовый урок"
+    },
+    "homework": {
+      "mode": "enabled",
+      "title": "Необязательное домашнее задание после урока"
+    },
+    "lesson_feedback": {
+      "mode": "enabled",
+      "title": "Отзывы после урока"
+    },
+    "voice_feedback": {
+      "mode": "disabled",
+      "title": "Голосовой отзыв"
+    },
+    "cartoon": {
+      "mode": "enabled",
+      "title": "Персональный мультфильм"
+    },
+    "lesson_replays": {
+      "mode": "enabled",
+      "title": "До двух прохождений урока"
+    },
+    "seasonal_lessons": {
+      "mode": "enabled",
+      "title": "Сезонные уроки"
+    },
+    "notifications": {
+      "mode": "enabled",
+      "title": "Уведомления о новых уроках"
+    },
+    "unfinished_reminders": {
+      "mode": "enabled",
+      "title": "Мягкие напоминания"
+    },
+    "memory_game": {
+      "mode": "enabled",
+      "title": "Memory"
+    },
+    "drag_drop": {
+      "mode": "enabled",
+      "title": "Drag & Drop"
+    },
+    "video": {
+      "mode": "enabled",
+      "title": "Видео"
+    },
+    "camera": {
+      "mode": "disabled",
+      "title": "Камера"
+    },
+    "paper_handwriting_live": {
+      "mode": "disabled",
+      "title": "Письмо на бумаге в реальном времени"
+    },
+    "pose_tracking": {
+      "mode": "disabled",
+      "title": "Pose tracking / лево-право"
+    },
+    "realtime_reading": {
+      "mode": "enabled",
+      "title": "Адаптивное чтение и чтение по ролям"
+    },
+    "group_lessons": {
+      "mode": "disabled",
+      "title": "Групповые уроки"
+    },
+    "random_child_matching": {
+      "mode": "disabled",
+      "title": "Подбор незнакомых детей"
+    },
+    "games_block": {
+      "mode": "enabled",
+      "title": "Отдельный блок игр"
+    },
+    "game_memory": {
+      "mode": "enabled",
+      "title": "Мини-игра Memory"
+    },
+    "game_find_item": {
+      "mode": "enabled",
+      "title": "Мини-игра Найди предмет"
+    },
+    "game_quick_choice": {
+      "mode": "enabled",
+      "title": "Мини-игра Быстрый выбор"
+    },
+    "child_parent_menus": {
+      "mode": "enabled",
+      "title": "Раздельные меню ребёнка и родителя"
+    },
+    "birthday_greetings": {
+      "mode": "enabled",
+      "title": "Поздравление с днём рождения"
+    },
+    "support_center": {
+      "mode": "enabled",
+      "title": "Поддержка: чат и звонок"
+    },
+    "free_topic_lessons": {
+      "mode": "enabled",
+      "title": "Урок на свободную тему"
+    },
+    "homework_email": {
+      "mode": "enabled",
+      "title": "Домашнее задание на email родителю"
+    },
+    "homework_bot": {
+      "mode": "enabled",
+      "title": "Домашнее задание в боте"
+    }
+  },
+  "overrides": {
+    "languages": {},
+    "courses": {},
+    "lessons": {}
+  }
+}

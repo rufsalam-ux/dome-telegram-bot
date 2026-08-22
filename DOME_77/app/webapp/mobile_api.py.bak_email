@@ -1,0 +1,329 @@
+﻿from __future__ import annotations
+import asyncio, json, logging, mimetypes, secrets
+from datetime import datetime
+from pathlib import Path
+from aiohttp import web
+from sqlalchemy import select, func
+from app.core.config import settings
+from app.db.session import SessionLocal
+from app.db.models import Parent,Child,Character,LessonSession,VoiceAttempt,InteractiveResult,HomeworkAssignment,LessonEntitlement
+from app.services.mobile_pairing import consume_pair_code,issue_token,verify_token,signed_media_token,verify_media_token
+from app.services.lesson_loader import load_lesson
+from app.services.lesson_access import can_start,complete_session_once
+from app.services.preset_characters import preset_character_path,list_preset_characters
+from app.services.character_processor import process_character
+from app.services.audio_processing import prepare_child_voice
+from app.services.speech_pipeline import assess_speech
+from app.services.free_topic_cartoon import build_free_topic_cartoon
+from app.services.email_reports import send_homework_email,_send_with_attachment_sync
+from app.services.ai_speech import synthesize_speech
+from app.services.password_auth import hash_password, verify_password
+
+log=logging.getLogger('dome.mobile_api')
+
+def _base(request:web.Request)->str:
+    return f'{request.scheme}://{request.host}'
+
+def _bearer(request:web.Request)->str:
+    h=request.headers.get('Authorization','')
+    return h[7:].strip() if h.lower().startswith('bearer ') else ''
+
+async def _parent(request:web.Request)->Parent:
+    pid=verify_token(_bearer(request))
+    if not pid: raise web.HTTPUnauthorized(text=json.dumps({'error':'Mobile session expired'}),content_type='application/json')
+    async with SessionLocal() as db:
+        p=await db.get(Parent,pid)
+        if not p: raise web.HTTPUnauthorized()
+        return p
+
+async def _owned_child(parent_id:int, child_id:int)->Child:
+    async with SessionLocal() as db:
+        c=await db.get(Child,int(child_id))
+        if not c or c.parent_id!=parent_id: raise web.HTTPForbidden(text=json.dumps({'error':'Child does not belong to this parent'}),content_type='application/json')
+        return c
+
+def _hero_url(request:web.Request,c:Child)->str|None:
+    if not c.active_character_id:return None
+    val=f'hero:{c.id}:{c.active_character_id}'; t=signed_media_token(val)
+    return f'{_base(request)}/api/mobile/hero/file/{c.id}/{c.active_character_id}?t={t}'
+
+def _child_json(request:web.Request,c:Child)->dict:
+    return {'id':c.id,'name':c.display_name,'age_years':c.age_years,'native_language':c.native_language,'target_language':c.target_language,'language_level':c.language_level,'country':c.country,'active_character_id':c.active_character_id,'hero_url':_hero_url(request,c)}
+
+async def pair(request:web.Request)->web.Response:
+    data=await request.json(); pid=consume_pair_code(str(data.get('code','')).strip())
+    if not pid: raise web.HTTPBadRequest(text=json.dumps({'error':'РљРѕРґ РЅРµРІРµСЂРЅС‹Р№ РёР»Рё РёСЃС‚С‘Рє. РџРѕР»СѓС‡РёС‚Рµ РЅРѕРІС‹Р№ С‡РµСЂРµР· /mobile.'}),content_type='application/json')
+    token=issue_token(pid)
+    async with SessionLocal() as db:
+        p=await db.get(Parent,pid); cs=(await db.scalars(select(Child).where(Child.parent_id==pid).order_by(Child.id))).all()
+    return web.json_response({'token':token,'parent':{'id':p.id,'name':p.display_name,'email':p.email,'phone':p.phone},'children':[_child_json(request,c) for c in cs]})
+
+async def bootstrap(request:web.Request)->web.Response:
+    p=await _parent(request)
+    async with SessionLocal() as db:cs=(await db.scalars(select(Child).where(Child.parent_id==p.id).order_by(Child.id))).all()
+    return web.json_response({'parent':{'id':p.id,'name':p.display_name,'email':p.email,'phone':p.phone},'children':[_child_json(request,c) for c in cs]})
+
+async def lesson(request:web.Request)->web.Response:
+    await _parent(request); lid=request.match_info['lesson_id']; data=load_lesson(lid)
+    if not data: raise web.HTTPNotFound(text=json.dumps({'error':'Lesson not found'}),content_type='application/json')
+    # Do not leak server paths.
+    clean=dict(data); clean.pop('source_materials',None)
+    return web.json_response(clean)
+
+async def hero_file(request:web.Request)->web.StreamResponse:
+    cid=int(request.match_info['child_id']); chid=int(request.match_info['character_id']); val=f'hero:{cid}:{chid}'
+    if not verify_media_token(val,request.query.get('t','')): raise web.HTTPForbidden()
+    async with SessionLocal() as db:
+        ch=await db.get(Character,chid)
+        if not ch or ch.child_id!=cid: raise web.HTTPNotFound()
+    path=Path(ch.processed_path or ch.original_path)
+    if not path.exists(): raise web.HTTPNotFound()
+    return web.FileResponse(path)
+
+async def hero_preset(request:web.Request)->web.Response:
+    p=await _parent(request); cid=int(request.match_info['child_id']); c=await _owned_child(p.id,cid); data=await request.json(); catalog=str(data.get('catalog_id',''))
+    try:path=preset_character_path(catalog)
+    except Exception: raise web.HTTPBadRequest(text=json.dumps({'error':'Unknown hero'}),content_type='application/json')
+    async with SessionLocal() as db:
+        ch=Character(child_id=cid,original_path=str(path),processed_path=str(path),status='READY',source='CATALOG',catalog_id=catalog);db.add(ch);await db.flush();c2=await db.get(Child,cid);c2.active_character_id=ch.id;await db.commit();await db.refresh(ch)
+    val=f'hero:{cid}:{ch.id}'; t=signed_media_token(val)
+    return web.json_response({'character_id':ch.id,'hero_url':f'{_base(request)}/api/mobile/hero/file/{cid}/{ch.id}?t={t}'})
+
+async def hero_upload(request:web.Request)->web.Response:
+    p=await _parent(request);cid=int(request.match_info['child_id']);await _owned_child(p.id,cid);reader=await request.multipart();part=await reader.next()
+    if not part or part.name!='image': raise web.HTTPBadRequest(text=json.dumps({'error':'image is required'}),content_type='application/json')
+    root=settings.storage_root/'children'/str(cid)/'characters';root.mkdir(parents=True,exist_ok=True);original=root/f'mobile_{int(datetime.utcnow().timestamp())}.jpg'
+    with original.open('wb') as f:
+        while True:
+            chunk=await part.read_chunk()
+            if not chunk:break
+            f.write(chunk)
+    processed=original.with_suffix('.png')
+    try:await asyncio.to_thread(process_character,original,processed)
+    except Exception as exc:raise web.HTTPBadRequest(text=json.dumps({'error':f'РќРµ СѓРґР°Р»РѕСЃСЊ СѓРґР°Р»РёС‚СЊ С„РѕРЅ: {exc}'}),content_type='application/json')
+    async with SessionLocal() as db:
+        ch=Character(child_id=cid,original_path=str(original),processed_path=str(processed),status='READY',source='CHILD_DRAWING');db.add(ch);await db.flush();c=await db.get(Child,cid);c.active_character_id=ch.id;await db.commit();await db.refresh(ch)
+    val=f'hero:{cid}:{ch.id}';t=signed_media_token(val)
+    return web.json_response({'character_id':ch.id,'hero_url':f'{_base(request)}/api/mobile/hero/file/{cid}/{ch.id}?t={t}'})
+
+async def session_start(request:web.Request)->web.Response:
+    p=await _parent(request);data=await request.json();cid=int(data.get('child_id'));lid=str(data.get('lesson_id') or 'demo_001');c=await _owned_child(p.id,cid);lesson_data=load_lesson(lid);course=str(lesson_data.get('course_id') or 'conversation')
+    ok,reason,ent=await can_start(cid,lid,course)
+    if not ok and p.telegram_user_id in settings.admin_ids and reason=='LOCKED':
+        async with SessionLocal() as db:
+            ent=LessonEntitlement(child_id=cid,lesson_id=lid,course_id=course,max_completed_runs=2,completed_runs=0,source='ADMIN_TEST',status='ACTIVE');db.add(ent);await db.commit()
+        ok=True;reason='ADMIN_TEST'
+    if not ok: raise web.HTTPForbidden(text=json.dumps({'error':f'РЈСЂРѕРє РЅРµРґРѕСЃС‚СѓРїРµРЅ: {reason}'}),content_type='application/json')
+    async with SessionLocal() as db:
+        sess=LessonSession(child_id=cid,lesson_id=lid,current_step=0,status='IN_PROGRESS',level_at_start=c.language_level or 'PRE_A1',lesson_revision=int(lesson_data.get('revision') or 1),runtime_state_json=json.dumps({'source':'mobile'},ensure_ascii=False));db.add(sess);await db.commit();await db.refresh(sess)
+    return web.json_response({'session_id':sess.id,'run_number':int(ent.completed_runs or 0)+1,'lesson_id':lid})
+
+def _slide(lesson_data:dict,slide_id:str)->dict:
+    return next((x for x in lesson_data.get('slides',[]) if x.get('slide_id')==slide_id),{})
+
+def _phrase(lesson_data:dict,pid:str|None)->dict:
+    return next((x for x in lesson_data.get('required_phrases',[]) if x.get('phrase_id')==pid),{}) if pid else {}
+
+async def voice(request:web.Request)->web.Response:
+    p=await _parent(request);sid=int(request.match_info['session_id'])
+    async with SessionLocal() as db:
+        sess=await db.get(LessonSession,sid)
+        if not sess:raise web.HTTPNotFound()
+        c=await db.get(Child,sess.child_id)
+        if not c or c.parent_id!=p.id:raise web.HTTPForbidden()
+    reader=await request.multipart();fields={};raw=None
+    root=settings.storage_root/'children'/str(c.id)/'mobile-voice'/str(sid);root.mkdir(parents=True,exist_ok=True)
+    while True:
+        part=await reader.next()
+        if part is None:break
+        if part.name=='audio':
+            raw=root/f'voice_{secrets.token_hex(6)}.m4a'
+            with raw.open('wb') as f:
+                while True:
+                    chunk=await part.read_chunk()
+                    if not chunk:break
+                    f.write(chunk)
+        else:
+            fields[part.name]=await part.text()
+    if raw is None:raise web.HTTPBadRequest(text=json.dumps({'error':'No audio received'}),content_type='application/json')
+    slide_id=fields.get('slide_id','');prompt=fields.get('prompt','');pid=fields.get('phrase_id') or None
+    lesson_data=load_lesson(sess.lesson_id);sl=_slide(lesson_data,slide_id);ph=_phrase(lesson_data,pid or sl.get('required_phrase_id'))
+    if raw.stat().st_size<1000:raise web.HTTPBadRequest(text=json.dumps({'error':'Р—Р°РїРёСЃСЊ СЃР»РёС€РєРѕРј РєРѕСЂРѕС‚РєР°СЏ РёР»Рё РїСѓСЃС‚Р°СЏ'}),content_type='application/json')
+    wav=raw.with_suffix('.wav');max_sec=5 if (pid or sl.get('required_phrase_id')) else 60
+    try:await asyncio.to_thread(prepare_child_voice,raw,wav,max_sec)
+    except Exception as exc:raise web.HTTPBadRequest(text=json.dumps({'error':f'РќРµ СѓРґР°Р»РѕСЃСЊ РѕР±СЂР°Р±РѕС‚Р°С‚СЊ Р·Р°РїРёСЃСЊ: {exc}'}),content_type='application/json')
+    async with SessionLocal() as db:
+        n=(await db.scalar(select(func.count(VoiceAttempt.id)).where(VoiceAttempt.lesson_session_id==sid,VoiceAttempt.phrase_id==(pid or slide_id)))) or 0
+    assessment=await assess_speech(wav,c.target_language or 'ru',c.native_language or 'ru',prompt or sl.get('question') or sl.get('bot_says_target') or '',ph.get('accepted_meaning') or [],int(n)+1,c.display_name,c.working_difficulty)
+    async with SessionLocal() as db:
+        va=VoiceAttempt(lesson_session_id=sid,phrase_id=pid or slide_id,attempt_number=int(n)+1,audio_path=str(wav),status=assessment.status,transcript=assessment.transcript,detected_language=assessment.detected_language,confidence=assessment.confidence,grammar_errors=json.dumps(assessment.grammar_errors,ensure_ascii=False),pronunciation_errors=json.dumps(assessment.pronunciation_errors,ensure_ascii=False),semantic_match=assessment.semantic_match);db.add(va);await db.commit()
+    feedback=assessment.feedback_native or assessment.response_native or assessment.response_target
+    return web.json_response({'status':assessment.status,'transcript':assessment.transcript,'feedback':feedback,'response_target':assessment.response_target,'response_native':assessment.response_native,'semantic_match':assessment.semantic_match})
+
+async def interactive(request:web.Request)->web.Response:
+    p=await _parent(request);sid=int(request.match_info['session_id']);data=await request.json()
+    async with SessionLocal() as db:
+        sess=await db.get(LessonSession,sid);c=await db.get(Child,sess.child_id) if sess else None
+        if not sess or not c or c.parent_id!=p.id:raise web.HTTPForbidden()
+        row=InteractiveResult(lesson_session_id=sid,slide_id=str(data.get('slide_id') or ''),task_type=str(data.get('task_type') or 'choice'),result_json=json.dumps(data.get('result') or {},ensure_ascii=False),score=1.0);db.add(row);await db.commit()
+    return web.json_response({'ok':True})
+
+async def tts(request:web.Request)->web.StreamResponse:
+    await _parent(request);text=str(request.query.get('text',''))[:1000];lang=str(request.query.get('language','ru'))
+    if not text:raise web.HTTPBadRequest()
+    path=await synthesize_speech(text,lang,settings.storage_root/'tts-cache-mobile','mobile')
+    if not path:raise web.HTTPServiceUnavailable(text='TTS unavailable')
+    return web.FileResponse(path)
+
+async def complete(request:web.Request)->web.Response:
+    p=await _parent(request);sid=int(request.match_info['session_id'])
+    async with SessionLocal() as db:
+        sess=await db.get(LessonSession,sid)
+        if not sess:raise web.HTTPNotFound()
+        c=await db.get(Child,sess.child_id);par=await db.get(Parent,c.parent_id) if c else None
+        if not c or c.parent_id!=p.id:raise web.HTTPForbidden()
+    lesson_data=load_lesson(sess.lesson_id);course=str(lesson_data.get('course_id') or 'conversation')
+    ent,new=await complete_session_once(session_id=sid,child_id=c.id,lesson_id=sess.lesson_id,course_id=course,final_step=len(lesson_data.get('slides',[])))
+    if not new:
+        run_no=int(ent.completed_runs or 0)
+    else: run_no=int(ent.completed_runs or 0)
+    async with SessionLocal() as db:
+        voices=(await db.scalars(select(VoiceAttempt).where(VoiceAttempt.lesson_session_id==sid).order_by(VoiceAttempt.id))).all();char=await db.get(Character,c.active_character_id) if c.active_character_id else None
+    accepted=[Path(v.audio_path) for v in voices if str(v.status).startswith('ACCEPTED') and Path(v.audio_path).exists()]
+    movie_url=None
+    if char and accepted:
+        char_path=Path(char.processed_path or char.original_path);base=Path(settings.content_root)/'lessons'/sess.lesson_id
+        backgrounds=[]
+        for sl in lesson_data.get('slides',[]):
+            rel=sl.get('image')
+            if rel:
+                q=base/rel
+                if q.exists():backgrounds.append(q)
+        out=settings.storage_root/'children'/str(c.id)/'cartoons'/f'mobile_{sess.lesson_id}_run{run_no}.mp4';out.parent.mkdir(parents=True,exist_ok=True)
+        try:
+            await asyncio.to_thread(build_free_topic_cartoon,backgrounds[:10],char_path,accepted[:10],[],out,75,None,9)
+            val=f'movie:{c.id}:{out.name}';mt=signed_media_token(val,86400*30);movie_url=f'{_base(request)}/api/mobile/movie/{c.id}/{out.name}?t={mt}'
+            if par and par.email_reports_enabled and par.email:
+                subject=f'DOME вЂ” РјСѓР»СЊС‚С„РёР»СЊРј РїРѕСЃР»Рµ РїСЂРѕС…РѕР¶РґРµРЅРёСЏ {run_no}: {lesson_data.get("title") or sess.lesson_id}'
+                body=f'{c.display_name} Р·Р°РІРµСЂС€РёР»(Р°) РїСЂРѕС…РѕР¶РґРµРЅРёРµ {run_no}. РџРµСЂСЃРѕРЅР°Р»СЊРЅС‹Р№ РјСѓР»СЊС‚С„РёР»СЊРј РїСЂРёРєСЂРµРїР»С‘РЅ Рє РїРёСЃСЊРјСѓ.'
+                try:await asyncio.to_thread(_send_with_attachment_sync,par.email,subject,body,str(out))
+                except Exception as exc:log.warning('Mobile movie email failed: %s',exc)
+        except Exception as exc:log.exception('Mobile cartoon failed: %s',exc)
+    homework_sent=False
+    if run_no==1:
+        hw=lesson_data.get('homework') or {};body=str(hw.get('instruction_ru') or 'РќР°СЂРёСЃСѓР№ РјРµСЃС‚Рѕ, РєСѓРґР° С‚С‹ С…РѕС‚РµР» Р±С‹ РѕС‚РїСЂР°РІРёС‚СЊСЃСЏ, Рё РЅР°Р·РѕРІРё С‚СЂРё РІРµС‰Рё, РєРѕС‚РѕСЂС‹Рµ РІРѕР·СЊРјС‘С€СЊ СЃ СЃРѕР±РѕР№.')
+        async with SessionLocal() as db:
+            existing=await db.scalar(select(HomeworkAssignment).where(HomeworkAssignment.child_id==c.id,HomeworkAssignment.lesson_id==sess.lesson_id).order_by(HomeworkAssignment.id.desc()))
+            if not existing:
+                db.add(HomeworkAssignment(child_id=c.id,lesson_session_id=sid,lesson_id=sess.lesson_id,title=str(hw.get('title') or 'Р”РѕРјР°С€РЅРµРµ Р·Р°РґР°РЅРёРµ'),body=body,duration_minutes=int(hw.get('duration_minutes') or 5),status='NEW',optional=True));await db.commit();homework_sent=True
+        if homework_sent and par and par.email_reports_enabled and par.email:
+            try:await send_homework_email(par.email,c.display_name,lesson_data.get('title') or sess.lesson_id,body,None)
+            except Exception as exc:log.warning('Mobile homework email failed: %s',exc)
+    return web.json_response({'ok':True,'run_number':run_no,'movie_url':movie_url,'homework_sent':homework_sent,'completed_runs':ent.completed_runs,'max_runs':ent.max_completed_runs})
+
+async def movie_file(request:web.Request)->web.StreamResponse:
+    cid=int(request.match_info['child_id']);filename=request.match_info['filename'];val=f'movie:{cid}:{filename}'
+    if not verify_media_token(val,request.query.get('t','')):raise web.HTTPForbidden()
+    if '/' in filename or '..' in filename:raise web.HTTPNotFound()
+    path=settings.storage_root/'children'/str(cid)/'cartoons'/filename
+    if not path.exists():raise web.HTTPNotFound()
+    return web.FileResponse(path)
+
+async def movies(request:web.Request)->web.Response:
+    p=await _parent(request);cid=int(request.match_info['child_id']);await _owned_child(p.id,cid);root=settings.storage_root/'children'/str(cid)/'cartoons';items=[]
+    if root.exists():
+        for path in sorted(root.glob('mobile_*.mp4'),key=lambda x:x.stat().st_mtime,reverse=True):
+            val=f'movie:{cid}:{path.name}';t=signed_media_token(val,86400*30);items.append({'filename':path.name,'title':path.stem.replace('_',' '),'created_at':datetime.fromtimestamp(path.stat().st_mtime).isoformat(),'url':f'{_base(request)}/api/mobile/movie/{cid}/{path.name}?t={t}'})
+    return web.json_response({'movies':items})
+
+
+async def register(request: web.Request) -> web.Response:
+    data = await request.json()
+    email = str(data.get("email", "")).strip().lower()
+    password = str(data.get("password", ""))
+    name = str(data.get("name", "")).strip()
+
+    if not email or not password:
+        raise web.HTTPBadRequest(
+            text=json.dumps({"error": "email and password required"}),
+            content_type="application/json"
+        )
+
+    if len(password) < 8:
+        raise web.HTTPBadRequest(
+            text=json.dumps({"error": "password must be at least 8 characters"}),
+            content_type="application/json"
+        )
+
+    async with SessionLocal() as db:
+        existing = await db.scalar(select(Parent).where(Parent.email == email))
+        if existing:
+            raise web.HTTPConflict(
+                text=json.dumps({"error": "account already exists"}),
+                content_type="application/json"
+            )
+
+        parent = Parent(
+            email=email,
+            display_name=name or email.split("@")[0],
+            password_hash=hash_password(password)
+        )
+        db.add(parent)
+        await db.commit()
+        await db.refresh(parent)
+
+        token = issue_token(parent.id)
+
+        return web.json_response({
+            "token": token,
+            "parent": {
+                "id": parent.id,
+                "name": parent.display_name,
+                "email": parent.email
+            },
+            "children": []
+        })
+
+
+async def login(request: web.Request) -> web.Response:
+    data = await request.json()
+    email = str(data.get("email", "")).strip().lower()
+    password = str(data.get("password", ""))
+
+    async with SessionLocal() as db:
+        parent = await db.scalar(select(Parent).where(Parent.email == email))
+
+        if not parent or not parent.password_hash or not verify_password(password, parent.password_hash):
+            raise web.HTTPUnauthorized(
+                text=json.dumps({"error": "invalid email or password"}),
+                content_type="application/json"
+            )
+
+        children = (
+            await db.scalars(
+                select(Child)
+                .where(Child.parent_id == parent.id)
+                .order_by(Child.id)
+            )
+        ).all()
+
+        token = issue_token(parent.id)
+
+        return web.json_response({
+            "token": token,
+            "parent": {
+                "id": parent.id,
+                "name": parent.display_name,
+                "email": parent.email
+            },
+            "children": [_child_json(request, c) for c in children]
+        })
+
+def register_mobile_routes(app:web.Application):
+    app.router.add_post('/api/mobile/register',register); app.router.add_post('/api/mobile/login',login); app.router.add_post('/api/mobile/pair',pair);app.router.add_get('/api/mobile/bootstrap',bootstrap);app.router.add_get('/api/mobile/lesson/{lesson_id}',lesson)
+    app.router.add_get('/api/mobile/hero/file/{child_id}/{character_id}',hero_file);app.router.add_post('/api/mobile/child/{child_id}/hero/preset',hero_preset);app.router.add_post('/api/mobile/child/{child_id}/hero/upload',hero_upload)
+    app.router.add_post('/api/mobile/session/start',session_start);app.router.add_post('/api/mobile/session/{session_id}/voice',voice);app.router.add_post('/api/mobile/session/{session_id}/interactive',interactive);app.router.add_post('/api/mobile/session/{session_id}/complete',complete)
+    app.router.add_get('/api/mobile/tts',tts);app.router.add_get('/api/mobile/child/{child_id}/movies',movies);app.router.add_get('/api/mobile/movie/{child_id}/{filename}',movie_file)
+
+
+

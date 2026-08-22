@@ -1,0 +1,78 @@
+{
+  "schema_version": "1.1",
+  "title": "Читайка · Домашнее задание А, У, О",
+  "summary": "Интерактивное домашнее задание: обводка, письмо и рисунок.",
+  "optional": true,
+  "duration_minutes": 8,
+  "send_to_bot": true,
+  "send_to_parent_email": true,
+  "slides": [
+    {
+      "slide_id": "hw_01",
+      "order": 1,
+      "type": "trace",
+      "title": "Читайка · Домашнее задание 1",
+      "prompt": "Обводи, пиши и рисуй прямо на странице пальчиком или стилусом.",
+      "audio_text": "Обводи, пиши и рисуй прямо на странице пальчиком.",
+      "image_file": "homework_images/hw_001.jpg",
+      "can_skip": false,
+      "trace_regions": [
+        {
+          "x": 0.08,
+          "y": 0.12,
+          "w": 0.84,
+          "h": 0.76
+        }
+      ],
+      "mastery_required": true,
+      "trace_min_coverage": 0.68,
+      "trace_max_outside": 0.18,
+      "trace_max_scribble": 7.5
+    },
+    {
+      "slide_id": "hw_02",
+      "order": 2,
+      "type": "trace",
+      "title": "Читайка · Домашнее задание 2",
+      "prompt": "Обводи, пиши и рисуй прямо на странице пальчиком или стилусом.",
+      "audio_text": "Обводи, пиши и рисуй прямо на странице пальчиком.",
+      "image_file": "homework_images/hw_002.jpg",
+      "can_skip": false,
+      "trace_regions": [
+        {
+          "x": 0.08,
+          "y": 0.12,
+          "w": 0.84,
+          "h": 0.76
+        }
+      ],
+      "mastery_required": true,
+      "trace_min_coverage": 0.68,
+      "trace_max_outside": 0.18,
+      "trace_max_scribble": 7.5
+    },
+    {
+      "slide_id": "hw_03",
+      "order": 3,
+      "type": "trace",
+      "title": "Читайка · Домашнее задание 3",
+      "prompt": "Обводи, пиши и рисуй прямо на странице пальчиком или стилусом.",
+      "audio_text": "Обводи, пиши и рисуй прямо на странице пальчиком.",
+      "image_file": "homework_images/hw_003.jpg",
+      "can_skip": false,
+      "trace_regions": [
+        {
+          "x": 0.08,
+          "y": 0.12,
+          "w": 0.84,
+          "h": 0.76
+        }
+      ],
+      "mastery_required": true,
+      "trace_min_coverage": 0.68,
+      "trace_max_outside": 0.18,
+      "trace_max_scribble": 7.5
+    }
+  ],
+  "source_file": "source_materials/Ч-ДЗ-1АУО.pdf"
+}

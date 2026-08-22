@@ -1,0 +1,18 @@
+{
+  "version": 71,
+  "payment": {
+    "production_providers": ["stripe", "unipay", "unlimit", "paypal"],
+    "custom_provider_production_allowed": false,
+    "webhook_idempotency": true,
+    "test_bypass_forced_off_when_billing_on": true,
+    "plan_change_must_update_existing_subscription": true
+  },
+  "family": {
+    "max_children_per_parent": 5,
+    "additional_child_discount_per_lesson_eur": 0.5,
+    "billing_weeks_per_month": 4,
+    "discount_positions": [2, 3, 4, 5],
+    "active_child_persisted": true,
+    "cross_parent_child_guard": true
+  }
+}

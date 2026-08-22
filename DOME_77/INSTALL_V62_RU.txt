@@ -1,0 +1,43 @@
+DOME v62 — УСТАНОВКА / ОБНОВЛЕНИЕ
+
+ВАРИАНТ A — Windows + Docker Desktop (рекомендуется для локальной проверки)
+1) Распаковать ZIP в отдельную папку.
+2) Скопировать свой рабочий .env из предыдущей версии в корень новой папки. НЕ публиковать .env.
+3) Открыть PowerShell в папке проекта и выполнить:
+
+docker compose down
+docker compose build --no-cache
+docker compose up -d
+docker compose logs -f
+
+Быстрая проверка Python-файлов:
+python -m compileall app tests
+
+Если зависимости ставятся локально без Docker:
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+python -m pytest -q tests/test_v62_latest_fixes.py tests/test_v56_state_machine.py
+
+ВАРИАНТ B — GitHub → Railway (если у тебя уже есть локальная папка репозитория)
+1) Сначала сделай резервную копию текущей папки.
+2) Распакуй v62 отдельно и скопируй её файлы поверх локальной папки `dome-telegram-bot`.
+3) НЕ копируй/не публикуй `.env`; runtime-папку `storage/children` с персональными данными тоже не переносить в Git.
+4) В PowerShell открой именно локальную папку GitHub-репозитория и выполни:
+
+git status
+git branch --show-current
+git pull --ff-only origin main
+python -m compileall app tests
+python -m pytest -q tests/test_v62_latest_fixes.py tests/test_v56_state_machine.py
+git add app/bot/handlers.py content/lessons/demo_001/lesson.json tests/test_v62_latest_fixes.py README_V62_RU.md VERSION start_dome_windows.bat INSTALL_V62_RU.txt
+git commit -m "DOME v62 latest recovery fixes"
+git push origin main
+
+Railway должен автоматически собрать новый deployment из `main`.
+После deploy проверить Railway Logs и пройти smoke-test:
+`/start → профиль → demo_001 → голос → чемодан Mini App → животные → финальное приглашение → MP4`.
+
+ОТКАТ
+Если v62 ведёт себя хуже, в GitHub/Railway верни последний известный рабочий commit v61 и redeploy. Не чини production вслепую.

@@ -1,0 +1,21 @@
+{
+  "schema_version": "1.0",
+  "course_id": "reading",
+  "title": "Книжные истории",
+  "description": "Чтение, чтение по ролям, мягкая помощь, понимание и обсуждение текста.",
+  "active": false,
+  "lesson_ids": [
+    "book_stories_001"
+  ],
+  "metadata": {
+    "progression": "sequential",
+    "pilot_ready": true,
+    "pedagogy_profile": "fluent_reading",
+    "target_duration_minutes": 35,
+    "duration_range_minutes": [
+      30,
+      40
+    ],
+    "temporarily_disabled": true
+  }
+}

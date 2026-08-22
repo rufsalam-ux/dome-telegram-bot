@@ -1,0 +1,87 @@
+{
+  "engine": "content_v1",
+  "lesson_id": "conversation_002",
+  "course_id": "conversation",
+  "order": 2,
+  "title": "Название урока",
+  "active": false,
+  "make_cartoon": false,
+  "slides": [
+    {
+      "type": "passive",
+      "title": "Знакомство",
+      "prompt": "Посмотри и послушай.",
+      "support_text": "Короткое объяснение на родном языке.",
+      "audio_text": "Посмотри и послушай.",
+      "image_file": "images/example.jpg",
+      "expects_answer": false,
+      "can_skip": true,
+      "slide_id": "step_01",
+      "order": 1
+    },
+    {
+      "type": "choice",
+      "title": "Выбери ответ",
+      "prompt": "Выбери правильный ответ.",
+      "options": [
+        "Вариант 1",
+        "Вариант 2",
+        "Вариант 3"
+      ],
+      "correct_option_index": 0,
+      "expects_answer": true,
+      "can_skip": false,
+      "slide_id": "step_02",
+      "order": 2
+    },
+    {
+      "type": "memory",
+      "title": "Memory",
+      "prompt": "Найди пары.",
+      "expects_answer": true,
+      "can_skip": true,
+      "slide_id": "step_03",
+      "order": 3,
+      "pairs": [
+        {
+          "left": "кот",
+          "right": "cat"
+        },
+        {
+          "left": "дом",
+          "right": "house"
+        },
+        {
+          "left": "мяч",
+          "right": "ball"
+        }
+      ]
+    },
+    {
+      "type": "video",
+      "title": "Видео",
+      "prompt": "Посмотри видео.",
+      "video_file": "video/example.mp4",
+      "expects_answer": false,
+      "can_skip": true,
+      "slide_id": "step_04",
+      "order": 4
+    },
+    {
+      "type": "voice_answer",
+      "title": "Ответь голосом",
+      "prompt": "Ответь одной короткой фразой.",
+      "accepted_meaning": [
+        "пример ответа"
+      ],
+      "expects_answer": true,
+      "can_skip": true,
+      "slide_id": "step_05",
+      "order": 5
+    }
+  ],
+  "schema_version": "1.3",
+  "max_completed_runs": 2,
+  "expires_after_months": 10,
+  "adaptive_second_run": true
+}

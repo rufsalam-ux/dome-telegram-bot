@@ -1,0 +1,193 @@
+[
+  {
+    "phrase_id": "lesha_clothes",
+    "visible_start": 21.0,
+    "talk_start": 24.0,
+    "end": 31.0,
+    "height": 285,
+    "y": 145,
+    "animation": "walk_from_left",
+    "x_start": -250,
+    "x_end": 185,
+    "layer": 3,
+    "disappear": "fade_out",
+    "minimum_visible_seconds": 10.0,
+    "hold_until_scene_end": true,
+    "character_animation": {
+      "description_ru": "Герой выходит слева, естественно идёт вправо, останавливается возле Лёши, поворачивается к нему и удивлённо разводит руками во время реплики.",
+      "reuse": true,
+      "speaking": true,
+      "view": "front",
+      "placement_ru": "Справа от Лёши после подхода; ноги героя на уровне земли; не перекрывать лицо Лёши.",
+      "position_hint": {
+        "x": 0.3,
+        "y": 0.7,
+        "scale": 0.38
+      }
+    }
+  },
+  {
+    "phrase_id": "mila_gift",
+    "visible_start": 39.0,
+    "talk_start": 39.0,
+    "end": 44.0,
+    "height": 245,
+    "y": 240,
+    "animation": "stand_front_talk",
+    "x": 92,
+    "layer": 3,
+    "disappear": "fade_out",
+    "character_animation": {
+      "description_ru": "Герой стоит лицом к камере, улыбается и естественно жестикулирует руками во время разговора.",
+      "reuse": true,
+      "speaking": true,
+      "view": "front"
+    }
+  },
+  {
+    "phrase_id": "take_trip",
+    "visible_start": 55.0,
+    "talk_start": 55.0,
+    "end": 60.0,
+    "height": 250,
+    "y": 238,
+    "animation": "stand_front_talk",
+    "x": 105,
+    "layer": 3,
+    "disappear": "fade_out",
+    "character_animation": {
+      "description_ru": "Герой стоит рядом с чемоданом, показывает на него рукой, затем показывает выбранную вещь и говорит в камеру.",
+      "reuse": true,
+      "speaking": true,
+      "view": "front"
+    }
+  },
+  {
+    "phrase_id": "polar_bear",
+    "visible_start": 64.0,
+    "talk_start": 64.0,
+    "end": 69.0,
+    "height": 220,
+    "y": 270,
+    "animation": "stand_front_talk",
+    "x": 50,
+    "layer": 3,
+    "disappear": "fade_out",
+    "character_animation": {
+      "description_ru": "Герой стоит лицом к камере, показывает рукой на белого медведя и говорит.",
+      "reuse": true,
+      "speaking": true,
+      "view": "front"
+    }
+  },
+  {
+    "phrase_id": "lion",
+    "visible_start": 69.0,
+    "talk_start": 69.0,
+    "end": 74.0,
+    "height": 220,
+    "y": 270,
+    "animation": "walk_right_to_left_talk",
+    "x_start": 910,
+    "x_end": -215,
+    "layer": 3,
+    "disappear": "offscreen",
+    "character_animation": {
+      "description_ru": "Герой идёт справа налево уверенным шагом и говорит, слегка поворачивая голову к камере.",
+      "reuse": true,
+      "speaking": true,
+      "view": "front"
+    }
+  },
+  {
+    "phrase_id": "parrot",
+    "visible_start": 74.0,
+    "talk_start": 74.0,
+    "end": 79.0,
+    "height": 220,
+    "y": 270,
+    "animation": "stand_front_talk",
+    "x": 52,
+    "layer": 3,
+    "disappear": "fade_out",
+    "character_animation": {
+      "description_ru": "Герой стоит лицом к камере, показывает вверх на попугая и говорит.",
+      "reuse": true,
+      "speaking": true,
+      "view": "front"
+    }
+  },
+  {
+    "phrase_id": "giraffe",
+    "visible_start": 79.0,
+    "talk_start": 79.0,
+    "end": 84.0,
+    "height": 220,
+    "y": 270,
+    "animation": "stand_front_talk",
+    "x": 52,
+    "layer": 3,
+    "disappear": "fade_out",
+    "character_animation": {
+      "description_ru": "Герой смотрит вверх, показывает рукой на жирафа и говорит.",
+      "reuse": true,
+      "speaking": true,
+      "view": "front"
+    }
+  },
+  {
+    "phrase_id": "penguin",
+    "visible_start": 85.0,
+    "talk_start": 85.0,
+    "end": 90.0,
+    "height": 220,
+    "y": 270,
+    "animation": "stand_front_talk",
+    "x": 52,
+    "layer": 3,
+    "disappear": "fade_out",
+    "character_animation": {
+      "description_ru": "Герой немного приседает, показывает на пингвина и говорит в камеру.",
+      "reuse": true,
+      "speaking": true,
+      "view": "front"
+    }
+  },
+  {
+    "phrase_id": "zebra",
+    "visible_start": 90.0,
+    "talk_start": 90.0,
+    "end": 95.0,
+    "height": 220,
+    "y": 270,
+    "animation": "stand_front_talk",
+    "x": 52,
+    "layer": 3,
+    "disappear": "fade_out",
+    "character_animation": {
+      "description_ru": "Герой подходит к зебре, останавливается, улыбается и говорит.",
+      "reuse": true,
+      "speaking": true,
+      "view": "front"
+    }
+  },
+  {
+    "phrase_id": "invite",
+    "visible_start": 95.0,
+    "talk_start": 95.0,
+    "end": 99.65,
+    "height": 220,
+    "y": 270,
+    "animation": "walk_right_to_left_talk",
+    "x_start": 910,
+    "x_end": -215,
+    "layer": 3,
+    "disappear": "offscreen",
+    "character_animation": {
+      "description_ru": "Герой идёт справа налево, затем поворачивается к камере, машет рукой и приглашает друзей в гости.",
+      "reuse": true,
+      "speaking": true,
+      "view": "front"
+    }
+  }
+]

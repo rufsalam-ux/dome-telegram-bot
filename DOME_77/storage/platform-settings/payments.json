@@ -1,0 +1,24 @@
+{
+  "schema_version": "2.0",
+  "save_card_once": true,
+  "future_package_confirmation": "sms_otp",
+  "require_amount_and_package_before_otp": true,
+  "allow_test_free_topic_bypass": true,
+  "prevent_duplicate_charge": true,
+  "idempotency_window_seconds": 300,
+  "require_course_payment_before_lesson": true,
+  "allow_test_course_payment_bypass": true,
+  "test_payment_mode": true,
+  "provider": "custom",
+  "provider_options": [
+    "custom",
+    "unipay",
+    "paypal",
+    "stripe"
+  ],
+  "tokenized_card_required": true,
+  "store_raw_card_data": false,
+  "sms_confirm_each_future_package": true,
+  "server_entitlement_check": true,
+  "billing_enabled": false
+}

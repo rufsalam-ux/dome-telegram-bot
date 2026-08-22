@@ -1,0 +1,16 @@
+{
+  "schema_version": "1.1",
+  "enabled": true,
+  "default_source": "manual",
+  "optional": true,
+  "send_to_bot": true,
+  "send_to_parent_email": true,
+  "max_duration_minutes": 10,
+  "default_duration_minutes": 5,
+  "allow_skip": true,
+  "allow_defer": true,
+  "keep_in_archive": true,
+  "ai_generate_only_when_lesson_requests_it": true,
+  "fallback_without_ai": true,
+  "max_tasks": 3
+}

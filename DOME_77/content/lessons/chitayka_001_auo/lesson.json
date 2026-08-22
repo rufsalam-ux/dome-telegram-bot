@@ -1,0 +1,679 @@
+{
+  "schema_version": "1.0",
+  "engine": "content_v1",
+  "lesson_id": "chitayka_001_auo",
+  "course_id": "learn_to_read",
+  "title": "Читайка 1. Буквы А, У, О",
+  "order": 1,
+  "active": true,
+  "target_language": "ru",
+  "topic": "Буквы А, У, О",
+  "description": "Первый интерактивный урок курса «Учимся читать»: буквы А, У, О, мультфильмы, письмо пальчиком, drag-and-drop и задания на слух.",
+  "make_cartoon": false,
+  "slides": [
+    {
+      "slide_id": "slide_01",
+      "order": 1,
+      "type": "passive",
+      "title": "Буквы А, У, О",
+      "prompt": "Сегодня знакомимся с буквами А, У и О. Готов? Тогда начинаем!",
+      "audio_text": "Сегодня знакомимся с буквами А, У и О. Готов? Тогда начинаем!",
+      "image_file": "images/slide_01.png",
+      "can_skip": false
+    },
+    {
+      "slide_id": "slide_02",
+      "order": 2,
+      "type": "passive",
+      "title": "Буква А",
+      "prompt": "Посмотри: это большая и маленькая буква А. Они выглядят по-разному, но обозначают один звук.",
+      "audio_text": "Посмотри: это большая и маленькая буква А. Они выглядят по-разному, но обозначают один звук.",
+      "image_file": "images/slide_02.png",
+      "can_skip": true
+    },
+    {
+      "slide_id": "slide_03",
+      "order": 3,
+      "type": "video",
+      "title": "Мультфильм про букву А",
+      "prompt": "Посмотри короткий мультфильм про букву А.",
+      "audio_text": "Посмотри короткий мультфильм про букву А.",
+      "image_file": "images/slide_03.png",
+      "can_skip": true,
+      "video_url": "https://www.youtube.com/watch?v=0Pkp9XmJO0M"
+    },
+    {
+      "slide_id": "slide_04",
+      "order": 4,
+      "type": "passive",
+      "title": "Рык читает А",
+      "prompt": "Рык произносит звук А твёрдо. Читай ряд букв от ладошки к каждой букве, помогая себе хлопком.",
+      "audio_text": "Рык произносит звук А твёрдо. Читай ряд букв от ладошки к каждой букве, помогая себе хлопком.",
+      "image_file": "images/slide_04.png",
+      "can_skip": true
+    },
+    {
+      "slide_id": "slide_05",
+      "order": 5,
+      "type": "passive",
+      "title": "Слова на А",
+      "prompt": "Назови звук в начале слова «апельсин». Какие ещё слова начинаются на А? Проведи пальчиком по букве А на картинке.",
+      "audio_text": "Назови звук в начале слова «апельсин». Какие ещё слова начинаются на А? Проведи пальчиком по букве А на картинке.",
+      "image_file": "images/slide_05.png",
+      "can_skip": true
+    },
+    {
+      "slide_id": "slide_06",
+      "order": 6,
+      "type": "drag_drop",
+      "title": "Проведи А в домик",
+      "prompt": "Перетащи все буквы А на дорожку к домику.",
+      "audio_text": "Перетащи все буквы А на дорожку к домику.",
+      "image_file": "images/slide_06.png",
+      "can_skip": false,
+      "success_text": "Отлично! Все буквы А дошли до домика.",
+      "expects_answer": true,
+      "items": [
+        "А",
+        "А",
+        "А",
+        "А",
+        "А",
+        "А",
+        "А"
+      ],
+      "targets": [
+        "место 1",
+        "место 2",
+        "место 3",
+        "место 4",
+        "место 5",
+        "место 6",
+        "место 7"
+      ],
+      "drop_zones": [
+        {
+          "x": 0.15,
+          "y": 0.73,
+          "w": 0.1,
+          "h": 0.14
+        },
+        {
+          "x": 0.29,
+          "y": 0.64,
+          "w": 0.1,
+          "h": 0.14
+        },
+        {
+          "x": 0.32,
+          "y": 0.46,
+          "w": 0.1,
+          "h": 0.14
+        },
+        {
+          "x": 0.38,
+          "y": 0.25,
+          "w": 0.1,
+          "h": 0.14
+        },
+        {
+          "x": 0.51,
+          "y": 0.42,
+          "w": 0.1,
+          "h": 0.14
+        },
+        {
+          "x": 0.63,
+          "y": 0.57,
+          "w": 0.1,
+          "h": 0.14
+        },
+        {
+          "x": 0.78,
+          "y": 0.78,
+          "w": 0.1,
+          "h": 0.14
+        }
+      ],
+      "mastery_required": true
+    },
+    {
+      "slide_id": "slide_07",
+      "order": 7,
+      "type": "trace",
+      "title": "Пишем А",
+      "prompt": "Обведи большую и маленькую букву А по линиям. Можно писать прямо пальчиком.",
+      "audio_text": "Обведи большую и маленькую букву А по линиям. Можно писать прямо пальчиком.",
+      "image_file": "images/slide_07.png",
+      "can_skip": false,
+      "trace_regions": [
+        {
+          "x": 0.04,
+          "y": 0.08,
+          "w": 0.45,
+          "h": 0.4
+        },
+        {
+          "x": 0.05,
+          "y": 0.57,
+          "w": 0.9,
+          "h": 0.34
+        }
+      ],
+      "mastery_required": true,
+      "trace_min_coverage": 0.68,
+      "trace_max_outside": 0.18,
+      "trace_max_scribble": 7.5
+    },
+    {
+      "slide_id": "slide_08",
+      "order": 8,
+      "type": "trace",
+      "title": "Собери автобус",
+      "prompt": "Обведи линии и буквы А. Проведи пальчиком по пунктиру, чтобы закончить рисунок.",
+      "audio_text": "Обведи линии и буквы А. Проведи пальчиком по пунктиру, чтобы закончить рисунок.",
+      "image_file": "images/slide_08.png",
+      "can_skip": false,
+      "trace_regions": [
+        {
+          "x": 0.05,
+          "y": 0.16,
+          "w": 0.48,
+          "h": 0.5
+        },
+        {
+          "x": 0.54,
+          "y": 0.18,
+          "w": 0.41,
+          "h": 0.68
+        }
+      ],
+      "mastery_required": true,
+      "trace_min_coverage": 0.68,
+      "trace_max_outside": 0.18,
+      "trace_max_scribble": 7.5
+    },
+    {
+      "slide_id": "slide_09",
+      "order": 9,
+      "type": "trace",
+      "title": "Найди и обведи А",
+      "prompt": "Обведи буквы А и а на поле. Линию можно вести прямо пальчиком.",
+      "audio_text": "Обведи буквы А и а на поле. Линию можно вести прямо пальчиком.",
+      "image_file": "images/slide_09.png",
+      "can_skip": false,
+      "trace_regions": [
+        {
+          "x": 0.47,
+          "y": 0.06,
+          "w": 0.13,
+          "h": 0.22
+        },
+        {
+          "x": 0.5,
+          "y": 0.57,
+          "w": 0.12,
+          "h": 0.2
+        },
+        {
+          "x": 0.2,
+          "y": 0.28,
+          "w": 0.2,
+          "h": 0.25
+        }
+      ],
+      "mastery_required": true,
+      "trace_min_coverage": 0.68,
+      "trace_max_outside": 0.18,
+      "trace_max_scribble": 7.5
+    },
+    {
+      "slide_id": "slide_10",
+      "order": 10,
+      "type": "passive",
+      "title": "Знакомимся с У",
+      "prompt": "Это буква У — большая и маленькая. Послушай звук У и повтори его.",
+      "audio_text": "Это буква У — большая и маленькая. Послушай звук У и повтори его.",
+      "image_file": "images/slide_10.png",
+      "can_skip": true
+    },
+    {
+      "slide_id": "slide_11",
+      "order": 11,
+      "type": "video",
+      "title": "Мультфильм про букву У",
+      "prompt": "Посмотри короткий мультфильм про букву У.",
+      "audio_text": "Посмотри короткий мультфильм про букву У.",
+      "image_file": "images/slide_11.png",
+      "can_skip": true,
+      "video_url": "https://www.youtube.com/watch?v=ZFcLQyrm068"
+    },
+    {
+      "slide_id": "slide_12",
+      "order": 12,
+      "type": "passive",
+      "title": "Песенка У",
+      "prompt": "Произнеси У. Попробуй сказать звук выше, а потом ниже, будто голос поднимается и спускается по ноткам.",
+      "audio_text": "Произнеси У. Попробуй сказать звук выше, а потом ниже, будто голос поднимается и спускается по ноткам.",
+      "image_file": "images/slide_12.png",
+      "can_skip": true
+    },
+    {
+      "slide_id": "slide_13",
+      "order": 13,
+      "type": "passive",
+      "title": "Домик гласных",
+      "prompt": "В домике уже живут А и У. Назови обе буквы и их звуки.",
+      "audio_text": "В домике уже живут А и У. Назови обе буквы и их звуки.",
+      "image_file": "images/slide_13.png",
+      "can_skip": true
+    },
+    {
+      "slide_id": "slide_14",
+      "order": 14,
+      "type": "drag_drop",
+      "title": "Проведи У в домик",
+      "prompt": "Перетащи все буквы У на дорожку к домику.",
+      "audio_text": "Перетащи все буквы У на дорожку к домику.",
+      "image_file": "images/slide_14.png",
+      "can_skip": false,
+      "success_text": "Супер! Все буквы У на дорожке.",
+      "expects_answer": true,
+      "items": [
+        "У",
+        "У",
+        "У",
+        "У",
+        "У",
+        "У"
+      ],
+      "targets": [
+        "место 1",
+        "место 2",
+        "место 3",
+        "место 4",
+        "место 5",
+        "место 6"
+      ],
+      "drop_zones": [
+        {
+          "x": 0.28,
+          "y": 0.18,
+          "w": 0.1,
+          "h": 0.14
+        },
+        {
+          "x": 0.59,
+          "y": 0.35,
+          "w": 0.1,
+          "h": 0.14
+        },
+        {
+          "x": 0.69,
+          "y": 0.5,
+          "w": 0.1,
+          "h": 0.14
+        },
+        {
+          "x": 0.43,
+          "y": 0.58,
+          "w": 0.1,
+          "h": 0.14
+        },
+        {
+          "x": 0.28,
+          "y": 0.83,
+          "w": 0.1,
+          "h": 0.14
+        },
+        {
+          "x": 0.67,
+          "y": 0.83,
+          "w": 0.1,
+          "h": 0.14
+        }
+      ],
+      "mastery_required": true
+    },
+    {
+      "slide_id": "slide_15",
+      "order": 15,
+      "type": "passive",
+      "title": "У на уроке у Рыка",
+      "prompt": "Назови букву У. Посмотри на картинки и назови слова, которые начинаются со звука У.",
+      "audio_text": "Назови букву У. Посмотри на картинки и назови слова, которые начинаются со звука У.",
+      "image_file": "images/slide_15.png",
+      "can_skip": true
+    },
+    {
+      "slide_id": "slide_16",
+      "order": 16,
+      "type": "trace",
+      "title": "Вспоминаем А и У",
+      "prompt": "Обведи буквы А и У и попробуй написать их по пунктиру пальчиком.",
+      "audio_text": "Обведи буквы А и У и попробуй написать их по пунктиру пальчиком.",
+      "image_file": "images/slide_16.png",
+      "can_skip": false,
+      "trace_regions": [
+        {
+          "x": 0.3,
+          "y": 0.56,
+          "w": 0.24,
+          "h": 0.31
+        },
+        {
+          "x": 0.53,
+          "y": 0.56,
+          "w": 0.25,
+          "h": 0.31
+        }
+      ],
+      "mastery_required": true,
+      "trace_min_coverage": 0.68,
+      "trace_max_outside": 0.18,
+      "trace_max_scribble": 7.5
+    },
+    {
+      "slide_id": "slide_17",
+      "order": 17,
+      "type": "trace",
+      "title": "Пишем У",
+      "prompt": "Обведи большую и маленькую букву У. Затем пройди по пунктиру в строках.",
+      "audio_text": "Обведи большую и маленькую букву У. Затем пройди по пунктиру в строках.",
+      "image_file": "images/slide_17.png",
+      "can_skip": false,
+      "trace_regions": [
+        {
+          "x": 0.05,
+          "y": 0.08,
+          "w": 0.45,
+          "h": 0.37
+        },
+        {
+          "x": 0.08,
+          "y": 0.57,
+          "w": 0.84,
+          "h": 0.34
+        }
+      ],
+      "mastery_required": true,
+      "trace_min_coverage": 0.68,
+      "trace_max_outside": 0.18,
+      "trace_max_scribble": 7.5
+    },
+    {
+      "slide_id": "slide_18",
+      "order": 18,
+      "type": "trace",
+      "title": "Дорисуй У",
+      "prompt": "Обведи элементы, похожие на букву У, и допиши букву по образцу.",
+      "audio_text": "Обведи элементы, похожие на букву У, и допиши букву по образцу.",
+      "image_file": "images/slide_18.png",
+      "can_skip": false,
+      "trace_regions": [
+        {
+          "x": 0.07,
+          "y": 0.18,
+          "w": 0.45,
+          "h": 0.5
+        },
+        {
+          "x": 0.55,
+          "y": 0.2,
+          "w": 0.35,
+          "h": 0.62
+        }
+      ],
+      "mastery_required": true,
+      "trace_min_coverage": 0.68,
+      "trace_max_outside": 0.18,
+      "trace_max_scribble": 7.5
+    },
+    {
+      "slide_id": "slide_19",
+      "order": 19,
+      "type": "trace",
+      "title": "Слоги АУ и УА",
+      "prompt": "Обведи элементы и прочитай АУ и УА. Попробуй провести линии пальчиком.",
+      "audio_text": "Обведи элементы и прочитай АУ и УА. Попробуй провести линии пальчиком.",
+      "image_file": "images/slide_19.png",
+      "can_skip": false,
+      "trace_regions": [
+        {
+          "x": 0.13,
+          "y": 0.65,
+          "w": 0.28,
+          "h": 0.25
+        },
+        {
+          "x": 0.43,
+          "y": 0.64,
+          "w": 0.28,
+          "h": 0.25
+        }
+      ],
+      "mastery_required": true,
+      "trace_min_coverage": 0.68,
+      "trace_max_outside": 0.18,
+      "trace_max_scribble": 7.5
+    },
+    {
+      "slide_id": "slide_20",
+      "order": 20,
+      "type": "passive",
+      "title": "Буква О",
+      "prompt": "Это буква О — большая и маленькая. Произнеси звук О, округляя губы.",
+      "audio_text": "Это буква О — большая и маленькая. Произнеси звук О, округляя губы.",
+      "image_file": "images/slide_20.png",
+      "can_skip": true
+    },
+    {
+      "slide_id": "slide_21",
+      "order": 21,
+      "type": "choice",
+      "title": "Что начинается на О?",
+      "prompt": "Посмотри на картинки. Что начинается со звука О?",
+      "audio_text": "Посмотри на картинки. Что начинается со звука О?",
+      "image_file": "images/slide_21.png",
+      "can_skip": true,
+      "options": [
+        "овощи",
+        "облако",
+        "мальчик"
+      ],
+      "correct_option_index": 0
+    },
+    {
+      "slide_id": "slide_22",
+      "order": 22,
+      "type": "passive",
+      "title": "Домик А, У, О",
+      "prompt": "Теперь в домике живут три гласные: А, У и О. Назови их по порядку.",
+      "audio_text": "Теперь в домике живут три гласные: А, У и О. Назови их по порядку.",
+      "image_file": "images/slide_22.png",
+      "can_skip": true
+    },
+    {
+      "slide_id": "slide_23",
+      "order": 23,
+      "type": "passive",
+      "title": "Читаем сочетания",
+      "prompt": "Попробуй прочитать сочетания букв: АУО и ОУА. Сначала медленно, потом чуть быстрее.",
+      "audio_text": "Попробуй прочитать сочетания букв: АУО и ОУА. Сначала медленно, потом чуть быстрее.",
+      "image_file": "images/slide_23.png",
+      "can_skip": true
+    },
+    {
+      "slide_id": "slide_24",
+      "order": 24,
+      "type": "trace",
+      "title": "Пишем О",
+      "prompt": "Обведи большую и маленькую букву О и продолжи строки по пунктиру.",
+      "audio_text": "Обведи большую и маленькую букву О и продолжи строки по пунктиру.",
+      "image_file": "images/slide_24.png",
+      "can_skip": false,
+      "trace_regions": [
+        {
+          "x": 0.09,
+          "y": 0.07,
+          "w": 0.38,
+          "h": 0.37
+        },
+        {
+          "x": 0.13,
+          "y": 0.52,
+          "w": 0.73,
+          "h": 0.38
+        }
+      ],
+      "mastery_required": true,
+      "trace_min_coverage": 0.68,
+      "trace_max_outside": 0.18,
+      "trace_max_scribble": 7.5
+    },
+    {
+      "slide_id": "slide_25",
+      "order": 25,
+      "type": "tap_sound",
+      "title": "Нажми и послушай",
+      "prompt": "Нажимай на картинки. Бот произнесёт, как называется предмет.",
+      "audio_text": "Нажимай на картинки. Бот произнесёт, как называется предмет.",
+      "image_file": "images/slide_25.png",
+      "can_skip": false,
+      "hotspots": [
+        {
+          "label": "штурвал",
+          "x": 0.14,
+          "y": 0.2,
+          "w": 0.15,
+          "h": 0.25
+        },
+        {
+          "label": "панда",
+          "x": 0.29,
+          "y": 0.2,
+          "w": 0.14,
+          "h": 0.25
+        },
+        {
+          "label": "очки",
+          "x": 0.43,
+          "y": 0.27,
+          "w": 0.14,
+          "h": 0.17
+        },
+        {
+          "label": "колесо",
+          "x": 0.14,
+          "y": 0.49,
+          "w": 0.14,
+          "h": 0.24
+        },
+        {
+          "label": "пончик",
+          "x": 0.29,
+          "y": 0.51,
+          "w": 0.13,
+          "h": 0.21
+        },
+        {
+          "label": "круг",
+          "x": 0.43,
+          "y": 0.51,
+          "w": 0.13,
+          "h": 0.22
+        },
+        {
+          "label": "мяч",
+          "x": 0.23,
+          "y": 0.74,
+          "w": 0.13,
+          "h": 0.2
+        },
+        {
+          "label": "очки-сердечки",
+          "x": 0.58,
+          "y": 0.44,
+          "w": 0.28,
+          "h": 0.25
+        }
+      ],
+      "min_taps": 4,
+      "mastery_required": true
+    },
+    {
+      "slide_id": "slide_26",
+      "order": 26,
+      "type": "match_visible",
+      "title": "Найди одинаковые О",
+      "prompt": "Найди пары одинаковых букв О по цвету и форме: одну в верхнем ряду и такую же в нижнем.",
+      "audio_text": "Найди пары одинаковых букв О по цвету и форме: одну в верхнем ряду и такую же в нижнем.",
+      "image_file": "images/slide_26.png",
+      "can_skip": false,
+      "pairs": [
+        {
+          "value": "О",
+          "style": "teal"
+        },
+        {
+          "value": "О",
+          "style": "blue"
+        },
+        {
+          "value": "О",
+          "style": "green"
+        },
+        {
+          "value": "О",
+          "style": "gold"
+        }
+      ],
+      "mastery_required": true
+    },
+    {
+      "slide_id": "slide_27",
+      "order": 27,
+      "type": "choice",
+      "title": "Какой ты Рык после урока?",
+      "prompt": "Выбери настроение после урока.",
+      "audio_text": "Выбери настроение после урока.",
+      "image_file": "images/slide_27.png",
+      "can_skip": true,
+      "options": [
+        "😊 Весёлый",
+        "🙂 Спокойный",
+        "😴 Устал"
+      ],
+      "correct_option_index": null,
+      "correct_indices": [
+        0,
+        1,
+        2
+      ]
+    },
+    {
+      "slide_id": "slide_28",
+      "order": 28,
+      "type": "passive",
+      "title": "Финиш",
+      "prompt": "Отличная работа! Сегодня ты познакомился с буквами А, У и О, слушал звуки, читал и писал.",
+      "audio_text": "Отличная работа! Сегодня ты познакомился с буквами А, У и О, слушал звуки, читал и писал.",
+      "image_file": "images/slide_28.png",
+      "can_skip": false
+    }
+  ],
+  "metadata": {
+    "source": "Ч-1АУО(2).pdf",
+    "pilot_ready": true,
+    "version": "v66"
+  },
+  "pedagogy_profile": "early_reading",
+  "target_duration_minutes": 35,
+  "duration_range_minutes": [
+    30,
+    40
+  ],
+  "max_completed_runs": 2,
+  "expires_after_months": 10,
+  "adaptive_second_run": true
+}

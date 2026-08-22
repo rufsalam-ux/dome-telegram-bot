@@ -1,0 +1,20 @@
+{
+  "schema_version": "1.0",
+  "course_id": "conversation",
+  "title": "Разговорная практика",
+  "description": "Живая речь, диалоги, голосовые задания и персональный мультфильм.",
+  "active": true,
+  "lesson_ids": [
+    "demo_001"
+  ],
+  "metadata": {
+    "progression": "sequential",
+    "pilot_ready": true,
+    "pedagogy_profile": "conversation",
+    "target_duration_minutes": 35,
+    "duration_range_minutes": [
+      30,
+      40
+    ]
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "version": "v69",
+  "product": "DOME Russian language bot",
+  "courses": ["conversation", "learn_to_read", "reading"],
+  "explicitly_excluded": ["Proof of Learning"],
+  "lesson_access": {"max_completed_runs": 2, "expires_after_months": 10, "cartoon_generation_runs": [1]},
+  "subscription": {
+    "billing_test_mode": true,
+    "release_source": "per-child Subscription.lessons_per_week",
+    "release_interval_days": 7,
+    "plans": [
+      {"lessons_per_week": 1, "monthly_price": 39},
+      {"lessons_per_week": 2, "monthly_price": 79},
+      {"lessons_per_week": 3, "monthly_price": 109},
+      {"lessons_per_week": 4, "monthly_price": 139}
+    ]
+  },
+  "authoring": {
+    "without_zip": true,
+    "steps": ["lesson", "teacher_instruction", "homework", "extras_links_video", "review", "validate", "preview", "publish"],
+    "versioning": true,
+    "rollback": true,
+    "strict_publish_validation": true
+  },
+  "reading": {"role_turns": true, "adaptive_child_share": true, "target_duration_minutes": 35, "duration_range": [30, 40]},
+  "storage": {"never_auto_borrow_other_service_volume": true, "explicit_storage_root_supported": true},
+  "payments": {"billing_off_for_test": true, "stripe_lifecycle": ["checkout.session.completed", "invoice.paid", "invoice.payment_failed", "customer.subscription.updated", "customer.subscription.deleted"], "webhook_idempotency": true}
+}

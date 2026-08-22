@@ -1,0 +1,14 @@
+{
+  "schema_version": "1.0",
+  "pilots": [
+    {
+      "code": "DEMO30",
+      "organization": "DOME Demo",
+      "active": false,
+      "duration_days": 30,
+      "max_children": 10,
+      "courses": ["conversation", "learn_to_read", "reading"],
+      "note": "Template only. Copy this object, change the code and organization, then set active=true."
+    }
+  ]
+}

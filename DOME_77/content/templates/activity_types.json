@@ -1,0 +1,542 @@
+[
+  {
+    "id": "speak",
+    "title_ru": "Ответ голосом",
+    "category": "speech",
+    "input_modes": [
+      "voice"
+    ],
+    "description_ru": "Свободный или направляемый устный ответ.",
+    "implemented_now": true,
+    "renderer": "telegram_voice",
+    "future_safe": true
+  },
+  {
+    "id": "repeat",
+    "title_ru": "Повтори",
+    "category": "speech",
+    "input_modes": [
+      "voice"
+    ],
+    "description_ru": "Повторение слова или фразы с мягкой помощью.",
+    "implemented_now": true,
+    "renderer": "telegram_voice",
+    "future_safe": true
+  },
+  {
+    "id": "dialogue",
+    "title_ru": "AI-диалог",
+    "category": "speech",
+    "input_modes": [
+      "voice",
+      "text"
+    ],
+    "description_ru": "Короткий естественный диалог по теме.",
+    "implemented_now": true,
+    "renderer": "telegram_voice",
+    "future_safe": true
+  },
+  {
+    "id": "roleplay",
+    "title_ru": "Ролевая ситуация",
+    "category": "speech",
+    "input_modes": [
+      "voice"
+    ],
+    "description_ru": "Сюжетный разговор в роли.",
+    "implemented_now": true,
+    "renderer": "telegram_voice",
+    "future_safe": true
+  },
+  {
+    "id": "read_aloud",
+    "title_ru": "Чтение вслух",
+    "category": "reading",
+    "input_modes": [
+      "voice"
+    ],
+    "description_ru": "Бот слушает, не цепляется к мелочам и помогает при затруднении.",
+    "implemented_now": true,
+    "renderer": "telegram_voice",
+    "future_safe": true
+  },
+  {
+    "id": "read_roles",
+    "title_ru": "Чтение по ролям",
+    "category": "reading",
+    "input_modes": [
+      "voice",
+      "audio"
+    ],
+    "description_ru": "AI читает другие роли и динамически забирает больше текста при трудностях.",
+    "implemented_now": true,
+    "renderer": "telegram_voice",
+    "future_safe": true
+  },
+  {
+    "id": "echo_reading",
+    "title_ru": "Эхо-чтение",
+    "category": "reading",
+    "input_modes": [
+      "audio",
+      "voice"
+    ],
+    "description_ru": "AI читает короткий фрагмент, ребёнок повторяет.",
+    "implemented_now": true,
+    "renderer": "telegram_voice",
+    "future_safe": true
+  },
+  {
+    "id": "shared_reading",
+    "title_ru": "Совместное чтение",
+    "category": "reading",
+    "input_modes": [
+      "audio",
+      "voice"
+    ],
+    "description_ru": "AI и ребёнок читают попеременно.",
+    "implemented_now": true,
+    "renderer": "telegram_voice",
+    "future_safe": true
+  },
+  {
+    "id": "comprehension",
+    "title_ru": "Вопрос по прочитанному",
+    "category": "reading",
+    "input_modes": [
+      "voice",
+      "tap"
+    ],
+    "description_ru": "Обсуждение смысла и вопросы по инструкции.",
+    "implemented_now": true,
+    "renderer": "telegram_voice",
+    "future_safe": true
+  },
+  {
+    "id": "retell",
+    "title_ru": "Пересказ",
+    "category": "reading",
+    "input_modes": [
+      "voice"
+    ],
+    "description_ru": "Короткий пересказ с подсказками при необходимости.",
+    "implemented_now": true,
+    "renderer": "telegram_voice",
+    "future_safe": true
+  },
+  {
+    "id": "continue_story",
+    "title_ru": "Продолжи историю",
+    "category": "reading",
+    "input_modes": [
+      "voice"
+    ],
+    "description_ru": "Ребёнок придумывает продолжение.",
+    "implemented_now": true,
+    "renderer": "telegram_voice",
+    "future_safe": true
+  },
+  {
+    "id": "tap_select",
+    "title_ru": "Нажми / выбери",
+    "category": "interactive",
+    "input_modes": [
+      "tap"
+    ],
+    "description_ru": "Выбор одного объекта.",
+    "implemented_now": true,
+    "renderer": "miniapp",
+    "future_safe": true
+  },
+  {
+    "id": "multi_select",
+    "title_ru": "Выбери несколько",
+    "category": "interactive",
+    "input_modes": [
+      "tap"
+    ],
+    "description_ru": "Выбор нескольких объектов.",
+    "implemented_now": true,
+    "renderer": "miniapp",
+    "future_safe": true
+  },
+  {
+    "id": "tap_sound",
+    "title_ru": "Нажми и послушай",
+    "category": "interactive",
+    "input_modes": [
+      "tap",
+      "audio"
+    ],
+    "description_ru": "Кликабельные зоны на исходном слайде.",
+    "implemented_now": true,
+    "renderer": "miniapp",
+    "future_safe": true
+  },
+  {
+    "id": "listen_choose",
+    "title_ru": "Послушай и выбери",
+    "category": "interactive",
+    "input_modes": [
+      "audio",
+      "tap"
+    ],
+    "description_ru": "Выбор буквы/слова/картинки на слух.",
+    "implemented_now": true,
+    "renderer": "miniapp",
+    "future_safe": true
+  },
+  {
+    "id": "drag_drop",
+    "title_ru": "Перетаскивание",
+    "category": "interactive",
+    "input_modes": [
+      "drag",
+      "tap"
+    ],
+    "description_ru": "Универсальное drag-and-drop.",
+    "implemented_now": true,
+    "renderer": "miniapp",
+    "future_safe": true
+  },
+  {
+    "id": "matching",
+    "title_ru": "Сопоставление",
+    "category": "interactive",
+    "input_modes": [
+      "tap",
+      "drag"
+    ],
+    "description_ru": "Сопоставить пары.",
+    "implemented_now": true,
+    "renderer": "miniapp",
+    "future_safe": true
+  },
+  {
+    "id": "match_visible",
+    "title_ru": "Пары без переворота",
+    "category": "interactive",
+    "input_modes": [
+      "tap"
+    ],
+    "description_ru": "Memory-подобное задание с открытыми карточками.",
+    "implemented_now": true,
+    "renderer": "miniapp",
+    "future_safe": true
+  },
+  {
+    "id": "memory",
+    "title_ru": "Memory",
+    "category": "game",
+    "input_modes": [
+      "tap"
+    ],
+    "description_ru": "Переворачивать карточки и находить пары.",
+    "implemented_now": true,
+    "renderer": "miniapp",
+    "future_safe": true
+  },
+  {
+    "id": "sorting",
+    "title_ru": "Сортировка",
+    "category": "interactive",
+    "input_modes": [
+      "drag",
+      "tap"
+    ],
+    "description_ru": "Разложить элементы по категориям.",
+    "implemented_now": true,
+    "renderer": "miniapp",
+    "future_safe": true
+  },
+  {
+    "id": "sequence",
+    "title_ru": "Последовательность",
+    "category": "interactive",
+    "input_modes": [
+      "tap",
+      "drag"
+    ],
+    "description_ru": "Восстановить порядок событий.",
+    "implemented_now": true,
+    "renderer": "miniapp",
+    "future_safe": true
+  },
+  {
+    "id": "word_builder",
+    "title_ru": "Собери слово",
+    "category": "reading",
+    "input_modes": [
+      "tap",
+      "drag"
+    ],
+    "description_ru": "Собрать слово из букв.",
+    "implemented_now": true,
+    "renderer": "miniapp",
+    "future_safe": true
+  },
+  {
+    "id": "syllable_builder",
+    "title_ru": "Собери из слогов",
+    "category": "reading",
+    "input_modes": [
+      "tap",
+      "drag"
+    ],
+    "description_ru": "Собрать слово из слогов.",
+    "implemented_now": true,
+    "renderer": "miniapp",
+    "future_safe": true
+  },
+  {
+    "id": "sentence_builder",
+    "title_ru": "Собери предложение",
+    "category": "reading",
+    "input_modes": [
+      "tap",
+      "drag"
+    ],
+    "description_ru": "Собрать предложение из слов.",
+    "implemented_now": true,
+    "renderer": "miniapp",
+    "future_safe": true
+  },
+  {
+    "id": "fill_gap",
+    "title_ru": "Вставь пропуск",
+    "category": "reading",
+    "input_modes": [
+      "tap",
+      "drag",
+      "text"
+    ],
+    "description_ru": "Вставить букву, слог или слово.",
+    "implemented_now": true,
+    "renderer": "miniapp",
+    "future_safe": true
+  },
+  {
+    "id": "odd_one_out",
+    "title_ru": "Найди лишнее",
+    "category": "interactive",
+    "input_modes": [
+      "tap"
+    ],
+    "description_ru": "Найти лишний объект/слово.",
+    "implemented_now": true,
+    "renderer": "miniapp",
+    "future_safe": true
+  },
+  {
+    "id": "sound_position",
+    "title_ru": "Где звук?",
+    "category": "reading",
+    "input_modes": [
+      "tap",
+      "audio"
+    ],
+    "description_ru": "Начало, середина или конец слова.",
+    "implemented_now": true,
+    "renderer": "miniapp",
+    "future_safe": true
+  },
+  {
+    "id": "syllable_split",
+    "title_ru": "Раздели на слоги",
+    "category": "reading",
+    "input_modes": [
+      "tap",
+      "drag"
+    ],
+    "description_ru": "Деление слова на слоги.",
+    "implemented_now": true,
+    "renderer": "miniapp",
+    "future_safe": true
+  },
+  {
+    "id": "find_in_text",
+    "title_ru": "Найди в тексте",
+    "category": "reading",
+    "input_modes": [
+      "tap"
+    ],
+    "description_ru": "Найти букву, слово или фрагмент.",
+    "implemented_now": true,
+    "renderer": "miniapp",
+    "future_safe": true
+  },
+  {
+    "id": "connect_lines",
+    "title_ru": "Соедини линиями",
+    "category": "writing",
+    "input_modes": [
+      "draw"
+    ],
+    "description_ru": "Соединить элементы линиями.",
+    "implemented_now": true,
+    "renderer": "miniapp",
+    "future_safe": true
+  },
+  {
+    "id": "trace",
+    "title_ru": "Обводка",
+    "category": "writing",
+    "input_modes": [
+      "draw"
+    ],
+    "description_ru": "Обводить линии и буквы пальцем/стилусом.",
+    "implemented_now": true,
+    "renderer": "miniapp",
+    "future_safe": true
+  },
+  {
+    "id": "handwriting_screen",
+    "title_ru": "Письмо на экране",
+    "category": "writing",
+    "input_modes": [
+      "draw"
+    ],
+    "description_ru": "Писать прямо на странице.",
+    "implemented_now": true,
+    "renderer": "miniapp",
+    "future_safe": true
+  },
+  {
+    "id": "draw",
+    "title_ru": "Рисование",
+    "category": "creative",
+    "input_modes": [
+      "draw"
+    ],
+    "description_ru": "Свободное рисование.",
+    "implemented_now": true,
+    "renderer": "miniapp",
+    "future_safe": true
+  },
+  {
+    "id": "coloring",
+    "title_ru": "Раскрашивание",
+    "category": "creative",
+    "input_modes": [
+      "draw"
+    ],
+    "description_ru": "Раскрашивание по условию.",
+    "implemented_now": true,
+    "renderer": "miniapp",
+    "future_safe": true
+  },
+  {
+    "id": "maze",
+    "title_ru": "Лабиринт",
+    "category": "game",
+    "input_modes": [
+      "draw"
+    ],
+    "description_ru": "Провести героя по маршруту.",
+    "implemented_now": true,
+    "renderer": "miniapp",
+    "future_safe": true
+  },
+  {
+    "id": "dictation",
+    "title_ru": "Мини-диктант",
+    "category": "writing",
+    "input_modes": [
+      "audio",
+      "draw"
+    ],
+    "description_ru": "Бот диктует, ребёнок пишет.",
+    "implemented_now": true,
+    "renderer": "miniapp",
+    "future_safe": true
+  },
+  {
+    "id": "video",
+    "title_ru": "Видео / мультфильм",
+    "category": "media",
+    "input_modes": [
+      "video"
+    ],
+    "description_ru": "Просмотр видео.",
+    "implemented_now": true,
+    "renderer": "telegram",
+    "future_safe": true
+  },
+  {
+    "id": "video_pause_question",
+    "title_ru": "Видео с вопросами",
+    "category": "media",
+    "input_modes": [
+      "video",
+      "voice",
+      "tap"
+    ],
+    "description_ru": "Остановки для вопроса или прогноза.",
+    "implemented_now": false,
+    "renderer": "generic",
+    "future_safe": true
+  },
+  {
+    "id": "interactive_scene",
+    "title_ru": "Интерактивная сцена",
+    "category": "interactive",
+    "input_modes": [
+      "tap",
+      "drag",
+      "audio"
+    ],
+    "description_ru": "Несколько активных объектов на одном слайде.",
+    "implemented_now": false,
+    "renderer": "generic",
+    "future_safe": true
+  },
+  {
+    "id": "real_world_find",
+    "title_ru": "Найди вокруг себя",
+    "category": "creative",
+    "input_modes": [
+      "camera",
+      "voice"
+    ],
+    "description_ru": "Найти реальный предмет и показать/описать.",
+    "implemented_now": false,
+    "renderer": "generic",
+    "future_safe": true
+  },
+  {
+    "id": "photo_task",
+    "title_ru": "Фотозадание",
+    "category": "creative",
+    "input_modes": [
+      "camera"
+    ],
+    "description_ru": "Сделать фото по заданию.",
+    "implemented_now": false,
+    "renderer": "generic",
+    "future_safe": true
+  },
+  {
+    "id": "physical_action",
+    "title_ru": "Двигательная пауза",
+    "category": "creative",
+    "input_modes": [
+      "physical"
+    ],
+    "description_ru": "Хлопок, жест или короткое движение без обязательной камеры.",
+    "implemented_now": true,
+    "renderer": "telegram",
+    "future_safe": true
+  },
+  {
+    "id": "mood_choice",
+    "title_ru": "Настроение",
+    "category": "social",
+    "input_modes": [
+      "tap"
+    ],
+    "description_ru": "Выбрать эмоциональную реакцию после занятия.",
+    "implemented_now": true,
+    "renderer": "miniapp",
+    "future_safe": true
+  }
+]

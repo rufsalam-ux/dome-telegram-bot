@@ -1,0 +1,19 @@
+name: dome_v21_interactive
+services:
+  bot:
+    container_name: dome-bot
+    build: .
+    env_file: .env
+    environment:
+      PYTHONUNBUFFERED: "1"
+      DOME_BUILD_VERSION: "21"
+    volumes:
+      - ./storage:/app/storage
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health')\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3

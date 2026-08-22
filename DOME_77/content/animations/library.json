@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "architecture": "provider-neutral-rig-motion",
+  "views": ["front", "three_quarter_left", "three_quarter_right", "side_left", "side_right", "back"],
+  "primitive_actions": {
+    "idle": {"parameters": ["view", "emotion", "duration"]},
+    "walk": {"parameters": ["view", "direction", "speed", "distance", "duration"]},
+    "run": {"parameters": ["view", "direction", "speed", "distance", "duration"]},
+    "turn": {"parameters": ["from_view", "to_view", "duration"]},
+    "look_at": {"parameters": ["target", "duration"]},
+    "talk": {"parameters": ["view", "emotion", "lip_sync", "duration"]},
+    "wave": {"parameters": ["hand", "view", "duration"]},
+    "point": {"parameters": ["hand", "target", "view", "duration"]},
+    "jump": {"parameters": ["height", "energy", "duration"]},
+    "sit": {"parameters": ["target", "view", "duration"]},
+    "stand_up": {"parameters": ["view", "duration"]},
+    "pick_up": {"parameters": ["object", "hand", "duration"]},
+    "put_down": {"parameters": ["object", "target", "duration"]},
+    "dance": {"parameters": ["style", "energy", "turns", "view", "duration"]},
+    "crawl": {"parameters": ["direction", "view", "duration"]},
+    "bend": {"parameters": ["amount", "duration"]},
+    "emotion": {"parameters": ["name", "intensity", "duration"]}
+  },
+  "composition_rule": "Unknown movements should first be decomposed into primitives. A newly learned reusable preset may then be registered without changing lesson code.",
+  "fallback": "If no rig/provider can perform a command, v48 PNG motion remains available so lesson completion is not blocked."
+}

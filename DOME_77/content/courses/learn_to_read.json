@@ -1,0 +1,22 @@
+{
+  "schema_version": "1.0",
+  "course_id": "learn_to_read",
+  "title": "Читайка",
+  "description": "Буквы, звуки, слоги, письмо, обводка и первые шаги в чтении.",
+  "active": false,
+  "lesson_ids": [
+    "chitayka_001_auo"
+  ],
+  "metadata": {
+    "progression": "sequential",
+    "pilot_ready": true,
+    "first_real_lesson": "Читайка 1. Буквы А, У, О",
+    "pedagogy_profile": "early_reading",
+    "target_duration_minutes": 35,
+    "duration_range_minutes": [
+      30,
+      40
+    ],
+    "temporarily_disabled": true
+  }
+}

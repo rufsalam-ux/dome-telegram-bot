@@ -1,0 +1,42 @@
+
+<!doctype html>
+<html lang="ru"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>DOME Games</title>
+<style>
+body{margin:0;font-family:Arial,sans-serif;background:linear-gradient(180deg,#f5fbff,#fff6fb);color:#16324f}
+.wrap{max-width:760px;margin:auto;padding:16px}
+.hero{background:linear-gradient(135deg,#8fd3ff,#ffd1ef 55%,#fff59f);border-radius:26px;padding:18px;box-shadow:0 10px 30px rgba(0,0,0,.08)}
+.hero h1{margin:0 0 8px;font-size:30px}.hero p{margin:0;font-size:16px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;margin-top:18px}
+.card{background:white;border-radius:22px;padding:14px;box-shadow:0 8px 24px rgba(0,0,0,.08);border:2px solid #eef4ff}
+.card .pic{height:110px;border-radius:18px;display:flex;align-items:center;justify-content:center;font-size:52px;font-weight:700;color:#17324f;margin-bottom:10px}
+.pic.memory{background:linear-gradient(135deg,#ffeb8a,#ffa4d6)} .pic.find{background:linear-gradient(135deg,#a8ffcf,#8fd3ff)} .pic.quick{background:linear-gradient(135deg,#ffd1a8,#fff59f)} .pic.word{background:linear-gradient(135deg,#c6b2ff,#ffd7f2)} .pic.bingo{background:linear-gradient(135deg,#8ff1ff,#b6ffb0)}
+.card h3{margin:6px 0;font-size:20px}.card p{margin:6px 0 12px;font-size:14px;line-height:1.4;color:#4a6076}
+.btn{width:100%;border:0;border-radius:14px;padding:12px;font-size:16px;font-weight:700;background:#296dff;color:white}
+.game{display:none;background:white;border-radius:24px;padding:16px;box-shadow:0 8px 24px rgba(0,0,0,.08);margin-top:18px}
+.game.active{display:block}.back{background:#edf3ff;color:#17324f;margin-bottom:10px}.tiles{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:14px}.tile{border-radius:16px;padding:18px 6px;text-align:center;background:#f4f8ff;font-size:28px;font-weight:700;border:2px solid #dbe7ff}.tile.done{background:#d6ffe1}.choices{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-top:12px}.choice{background:#fff8d9;border:2px solid #ffe58a;border-radius:16px;padding:14px;font-size:18px;font-weight:700}.status{margin-top:12px;font-size:16px;font-weight:700}
+@media(max-width:420px){.tiles{grid-template-columns:repeat(3,1fr)}}
+</style></head>
+<body><div class="wrap">
+<div class="hero"><h1>🎮 Игры DOME</h1><p>Яркие мини-игры вне уроков: слова, чтение, внимание и аудирование.</p></div>
+<div id="catalog" class="grid">
+  <div class="card"><div class="pic memory">🃏</div><h3>Memory</h3><p>Открывай пары и запоминай слова.</p><button class="btn" onclick="openGame('memory')">Открыть</button></div>
+  <div class="card"><div class="pic find">🔎</div><h3>Найди предмет</h3><p>Найди нужную картинку по слову.</p><button class="btn" onclick="openGame('find')">Открыть</button></div>
+  <div class="card"><div class="pic quick">⚡</div><h3>Быстрый выбор</h3><p>Нажми на правильный ответ быстрее всех.</p><button class="btn" onclick="openGame('quick')">Открыть</button></div>
+  <div class="card"><div class="pic word">🔤</div><h3>Собери слово</h3><p>Составь слово из букв в правильном порядке.</p><button class="btn" onclick="openGame('word')">Открыть</button></div>
+  <div class="card"><div class="pic bingo">🎯</div><h3>Bingo mini</h3><p>Услышь слово и отметь нужную карточку.</p><button class="btn" onclick="openGame('bingo')">Открыть</button></div>
+</div>
+<div id="game" class="game"></div>
+</div>
+<script>
+const G={memory:{title:'🃏 Memory',render(){const d=['🐱','🐶','🐱','🐶','🌼','🌼','🧥','🧥'].sort(()=>Math.random()-.5); return `<button class="btn back" onclick="backToCatalog()">← К списку игр</button><h2>${this.title}</h2><p>Найди пары.</p><div class="tiles">${d.map((x,i)=>`<button class="tile" data-i="${i}" data-v="${x}" onclick="flip(this)">❓</button>`).join('')}</div><div class="status" id="status">Открыто пар: 0</div>`;}},find:{title:'🔎 Найди предмет',render(){return `<button class="btn back" onclick="backToCatalog()">← К списку игр</button><h2>${this.title}</h2><p>Найди: <b>flower</b></p><div class="choices">${['phone','flower','jacket','telescope'].map(x=>`<button class="choice" onclick="pickFind('${x}')">${x}</button>`).join('')}</div><div class="status" id="status"></div>`;}},quick:{title:'⚡ Быстрый выбор',render(){return `<button class="btn back" onclick="backToCatalog()">← К списку игр</button><h2>${this.title}</h2><p>Выбери правильный перевод слова <b>cat</b>.</p><div class="choices">${['кошка','собака','цветок','куртка'].map(x=>`<button class="choice" onclick="pickQuick('${x}')">${x}</button>`).join('')}</div><div class="status" id="status"></div>`;}},word:{title:'🔤 Собери слово',render(){return `<button class="btn back" onclick="backToCatalog()">← К списку игр</button><h2>${this.title}</h2><p>Собери слово: <b>fish</b></p><div class="choices">${['f','s','i','h'].map(x=>`<button class="choice" onclick="pickLetter('${x}')">${x}</button>`).join('')}</div><div class="status" id="status">Твой ответ: <span id="wordAns"></span></div>`;}},bingo:{title:'🎯 Bingo mini',render(){return `<button class="btn back" onclick="backToCatalog()">← К списку игр</button><h2>${this.title}</h2><p>Нажми на слово: <b>camera</b></p><div class="choices">${['camera','flower','bear','phone'].map(x=>`<button class="choice" onclick="pickBingo('${x}')">${x}</button>`).join('')}</div><div class="status" id="status"></div>`;}}};
+function openGame(id){document.getElementById('catalog').style.display='none';const box=document.getElementById('game');box.classList.add('active');box.innerHTML=G[id].render();window._open=[];window._done=0;window._picked='';}
+function backToCatalog(){document.getElementById('catalog').style.display='grid';const box=document.getElementById('game');box.classList.remove('active');box.innerHTML='';}
+function setStatus(t){const el=document.getElementById('status'); if(el) el.textContent=t;}
+function flip(btn){if(btn.classList.contains('done')||btn.textContent!=='❓') return; btn.textContent=btn.dataset.v; _open.push(btn); if(_open.length===2){ if(_open[0].dataset.v===_open[1].dataset.v){_open.forEach(x=>x.classList.add('done')); _done++; setStatus('Открыто пар: '+_done); _open=[]; } else {const tmp=[..._open]; _open=[]; setTimeout(()=>tmp.forEach(x=>x.textContent='❓'),600);} }}
+function pickFind(x){setStatus(x==='flower'?'Верно! 🌟':'Почти. Попробуй ещё раз.');}
+function pickQuick(x){setStatus(x==='кошка'?'Верно! 🌟':'Неправильно, попробуй ещё.');}
+function pickLetter(x){window._picked=(window._picked||'')+x; document.getElementById('wordAns').textContent=window._picked; if(window._picked.length===4){setStatus(window._picked==='fish'?'Верно! 🌟':'Почти. Нажми назад и попробуй ещё раз.');}}
+function pickBingo(x){setStatus(x==='camera'?'Отлично! 🌟':'Пока нет, попробуй снова.');}
+</script></body></html>

@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "animations": {
+    "stand_front_talk": {
+      "mirror": false,
+      "rotation": 0.012,
+      "walk_bob": 0.0
+    },
+    "stand_front_listen": {
+      "mirror": false,
+      "rotation": 0.006,
+      "walk_bob": 0.0
+    },
+    "walk_from_left": {
+      "mirror": false,
+      "rotation": 0.016,
+      "walk_bob": 4.0
+    },
+    "walk_from_right": {
+      "mirror": true,
+      "rotation": 0.016,
+      "walk_bob": 4.0
+    },
+    "walk_right_to_left_talk": {
+      "mirror": true,
+      "rotation": 0.016,
+      "walk_bob": 4.0
+    },
+    "walk_left_to_right_talk": {
+      "mirror": false,
+      "rotation": 0.016,
+      "walk_bob": 4.0
+    },
+    "wave": {
+      "mirror": false,
+      "rotation": 0.02,
+      "walk_bob": 0.0
+    },
+    "happy_jump": {
+      "mirror": false,
+      "rotation": 0.025,
+      "walk_bob": 0.0
+    }
+  }
+}

@@ -1,0 +1,62 @@
+[
+  {
+    "id": "jacket",
+    "label_ru": "куртка",
+    "label_en": "jacket",
+    "useful": true
+  },
+  {
+    "id": "binoculars",
+    "label_ru": "бинокль",
+    "label_en": "binoculars",
+    "useful": true
+  },
+  {
+    "id": "water",
+    "label_ru": "бутылка воды",
+    "label_en": "water bottle",
+    "useful": true
+  },
+  {
+    "id": "compass",
+    "label_ru": "компас",
+    "label_en": "compass",
+    "useful": true
+  },
+  {
+    "id": "teddy",
+    "label_ru": "мишка",
+    "label_en": "teddy bear",
+    "useful": false
+  },
+  {
+    "id": "camera",
+    "label_ru": "фотоаппарат",
+    "label_en": "camera",
+    "useful": true
+  },
+  {
+    "id": "telescope",
+    "label_ru": "телескоп",
+    "label_en": "telescope",
+    "useful": true
+  },
+  {
+    "id": "fish",
+    "label_ru": "рыба",
+    "label_en": "fish",
+    "useful": false
+  },
+  {
+    "id": "notebook",
+    "label_ru": "блокнот",
+    "label_en": "notebook",
+    "useful": true
+  },
+  {
+    "id": "sunglasses",
+    "label_ru": "солнцезащитные очки",
+    "label_en": "sunglasses",
+    "useful": true
+  }
+]

@@ -1,0 +1,9 @@
+{
+  "schema_version": "1.0",
+  "terms_version": "draft-1",
+  "privacy_version": "draft-1",
+  "parent_consent_version": "draft-1",
+  "media_consent_version": "draft-1",
+  "billing_version": "draft-1",
+  "require_reconsent_on_material_change": true
+}

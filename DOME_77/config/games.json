@@ -1,0 +1,91 @@
+{
+  "schema_version": "1.0",
+  "menu_title": "Игры DOME",
+  "design": "bright_light_saturated",
+  "games": [
+    {
+      "id": "memory",
+      "title": "Memory",
+      "type": "memory",
+      "status": "ready",
+      "skills": [
+        "vocabulary",
+        "attention"
+      ]
+    },
+    {
+      "id": "find_item",
+      "title": "Найди предмет",
+      "type": "choice",
+      "status": "ready",
+      "skills": [
+        "word-recognition",
+        "listening"
+      ]
+    },
+    {
+      "id": "quick_choice",
+      "title": "Быстрый выбор",
+      "type": "choice",
+      "status": "ready",
+      "skills": [
+        "translation",
+        "speed"
+      ]
+    },
+    {
+      "id": "word_builder",
+      "title": "Собери слово",
+      "type": "spelling",
+      "status": "ready",
+      "skills": [
+        "reading",
+        "spelling"
+      ]
+    },
+    {
+      "id": "bingo_mini",
+      "title": "Bingo mini",
+      "type": "bingo",
+      "status": "ready",
+      "skills": [
+        "listening",
+        "vocabulary"
+      ]
+    },
+    {
+      "id": "odd_one_out",
+      "title": "Лишний предмет",
+      "type": "logic",
+      "status": "planned",
+      "skills": [
+        "categorization"
+      ]
+    },
+    {
+      "id": "what_disappeared",
+      "title": "Что исчезло?",
+      "type": "memory",
+      "status": "planned",
+      "skills": [
+        "memory",
+        "speaking"
+      ]
+    },
+    {
+      "id": "true_false",
+      "title": "Верно / неверно",
+      "type": "quiz",
+      "status": "planned",
+      "skills": [
+        "comprehension"
+      ]
+    }
+  ],
+  "weekly_budget_usd_per_user": 0.5,
+  "reuse_existing_language_version_first": true,
+  "cache_generated_game_versions": true,
+  "cache_tts_audio": true,
+  "stop_paid_generation_at_budget": true,
+  "paid_generation_soft_limit_usd": 0.4
+}

@@ -1,0 +1,146 @@
+{
+  "version": "v68",
+  "product": "DOME Russian language bot",
+  "courses": [
+    "conversation",
+    "learn_to_read",
+    "reading"
+  ],
+  "explicitly_excluded": [
+    "Proof of Learning"
+  ],
+  "lesson_access": {
+    "max_completed_runs": 2,
+    "expires_after_months": 10,
+    "cartoon_generation_runs": [
+      1
+    ]
+  },
+  "subscription": {
+    "test_mode": true,
+    "currency": "EUR",
+    "plans": [
+      {
+        "lessons_per_week": 1,
+        "monthly_price": 39
+      },
+      {
+        "lessons_per_week": 2,
+        "monthly_price": 79
+      },
+      {
+        "lessons_per_week": 3,
+        "monthly_price": 109
+      },
+      {
+        "lessons_per_week": 4,
+        "monthly_price": 139
+      }
+    ]
+  },
+  "duration": {
+    "target_minutes": 35,
+    "range_minutes": [
+      30,
+      40
+    ],
+    "adaptive_pacing": true
+  },
+  "course_profiles": {
+    "conversation": {
+      "focus": [
+        "speech",
+        "dialogue",
+        "roleplay",
+        "character",
+        "cartoon"
+      ],
+      "cartoon_first_run_only": true
+    },
+    "learn_to_read": {
+      "focus": [
+        "letters",
+        "sounds",
+        "syllables",
+        "trace",
+        "handwriting",
+        "short_reading"
+      ],
+      "assume_fluent_reader": false
+    },
+    "reading": {
+      "focus": [
+        "read_aloud",
+        "read_roles",
+        "comprehension",
+        "discussion",
+        "retelling"
+      ],
+      "assume_reader": true,
+      "adaptive_role_share": true
+    }
+  },
+  "activity_library": [
+    "speak",
+    "repeat",
+    "dialogue",
+    "roleplay",
+    "read_aloud",
+    "read_roles",
+    "echo_reading",
+    "shared_reading",
+    "comprehension",
+    "retell",
+    "continue_story",
+    "tap_select",
+    "multi_select",
+    "tap_sound",
+    "listen_choose",
+    "drag_drop",
+    "matching",
+    "match_visible",
+    "sorting",
+    "sequence",
+    "memory",
+    "word_builder",
+    "syllable_builder",
+    "sentence_builder",
+    "fill_gap",
+    "odd_one_out",
+    "sound_position",
+    "syllable_split",
+    "find_in_text",
+    "connect_lines",
+    "trace",
+    "handwriting_screen",
+    "draw",
+    "coloring",
+    "maze",
+    "dictation",
+    "video",
+    "video_pause_question",
+    "interactive_scene",
+    "real_world_find",
+    "photo_task",
+    "physical_action",
+    "mood_choice"
+  ],
+  "import_flow": [
+    "lesson PDF/PPTX",
+    "teacher instruction DOCX/PDF",
+    "homework PDF/PPTX",
+    "optional video/links",
+    "AI slide analysis",
+    "admin review map",
+    "publish"
+  ],
+  "second_run": "same learning goals, shuffled variants and extra practice on difficult places; never count resume/reconnect as a new run",
+  "audit_fixes": [
+    "persistent_storage_alias",
+    "slide_config_editor",
+    "homework_ai_authoring",
+    "role_reading_runtime",
+    "photo_real_world_runtime",
+    "interactive_type_fallbacks"
+  ]
+}

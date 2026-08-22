@@ -1,0 +1,28 @@
+{
+  "schema_version": "1.0",
+  "enabled": true,
+  "name_usage_probability": 0.22,
+  "avoid_echo_if_good": true,
+  "good_enough_semantic_threshold": 0.62,
+  "good_enough_max_grammar_errors": 2,
+  "good_enough_max_pronunciation_errors": 2,
+  "correction_style": "gentle",
+  "max_corrections": 1,
+  "simplify_after_corrections": 1,
+  "sometimes_accept_imperfect": true,
+  "live_adaptation": true,
+  "difficulty_floor": 0.05,
+  "difficulty_ceiling": 0.95,
+  "extra_followups_if_strong": 2,
+  "extra_followup_threshold": 0.68,
+  "minimal_task_threshold": 0.26,
+  "human_dialogue_phrases": true,
+  "offer_real_help": true,
+  "help_phrases_ru": [
+    "Как ты думаешь, {name}?",
+    "{name}, давай подумаем вместе!",
+    "Хочешь, я помогу?",
+    "У меня есть вариант, хочешь скажу?",
+    "Давай решим это вместе, я с тобой."
+  ]
+}

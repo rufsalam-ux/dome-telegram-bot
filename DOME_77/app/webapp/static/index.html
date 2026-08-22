@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>DOME — Собери чемодан</title>
+<style>
+:root{font-family:Arial,sans-serif;color:#172033;background:#f6f7f3}*{box-sizing:border-box}html,body{margin:0;overscroll-behavior:none;background:#f6f7f3}body{touch-action:pan-x}.wrap{max-width:720px;margin:auto;padding:10px 10px calc(20px + env(safe-area-inset-bottom))}.title{font-size:20px;font-weight:800;text-align:center;margin:2px 0 7px}.sub{font-size:14px;text-align:center;color:#526072;margin-bottom:8px}.board{background:white;border:1px solid #d8dde5;border-radius:18px;padding:10px;overflow:hidden}.suitcase-zone{position:relative;height:210px;border-radius:15px;background:linear-gradient(#eaf6ff,#f8fbfd);border:3px dashed #7ba5c9;display:flex;align-items:center;justify-content:center;touch-action:none}.suitcase-zone.active{background:#dff2ff;border-color:#1d78bd}.suitcase-img{width:min(78%,430px);height:190px;object-fit:contain;pointer-events:none}.packed-list{position:absolute;left:12%;right:12%;bottom:10px;display:flex;justify-content:center;flex-wrap:wrap;gap:5px;pointer-events:none}.packed-mini{width:42px;height:42px;object-fit:contain;background:#fff9;border-radius:8px}.items-label{margin:12px 0 7px;font-weight:800;text-align:center}.items{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;touch-action:none}.item{border:1px solid #d9dee6;background:white;border-radius:13px;padding:5px 3px 7px;text-align:center;touch-action:none;user-select:none;-webkit-user-select:none;cursor:grab}.item.dragging{position:fixed;z-index:1000;width:78px;pointer-events:none;opacity:.92;transform:scale(1.08)}.item.packed{opacity:.35;pointer-events:none}.item img{display:block;width:100%;height:66px;object-fit:contain;pointer-events:none}.item span{font-size:12px;font-weight:700;display:block;line-height:1.1}.feedback{min-height:44px;margin:9px 0 4px;text-align:center;font-size:16px;font-weight:700}.stars{text-align:center;min-height:28px;font-size:23px}.actions{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:9px}.btn{border:0;border-radius:13px;padding:13px 8px;font-size:16px;font-weight:800}.help{background:#e5eef9;color:#173654}.done{background:#198a43;color:white}.done:disabled{opacity:.42}.note{text-align:center;font-size:12px;color:#637083;margin:7px 0 0}@media(max-width:390px){.items{grid-template-columns:repeat(4,1fr);gap:5px}.item img{height:54px}.item span{font-size:11px}.suitcase-zone{height:185px}.suitcase-img{height:165px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="title" id="title">Собери чемодан</div>
+  <div class="sub" id="sub">Перетащи предметы снизу вверх в чемодан. Можно просто нажать на предмет.</div>
+  <div class="board">
+    <div class="suitcase-zone" id="dropzone" aria-label="Чемодан">
+      <img class="suitcase-img" src="./assets/suitcase/background.png" alt="Чемодан">
+      <div class="packed-list" id="packedList"></div>
+    </div>
+    <div class="items-label" id="itemsLabel">Что нужно взять в Исландию?</div>
+    <div class="items" id="items"></div>
+    <div class="feedback" id="feedback" aria-live="polite"></div>
+    <div class="stars" id="stars" aria-live="polite"></div>
+    <div class="actions">
+      <button class="btn help" id="help" type="button">🆘 Помощь</button>
+      <button class="btn done" id="done" type="button" disabled>Чемодан собран</button>
+    </div>
+    <p class="note" id="note">После этого бот попросит произнести обязательную фразу для мультфильма.</p>
+  </div>
+</div>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script>
+const tg=window.Telegram?.WebApp;if(tg){tg.ready();tg.expand();tg.disableVerticalSwipes?.();}
+document.documentElement.style.overscrollBehavior='none';
+document.body.style.overscrollBehavior='none';
+document.addEventListener('touchmove',e=>{if(e.target.closest('.item,.suitcase-zone'))e.preventDefault()},{passive:false});
+const q=new URLSearchParams(location.search),lang=q.get('lang')||'en',native=q.get('native')||'ru',level=q.get('level')||'PRE_A1';
+const names={
+ jacket:{ru:'куртка',en:'jacket',es:'chaqueta',de:'Jacke',fr:'veste',it:'giacca'},
+ binoculars:{ru:'бинокль',en:'binoculars',es:'prismáticos',de:'Fernglas',fr:'jumelles',it:'binocolo'},
+ water:{ru:'бутылка воды',en:'water bottle',es:'botella de agua',de:'Wasserflasche',fr:"bouteille d’eau",it:"bottiglia d’acqua"},
+ compass:{ru:'компас',en:'compass',es:'brújula',de:'Kompass',fr:'boussole',it:'bussola'},
+ teddy:{ru:'мишка',en:'teddy bear',es:'osito',de:'Teddybär',fr:'ours en peluche',it:'orsacchiotto'},
+ camera:{ru:'фотоаппарат',en:'camera',es:'cámara',de:'Kamera',fr:'appareil photo',it:'fotocamera'},
+ telescope:{ru:'телескоп',en:'telescope',es:'telescopio',de:'Teleskop',fr:'télescope',it:'telescopio'},
+ fish:{ru:'рыба',en:'fish',es:'pez',de:'Fisch',fr:'poisson',it:'pesce'},
+ notebook:{ru:'блокнот',en:'notebook',es:'cuaderno',de:'Notizbuch',fr:'carnet',it:'taccuino'},
+ sunglasses:{ru:'солнцезащитные очки',en:'sunglasses',es:'gafas de sol',de:'Sonnenbrille',fr:'lunettes de soleil',it:'occhiali da sole'}
+};
+const ids=['jacket','binoculars','water','compass','teddy','camera','telescope','fish','notebook','sunglasses'];
+const useful=new Set(['jacket','binoculars','water','compass','camera','telescope','notebook','sunglasses']);
+const text={ru:{sub:'Собери чемодан для Исландии: выбери только подходящие вещи.',label:'Что нужно взять в Исландию?',help:'Подумай о прохладной и ветреной погоде.',done:'Проверить чемодан',empty:'Выбери хотя бы один предмет.',packed:'Проверяем!'},en:{sub:'Pack for Iceland: choose only suitable items.',label:'What should we take to Iceland?',help:'Think about cool and windy weather.',done:'Check suitcase',empty:'Choose at least one item.',packed:'Checking!'}};
+const ui=text[native]||text.ru;document.getElementById('sub').textContent=ui.sub;document.getElementById('itemsLabel').textContent=ui.label;document.getElementById('help').textContent='🆘 '+(native==='ru'?'Помощь':'Help');document.getElementById('done').textContent=ui.done;
+const itemsEl=document.getElementById('items'),dz=document.getElementById('dropzone'),packedList=document.getElementById('packedList'),feedback=document.getElementById('feedback'),stars=document.getElementById('stars'),done=document.getElementById('done');let chosen=[];
+function label(id,l=lang){return names[id]?.[l]||names[id]?.en||id}
+function speak(v){try{speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(v);u.lang=({ru:'ru-RU',en:'en-US',es:'es-ES',de:'de-DE',fr:'fr-FR'})[lang]||'en-US';u.rate=.9;u.pitch=1.08;speechSynthesis.speak(u)}catch(e){}}
+function render(){packedList.innerHTML='';chosen.forEach(id=>{const im=document.createElement('img');im.className='packed-mini';im.src='./assets/suitcase/'+id+'.png';im.alt=label(id);packedList.append(im)});stars.textContent='⭐'.repeat(chosen.filter(id=>useful.has(id)).length);done.disabled=!chosen.length}
+function pack(id,el){if(chosen.includes(id))return;chosen.push(id);el.classList.add('packed');feedback.textContent='⭐ '+label(id,lang);speak(label(id,lang));render()}
+function setupDrag(card,id){let drag=null,moved=false;card.addEventListener('pointerdown',e=>{e.preventDefault();moved=false;drag=card.cloneNode(true);drag.className='item dragging';document.body.append(drag);drag.style.left=(e.clientX-39)+'px';drag.style.top=(e.clientY-39)+'px';card.setPointerCapture(e.pointerId);dz.classList.add('active')});card.addEventListener('pointermove',e=>{if(!drag)return;e.preventDefault();moved=true;drag.style.left=(e.clientX-39)+'px';drag.style.top=(e.clientY-39)+'px'});card.addEventListener('pointerup',e=>{if(!drag)return;e.preventDefault();const r=dz.getBoundingClientRect(),inside=e.clientX>=r.left&&e.clientX<=r.right&&e.clientY>=r.top&&e.clientY<=r.bottom;drag.remove();drag=null;dz.classList.remove('active');if(inside||!moved)pack(id,card)});card.addEventListener('pointercancel',()=>{drag?.remove();drag=null;dz.classList.remove('active')})}
+ids.forEach(id=>{const card=document.createElement('div');card.className='item';card.innerHTML=`<img src="./assets/suitcase/${id}.png" alt="${label(id)}"><span>${label(id)}</span>`;itemsEl.append(card);setupDrag(card,id)});
+document.getElementById('help').addEventListener('click',()=>{feedback.textContent=ui.help;dz.classList.add('active');setTimeout(()=>dz.classList.remove('active'),1200);speak(lang==='en'?'Drag an item into the suitcase':'Перетащи предмет в чемодан')});
+done.addEventListener('click',()=>{if(!chosen.length){feedback.textContent=ui.empty;return}feedback.textContent=ui.packed+' 🎉';const payload={type:'suitcase',selected:chosen,selected_labels:chosen.map(id=>label(id,lang)),useful_selected:chosen.filter(id=>useful.has(id)),score:chosen.filter(id=>useful.has(id)).length/useful.size,correct:chosen.filter(id=>useful.has(id)),incorrect:chosen.filter(id=>!useful.has(id)),country:'Iceland',level,slide:'slide_24'};setTimeout(()=>{if(tg){feedback.textContent=(native==='ru'?'Отправляю результат боту…':'Sending result to the bot…');tg.sendData(JSON.stringify(payload));setTimeout(()=>tg.close(),350)}else{feedback.textContent=JSON.stringify(payload)}},500)});
+render();
+</script>
+</body>
+</html>
