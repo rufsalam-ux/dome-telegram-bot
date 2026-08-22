@@ -12,6 +12,7 @@ from app.services.lesson_loader import validate_lesson_revision
 from app.services.lesson_reminders import due_now, mark_sent
 from app.db.session import SessionLocal
 from app.db.models import Child, Parent, Subscription
+from app.services.standalone_demo_access import backfill_free_demo_entitlements
 from sqlalchemy import select
 from zoneinfo import ZoneInfo
 
@@ -69,6 +70,8 @@ async def main():
     log.info('DOME v75 CONVERSATION ONLY SAFE MODE')
     if not settings.bot_token: raise RuntimeError('BOT_TOKEN is missing in .env')
     await init_db(); log.info('Database ready and migrations applied')
+    free_demo_created=await backfill_free_demo_entitlements()
+    log.info('Standalone free demo entitlements created: %s',free_demo_created)
     orders = validate_lesson_revision('demo_001')
     log.info('Legacy conversation lesson validated: %s runtime slides', len(orders))
     web_runner=await start_webapp_server(); log.info('Mini App server started on port %s',settings.effective_webapp_port)

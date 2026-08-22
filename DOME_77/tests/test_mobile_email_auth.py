@@ -8,7 +8,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.config import Settings, settings
-from app.db.models import Base, Child, Parent
+from app.db.models import Base, Child, LessonEntitlement, Parent
 from app.db.session import _add_columns
 from app.services import email_reports
 from app.services.email_reports import _deliver, _message
@@ -277,10 +277,19 @@ async def test_mobile_register_resend_verify_and_login_flow(monkeypatch):
         async with sessions() as db:
             parent = await db.scalar(select(Parent))
             child = await db.scalar(select(Child))
+            entitlement = await db.scalar(select(LessonEntitlement))
             assert parent.email_verified is True
             assert parent.email_verification_code_hash is None
             assert parent.email_verification_expires_at is None
             assert child is not None and child.parent_id == parent.id
+            assert entitlement is not None
+            assert entitlement.child_id == child.id
+            assert entitlement.lesson_id == "demo_001"
+            assert entitlement.course_id == "conversation"
+            assert entitlement.source == "FREE_DEMO"
+            assert entitlement.completed_runs == 0
+            assert entitlement.max_completed_runs == 2
+            assert entitlement.expires_at > entitlement.unlocked_at
 
         response = await client.post("/api/mobile/login", json={
             "email": "PARENT@EXAMPLE.COM",

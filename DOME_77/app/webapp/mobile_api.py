@@ -6,7 +6,7 @@ from aiohttp import web
 from sqlalchemy import select, func
 from app.core.config import settings
 from app.db.session import SessionLocal
-from app.db.models import Parent,Child,Character,LessonSession,VoiceAttempt,InteractiveResult,HomeworkAssignment,LessonEntitlement
+from app.db.models import Parent,Child,Character,LessonSession,VoiceAttempt,InteractiveResult,HomeworkAssignment
 from app.services.mobile_tokens import issue_session_token,verify_session_token,signed_media_token,verify_media_token
 from app.services.lesson_loader import load_lesson
 from app.services.lesson_access import can_start,complete_session_once
@@ -18,6 +18,7 @@ from app.services.free_topic_cartoon import build_free_topic_cartoon
 from app.services.email_reports import send_homework_email,_send_with_attachment_sync,send_verification_email,send_password_reset_email
 from app.services.ai_speech import synthesize_speech, translate_text
 from app.services.password_auth import hash_password, hash_verification_code, verify_password, verify_verification_code
+from app.services.standalone_demo_access import ensure_free_demo_entitlement
 
 log=logging.getLogger('dome.mobile_api')
 MOBILE_LANGUAGES={'ru','en','es','de','fr','it','pt','tr','ar','zh'}
@@ -72,7 +73,9 @@ async def create_child(request:web.Request)->web.Response:
         count=await db.scalar(select(func.count(Child.id)).where(Child.parent_id==p.id))
         if int(count or 0)>=5:raise web.HTTPConflict(text=json.dumps({'error':'Можно добавить не более 5 детей'}),content_type='application/json')
         child=Child(parent_id=p.id,display_name=name,age_years=age,target_language=target,native_language=native)
-        db.add(child);await db.commit();await db.refresh(child)
+        db.add(child);await db.flush()
+        await ensure_free_demo_entitlement(db,parent_id=p.id,child_id=child.id)
+        await db.commit();await db.refresh(child)
     return web.json_response(_child_json(request,child),status=201)
 
 async def lesson(request:web.Request)->web.Response:
@@ -128,10 +131,6 @@ async def hero_upload(request:web.Request)->web.Response:
 async def session_start(request:web.Request)->web.Response:
     p=await _parent(request);data=await request.json();cid=int(data.get('child_id'));lid=str(data.get('lesson_id') or 'demo_001');c=await _owned_child(p.id,cid);lesson_data=load_lesson(lid);course=str(lesson_data.get('course_id') or 'conversation')
     ok,reason,ent=await can_start(cid,lid,course)
-    if not ok and p.telegram_user_id in settings.admin_ids and reason=='LOCKED':
-        async with SessionLocal() as db:
-            ent=LessonEntitlement(child_id=cid,lesson_id=lid,course_id=course,max_completed_runs=2,completed_runs=0,source='ADMIN_TEST',status='ACTIVE');db.add(ent);await db.commit()
-        ok=True;reason='ADMIN_TEST'
     if not ok: raise web.HTTPForbidden(text=json.dumps({'error':f'Урок недоступен: {reason}'}),content_type='application/json')
     async with SessionLocal() as db:
         sess=LessonSession(child_id=cid,lesson_id=lid,current_step=0,status='IN_PROGRESS',level_at_start=c.language_level or 'PRE_A1',lesson_revision=int(lesson_data.get('revision') or 1),runtime_state_json=json.dumps({'source':'mobile'},ensure_ascii=False));db.add(sess);await db.commit();await db.refresh(sess)
@@ -354,6 +353,7 @@ async def verify_email(request:web.Request)->web.Response:
             raise web.HTTPBadRequest(text=json.dumps({'error':'Неверный код подтверждения'}),content_type='application/json')
         parent.email_verified=True;parent.email_verification_code_hash=None;parent.email_verification_expires_at=None
         children=(await db.scalars(select(Child).where(Child.parent_id==parent.id).order_by(Child.id))).all()
+        if children:await ensure_free_demo_entitlement(db,parent_id=parent.id,child_id=children[0].id)
         await db.commit();token=issue_session_token(parent.id)
         return web.json_response({'token':token,'parent':{'id':parent.id,'name':parent.display_name,'email':parent.email,'email_verified':True,'phone':parent.phone},'children':[_child_json(request,c) for c in children]})
 
