@@ -83,7 +83,20 @@ def test_smtp_message_uses_configured_sender_name(monkeypatch):
     assert message["To"] == "parent@example.com"
 
 
-def test_brevo_https_delivery_uses_existing_message_and_sender(monkeypatch):
+def test_settings_reads_exact_railway_resend_variable_names(monkeypatch):
+    monkeypatch.setenv("EMAIL_DELIVERY_PROVIDER", "resend")
+    monkeypatch.setenv("RESEND_API_KEY", "test-resend-key-not-a-real-secret")
+    monkeypatch.setenv("MAIL_FROM", "Bilingvadom <no-reply@bilinguadom.com>")
+
+    configured = Settings(_env_file=None)
+
+    assert configured.email_delivery_provider == "resend"
+    assert configured.resend_api_key == "test-resend-key-not-a-real-secret"
+    assert configured.mail_from == "Bilingvadom <no-reply@bilinguadom.com>"
+    assert configured.email_delivery_missing_variables == ()
+
+
+def test_resend_https_delivery_uses_existing_message_and_sender(monkeypatch):
     captured: dict[str, object] = {}
 
     class Response:
@@ -100,12 +113,11 @@ def test_brevo_https_delivery_uses_existing_message_and_sender(monkeypatch):
         captured["timeout"] = timeout
         return Response()
 
-    monkeypatch.setattr(settings, "email_delivery_provider", "brevo")
-    monkeypatch.setattr(settings, "brevo_api_key", "test-brevo-key-not-a-real-secret")
-    monkeypatch.setattr(settings, "brevo_api_url", "https://api.brevo.com/v3/smtp/email")
+    monkeypatch.setattr(settings, "email_delivery_provider", "resend")
+    monkeypatch.setattr(settings, "resend_api_key", "test-resend-key-not-a-real-secret")
+    monkeypatch.setattr(settings, "resend_api_url", "https://api.resend.com/emails")
+    monkeypatch.setattr(settings, "mail_from", "Bilingvadom <no-reply@bilinguadom.com>")
     monkeypatch.setattr(settings, "email_api_timeout_seconds", 30)
-    monkeypatch.setattr(settings, "smtp_from_email", "bilinguadom@gmail.com")
-    monkeypatch.setattr(settings, "smtp_from_name", "DOME")
     monkeypatch.setattr(email_reports, "urlopen", fake_urlopen)
 
     message = _message("parent@example.com", "Verification", "Code: 123456")
@@ -113,25 +125,26 @@ def test_brevo_https_delivery_uses_existing_message_and_sender(monkeypatch):
 
     request = captured["request"]
     payload = json.loads(request.data.decode("utf-8"))
-    assert request.full_url == "https://api.brevo.com/v3/smtp/email"
+    assert request.full_url == "https://api.resend.com/emails"
     assert captured["timeout"] == 30
     assert payload == {
-        "sender": {"email": "bilinguadom@gmail.com", "name": "DOME"},
-        "to": [{"email": "parent@example.com"}],
+        "from": "Bilingvadom <no-reply@bilinguadom.com>",
+        "to": ["parent@example.com"],
         "subject": "Verification",
-        "textContent": "Code: 123456\n",
+        "text": "Code: 123456\n",
     }
+    assert request.get_header("Authorization") == "Bearer test-resend-key-not-a-real-secret"
 
 
-def test_brevo_configuration_reports_only_missing_variable_names(monkeypatch):
-    monkeypatch.setattr(settings, "email_delivery_provider", "brevo")
-    monkeypatch.setattr(settings, "brevo_api_key", "")
-    monkeypatch.setattr(settings, "smtp_from_email", "")
+def test_resend_configuration_reports_only_missing_variable_names(monkeypatch):
+    monkeypatch.setattr(settings, "email_delivery_provider", "resend")
+    monkeypatch.setattr(settings, "resend_api_key", "")
+    monkeypatch.setattr(settings, "mail_from", "")
 
     with pytest.raises(RuntimeError) as error:
         _message("parent@example.com", "Subject", "Body")
 
-    assert str(error.value).endswith("BREVO_API_KEY, SMTP_FROM_EMAIL")
+    assert str(error.value).endswith("RESEND_API_KEY, MAIL_FROM")
 
 
 @pytest.mark.asyncio

@@ -49,7 +49,10 @@ def _message(to_email: str, subject: str, body: str) -> EmailMessage:
             + ", ".join(missing)
         )
     msg = EmailMessage()
-    msg["From"] = formataddr((settings.smtp_from_name.strip(), settings.smtp_from_email))
+    if settings.email_delivery_provider.strip().lower() == "resend":
+        msg["From"] = settings.mail_from.strip()
+    else:
+        msg["From"] = formataddr((settings.smtp_from_name.strip(), settings.smtp_from_email))
     msg["To"] = to_email
     msg["Subject"] = subject
     msg.set_content(body)
@@ -67,27 +70,13 @@ def _deliver_smtp(msg: EmailMessage) -> None:
         smtp.send_message(msg)
 
 
-def _mailboxes(header_value: str | None) -> list[dict[str, str]]:
-    mailboxes: list[dict[str, str]] = []
-    for name, email in getaddresses([header_value or ""]):
-        if email:
-            mailbox = {"email": email}
-            if name:
-                mailbox["name"] = name
-            mailboxes.append(mailbox)
-    return mailboxes
-
-
-def _deliver_brevo(msg: EmailMessage) -> None:
+def _deliver_resend(msg: EmailMessage) -> None:
     text_part = msg.get_body(preferencelist=("plain",))
     payload: dict[str, object] = {
-        "sender": {
-            "email": settings.smtp_from_email.strip(),
-            "name": settings.smtp_from_name.strip() or "DOME",
-        },
-        "to": _mailboxes(str(msg["To"])),
+        "from": settings.mail_from.strip(),
+        "to": [email for _name, email in getaddresses([str(msg["To"])]) if email],
         "subject": str(msg["Subject"]),
-        "textContent": text_part.get_content() if text_part else "",
+        "text": text_part.get_content() if text_part else "",
     }
     attachments = []
     for attachment in msg.iter_attachments():
@@ -95,29 +84,29 @@ def _deliver_brevo(msg: EmailMessage) -> None:
         if content is not None:
             attachments.append({
                 "content": base64.b64encode(content).decode("ascii"),
-                "name": attachment.get_filename() or "attachment.bin",
+                "filename": attachment.get_filename() or "attachment.bin",
             })
     if attachments:
-        payload["attachment"] = attachments
+        payload["attachments"] = attachments
 
     request = Request(
-        settings.brevo_api_url,
+        settings.resend_api_url,
         data=json.dumps(payload).encode("utf-8"),
         headers={
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "api-key": settings.brevo_api_key,
+            "Authorization": f"Bearer {settings.resend_api_key}",
         },
         method="POST",
     )
     try:
         with urlopen(request, timeout=settings.email_api_timeout_seconds) as response:
             if not 200 <= response.status < 300:
-                raise RuntimeError(f"Brevo email API returned HTTP {response.status}")
+                raise RuntimeError(f"Resend email API returned HTTP {response.status}")
     except HTTPError as error:
-        raise RuntimeError(f"Brevo email API returned HTTP {error.code}") from error
+        raise RuntimeError(f"Resend email API returned HTTP {error.code}") from error
     except URLError as error:
-        raise RuntimeError("Brevo email API is unreachable") from error
+        raise RuntimeError("Resend email API is unreachable") from error
 
 
 def _deliver(msg: EmailMessage) -> None:
@@ -125,8 +114,8 @@ def _deliver(msg: EmailMessage) -> None:
     if provider == "smtp":
         _deliver_smtp(msg)
         return
-    if provider == "brevo":
-        _deliver_brevo(msg)
+    if provider == "resend":
+        _deliver_resend(msg)
         return
     raise RuntimeError("Unsupported EMAIL_DELIVERY_PROVIDER")
 

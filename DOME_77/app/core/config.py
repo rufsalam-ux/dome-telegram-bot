@@ -73,8 +73,9 @@ class Settings(BaseSettings):
     support_call_label: str = "+995000000000"
     mobile_auth_secret: str = ""
     email_delivery_provider: str = "smtp"
-    brevo_api_key: str = ""
-    brevo_api_url: str = "https://api.brevo.com/v3/smtp/email"
+    resend_api_key: str = ""
+    resend_api_url: str = "https://api.resend.com/emails"
+    mail_from: str = ""
     email_api_timeout_seconds: int = 30
     smtp_host: str = ""
     smtp_port: int = 587
@@ -117,10 +118,10 @@ class Settings(BaseSettings):
         provider = self.email_delivery_provider.strip().lower()
         if provider == "smtp":
             return self.smtp_missing_variables
-        if provider == "brevo":
+        if provider == "resend":
             required = (
-                ("BREVO_API_KEY", self.brevo_api_key),
-                ("SMTP_FROM_EMAIL", self.smtp_from_email),
+                ("RESEND_API_KEY", self.resend_api_key),
+                ("MAIL_FROM", self.mail_from),
             )
             return tuple(name for name, value in required if not str(value).strip())
         return ("EMAIL_DELIVERY_PROVIDER",)
