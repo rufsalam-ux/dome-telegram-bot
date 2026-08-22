@@ -1,0 +1,61 @@
+name: Build DOME Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - DOME_MOBILE_77/**
+      - .github/workflows/android-apk.yml
+
+permissions:
+  contents: read
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: DOME_MOBILE_77
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: DOME_MOBILE_77/package-lock.json
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Android project
+        env:
+          CI: '1'
+        run: npx expo prebuild --platform android --no-install
+
+      - name: Build signed release APK
+        run: ./gradlew assembleRelease --no-daemon
+        working-directory: DOME_MOBILE_77/android
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: DOME-mobile-3.0.1-apk
+          path: DOME_MOBILE_77/android/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
+          retention-days: 14
