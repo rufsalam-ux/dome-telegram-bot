@@ -71,11 +71,13 @@ class Settings(BaseSettings):
     payment_url_individual: str = ""
     support_chat_url: str = ""
     support_call_label: str = "+995000000000"
+    mobile_auth_secret: str = ""
     smtp_host: str = ""
     smtp_port: int = 587
     smtp_username: str = ""
     smtp_password: str = ""
     smtp_from_email: str = ""
+    smtp_from_name: str = "DOME"
     smtp_starttls: bool = True
     smscenter_api_key: str = ""
     smscenter_sender_id: str = "DOME"
@@ -87,7 +89,23 @@ class Settings(BaseSettings):
     voice_consent_version: str = "2026-08-05-v2-legal-representative"
     payment_consent_version: str = "2026-08-04-v1"
     email_reports_default: bool = True
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_prefix="",
+        case_sensitive=False,
+        extra="ignore",
+    )
+
+    @property
+    def smtp_missing_variables(self) -> tuple[str, ...]:
+        """Return missing SMTP secret/config names without exposing their values."""
+        required = (
+            ("SMTP_HOST", self.smtp_host),
+            ("SMTP_USERNAME", self.smtp_username),
+            ("SMTP_PASSWORD", self.smtp_password),
+            ("SMTP_FROM_EMAIL", self.smtp_from_email),
+        )
+        return tuple(name for name, value in required if not str(value).strip())
 
     @model_validator(mode="after")
     def _resolve_persistent_storage(self):
@@ -102,6 +120,10 @@ class Settings(BaseSettings):
             # DOME never auto-binds to /data just because another Railway service uses it.
             # Set DATA_DIR or STORAGE_ROOT explicitly for this DOME service when persistent storage is desired.
             self.storage_root = Path(data_env)
+        if self.database_url.startswith("postgres://"):
+            self.database_url = "postgresql+asyncpg://" + self.database_url[len("postgres://"):]
+        elif self.database_url.startswith("postgresql://"):
+            self.database_url = "postgresql+asyncpg://" + self.database_url[len("postgresql://"):]
         if str(self.database_url) == "sqlite+aiosqlite:///./storage/app.db":
             db_path = (self.storage_root / "app.db").resolve()
             self.database_url = "sqlite+aiosqlite:////" + str(db_path).lstrip("/")

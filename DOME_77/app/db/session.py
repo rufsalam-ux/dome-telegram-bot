@@ -1,4 +1,4 @@
-from sqlalchemy import text
+from sqlalchemy import inspect, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app.core.config import settings
 from app.db.models import Base
@@ -8,8 +8,10 @@ SessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
 
 async def _add_columns(conn, table: str, additions: dict[str, str]):
-    rows = (await conn.execute(text(f"PRAGMA table_info({table})"))).mappings().all()
-    names = {r["name"] for r in rows}
+    def existing_columns(sync_conn):
+        return {column["name"] for column in inspect(sync_conn).get_columns(table)}
+
+    names = await conn.run_sync(existing_columns)
     for name, ddl in additions.items():
         if name not in names:
             await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))
@@ -78,21 +80,29 @@ async def init_db() -> None:
     settings.storage_root.mkdir(parents=True, exist_ok=True)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # create_all does not add columns to an existing table. Keep the mobile
+        # identity fields portable across the bundled SQLite DB and Railway Postgres.
+        await _add_columns(conn, "parents", {
+            "email": "VARCHAR(255)",
+            "password_hash": "VARCHAR(255)",
+            "email_verified": "BOOLEAN NOT NULL DEFAULT TRUE",
+            "email_verification_code_hash": "VARCHAR(255)",
+            "email_verification_expires_at": "TIMESTAMP",
+            "email_reports_enabled": "BOOLEAN NOT NULL DEFAULT FALSE",
+            "phone": "VARCHAR(40)",
+            "active_child_id": "INTEGER",
+        })
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_parents_active_child_id ON parents(active_child_id)"))
+        await conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_parents_email ON parents(email) WHERE email IS NOT NULL AND email <> ''"))
+        # Existing accounts predate standalone verification. New registrations
+        # explicitly set email_verified=False until the emailed code is entered.
+        await conn.execute(text(
+            "UPDATE parents SET email_verified=TRUE "
+            "WHERE COALESCE(email_verified,FALSE)=FALSE "
+            "AND email IS NOT NULL AND email <> '' AND password_hash IS NOT NULL "
+            "AND email_verification_code_hash IS NULL AND created_at < '2026-08-22 00:00:00'"
+        ))
         if settings.database_url.startswith("sqlite"):
-            await _add_columns(conn, "parents", {
-                "email": "VARCHAR(255)",
-                "password_hash": "VARCHAR(255)",
-                "email_verified": "BOOLEAN NOT NULL DEFAULT 1",
-                "email_verification_code_hash": "VARCHAR(255)",
-                "email_verification_expires_at": "DATETIME",
-                "email_reports_enabled": "BOOLEAN NOT NULL DEFAULT 0",
-                "phone": "VARCHAR(40)",
-                "active_child_id": "INTEGER"})
-            await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_parents_active_child_id ON parents(active_child_id)"))
-            await conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_parents_email ON parents(email) WHERE email IS NOT NULL AND email <> ''"))
-            # Accounts created before standalone email verification existed remain usable.
-            # New registrations explicitly set email_verified=False until the emailed code is entered.
-            await conn.execute(text("UPDATE parents SET email_verified=1 WHERE COALESCE(email_verified,0)=0 AND email IS NOT NULL AND email <> '' AND password_hash IS NOT NULL AND email_verification_code_hash IS NULL AND created_at < '2026-08-22 00:00:00'"))
             await _add_columns(conn, "characters", {
                 "source": "VARCHAR(40) NOT NULL DEFAULT 'CHILD_DRAWING'", "catalog_id": "VARCHAR(80)"})
             await _add_columns(conn, "children", {

@@ -1,13 +1,13 @@
 from __future__ import annotations
-import asyncio, base64, hashlib, hmac, json, logging, mimetypes, secrets
-from datetime import datetime, timedelta
+import asyncio, base64, json, logging, mimetypes, secrets
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from aiohttp import web
 from sqlalchemy import select, func
 from app.core.config import settings
 from app.db.session import SessionLocal
 from app.db.models import Parent,Child,Character,LessonSession,VoiceAttempt,InteractiveResult,HomeworkAssignment,LessonEntitlement
-from app.services.mobile_pairing import issue_token,verify_token,signed_media_token,verify_media_token
+from app.services.mobile_tokens import issue_session_token,verify_session_token,signed_media_token,verify_media_token
 from app.services.lesson_loader import load_lesson
 from app.services.lesson_access import can_start,complete_session_once
 from app.services.preset_characters import preset_character_path,list_preset_characters
@@ -17,9 +17,13 @@ from app.services.speech_pipeline import assess_speech
 from app.services.free_topic_cartoon import build_free_topic_cartoon
 from app.services.email_reports import send_homework_email,_send_with_attachment_sync,send_verification_email,send_password_reset_email
 from app.services.ai_speech import synthesize_speech, translate_text
-from app.services.password_auth import hash_password, verify_password
+from app.services.password_auth import hash_password, hash_verification_code, verify_password, verify_verification_code
 
 log=logging.getLogger('dome.mobile_api')
+
+
+def _utcnow() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
 
 def _base(request:web.Request)->str:
     return f'{request.scheme}://{request.host}'
@@ -29,7 +33,7 @@ def _bearer(request:web.Request)->str:
     return h[7:].strip() if h.lower().startswith('bearer ') else ''
 
 async def _parent(request:web.Request)->Parent:
-    pid=verify_token(_bearer(request))
+    pid=verify_session_token(_bearer(request))
     if not pid: raise web.HTTPUnauthorized(text=json.dumps({'error':'Mobile session expired'}),content_type='application/json')
     async with SessionLocal() as db:
         p=await db.get(Parent,pid)
@@ -53,7 +57,7 @@ def _child_json(request:web.Request,c:Child)->dict:
 async def bootstrap(request:web.Request)->web.Response:
     p=await _parent(request)
     async with SessionLocal() as db:cs=(await db.scalars(select(Child).where(Child.parent_id==p.id).order_by(Child.id))).all()
-    return web.json_response({'parent':{'id':p.id,'name':p.display_name,'email':p.email,'phone':p.phone},'children':[_child_json(request,c) for c in cs]})
+    return web.json_response({'parent':{'id':p.id,'name':p.display_name,'email':p.email,'email_verified':bool(p.email_verified),'phone':p.phone},'children':[_child_json(request,c) for c in cs]})
 
 async def lesson(request:web.Request)->web.Response:
     await _parent(request); lid=request.match_info['lesson_id']; data=load_lesson(lid)
@@ -177,7 +181,7 @@ async def interactive(request:web.Request)->web.Response:
 
 async def _mobile_token_ok(request:web.Request)->bool:
     tok=_bearer(request) or str(request.query.get('token') or '')
-    pid=verify_token(tok)
+    pid=verify_session_token(tok)
     if not pid:return False
     async with SessionLocal() as db:return bool(await db.get(Parent,pid))
 
@@ -271,14 +275,12 @@ async def movies(request:web.Request)->web.Response:
     return web.json_response({'movies':items})
 
 
-def _auth_secret() -> bytes:
-    raw=(settings.consent_hash_secret or settings.bot_token or 'DOME-AUTH-CHANGE-ME').encode('utf-8')
-    return hashlib.sha256(raw+b'|email-auth-v1').digest()
+def _normalize_email(value: object) -> str:
+    return str(value or '').strip().lower()
 
 
-def _email_code_hash(email:str, code:str, purpose:str)->str:
-    payload=f'{purpose}|{email.strip().lower()}|{code}'.encode('utf-8')
-    return hmac.new(_auth_secret(),payload,hashlib.sha256).hexdigest()
+async def _parent_by_email(db, email: str) -> Parent | None:
+    return await db.scalar(select(Parent).where(func.lower(Parent.email) == email))
 
 
 def _new_email_code()->str:
@@ -293,25 +295,26 @@ def _valid_email(email:str)->bool:
 
 async def register(request:web.Request)->web.Response:
     data=await request.json()
-    email=str(data.get('email') or '').strip().lower()
+    email=_normalize_email(data.get('email'))
     password=str(data.get('password') or '')
     name=str(data.get('name') or '').strip()
     if not name:raise web.HTTPBadRequest(text=json.dumps({'error':'Введите имя'}),content_type='application/json')
     if not _valid_email(email):raise web.HTTPBadRequest(text=json.dumps({'error':'Введите корректный email'}),content_type='application/json')
     if len(password)<8:raise web.HTTPBadRequest(text=json.dumps({'error':'Пароль должен содержать минимум 8 символов'}),content_type='application/json')
-    code=_new_email_code();expires=datetime.utcnow()+timedelta(minutes=10)
+    code=_new_email_code();expires=_utcnow()+timedelta(minutes=10)
     async with SessionLocal() as db:
-        parent=await db.scalar(select(Parent).where(Parent.email==email))
+        parent=await _parent_by_email(db,email)
         if parent and bool(parent.email_verified):
             raise web.HTTPConflict(text=json.dumps({'error':'Аккаунт с этой почтой уже существует'}),content_type='application/json')
         if parent is None:
             parent=Parent(email=email,display_name=name,password_hash=hash_password(password),email_verified=False,email_reports_enabled=settings.email_reports_default)
             db.add(parent)
         else:
+            parent.email=email
             parent.display_name=name
             parent.password_hash=hash_password(password)
             parent.email_verified=False
-        parent.email_verification_code_hash=_email_code_hash(email,code,'verify')
+        parent.email_verification_code_hash=hash_verification_code(email,code,'verify')
         parent.email_verification_expires_at=expires
         await db.commit();await db.refresh(parent)
     try:await send_verification_email(email,code,10)
@@ -322,27 +325,31 @@ async def register(request:web.Request)->web.Response:
 
 
 async def verify_email(request:web.Request)->web.Response:
-    data=await request.json();email=str(data.get('email') or '').strip().lower();code=str(data.get('code') or '').strip()
-    if not email or not code:raise web.HTTPBadRequest(text=json.dumps({'error':'Введите email и код'}),content_type='application/json')
+    data=await request.json();email=_normalize_email(data.get('email'));code=str(data.get('code') or '').strip()
+    if not _valid_email(email):raise web.HTTPBadRequest(text=json.dumps({'error':'Введите корректный email'}),content_type='application/json')
+    if len(code)!=6 or not code.isdigit():raise web.HTTPBadRequest(text=json.dumps({'error':'Код должен состоять из 6 цифр'}),content_type='application/json')
     async with SessionLocal() as db:
-        parent=await db.scalar(select(Parent).where(Parent.email==email))
-        expected=_email_code_hash(email,code,'verify')
-        expired=not parent or not parent.email_verification_expires_at or parent.email_verification_expires_at<datetime.utcnow()
-        bad=not parent or not parent.email_verification_code_hash or not hmac.compare_digest(parent.email_verification_code_hash,expected)
-        if expired or bad:raise web.HTTPBadRequest(text=json.dumps({'error':'Код неверный или истёк'}),content_type='application/json')
+        parent=await _parent_by_email(db,email)
+        if not parent or not parent.email_verification_code_hash:
+            raise web.HTTPBadRequest(text=json.dumps({'error':'Неверный код подтверждения'}),content_type='application/json')
+        if not parent.email_verification_expires_at or parent.email_verification_expires_at<_utcnow():
+            raise web.HTTPBadRequest(text=json.dumps({'error':'Срок действия кода истёк. Отправьте новый код.'}),content_type='application/json')
+        if not verify_verification_code(email,code,parent.email_verification_code_hash,'verify'):
+            raise web.HTTPBadRequest(text=json.dumps({'error':'Неверный код подтверждения'}),content_type='application/json')
         parent.email_verified=True;parent.email_verification_code_hash=None;parent.email_verification_expires_at=None
         children=(await db.scalars(select(Child).where(Child.parent_id==parent.id).order_by(Child.id))).all()
-        await db.commit();token=issue_token(parent.id)
-        return web.json_response({'token':token,'parent':{'id':parent.id,'name':parent.display_name,'email':parent.email,'phone':parent.phone},'children':[_child_json(request,c) for c in children]})
+        await db.commit();token=issue_session_token(parent.id)
+        return web.json_response({'token':token,'parent':{'id':parent.id,'name':parent.display_name,'email':parent.email,'email_verified':True,'phone':parent.phone},'children':[_child_json(request,c) for c in children]})
 
 
 async def resend_verification(request:web.Request)->web.Response:
-    data=await request.json();email=str(data.get('email') or '').strip().lower()
+    data=await request.json();email=_normalize_email(data.get('email'))
+    if not _valid_email(email):raise web.HTTPBadRequest(text=json.dumps({'error':'Введите корректный email'}),content_type='application/json')
     async with SessionLocal() as db:
-        parent=await db.scalar(select(Parent).where(Parent.email==email))
+        parent=await _parent_by_email(db,email)
         if not parent:raise web.HTTPNotFound(text=json.dumps({'error':'Аккаунт не найден'}),content_type='application/json')
         if parent.email_verified:return web.json_response({'ok':True,'already_verified':True})
-        code=_new_email_code();parent.email_verification_code_hash=_email_code_hash(email,code,'verify');parent.email_verification_expires_at=datetime.utcnow()+timedelta(minutes=10);await db.commit()
+        code=_new_email_code();parent.email_verification_code_hash=hash_verification_code(email,code,'verify');parent.email_verification_expires_at=_utcnow()+timedelta(minutes=10);await db.commit()
     try:await send_verification_email(email,code,10)
     except Exception as exc:
         log.exception('Verification resend failed: %s',exc)
@@ -351,24 +358,24 @@ async def resend_verification(request:web.Request)->web.Response:
 
 
 async def login(request:web.Request)->web.Response:
-    data=await request.json();email=str(data.get('email') or '').strip().lower();password=str(data.get('password') or '')
+    data=await request.json();email=_normalize_email(data.get('email'));password=str(data.get('password') or '')
     async with SessionLocal() as db:
-        parent=await db.scalar(select(Parent).where(Parent.email==email))
+        parent=await _parent_by_email(db,email)
         if not parent or not parent.password_hash or not verify_password(password,parent.password_hash):
             raise web.HTTPUnauthorized(text=json.dumps({'error':'Неверный email или пароль'}),content_type='application/json')
         if not bool(parent.email_verified):
             raise web.HTTPForbidden(text=json.dumps({'error':'Сначала подтвердите email','code':'EMAIL_NOT_VERIFIED','verification_required':True,'email':email}),content_type='application/json')
-        children=(await db.scalars(select(Child).where(Child.parent_id==parent.id).order_by(Child.id))).all();token=issue_token(parent.id)
-        return web.json_response({'token':token,'parent':{'id':parent.id,'name':parent.display_name,'email':parent.email,'phone':parent.phone},'children':[_child_json(request,c) for c in children]})
+        children=(await db.scalars(select(Child).where(Child.parent_id==parent.id).order_by(Child.id))).all();token=issue_session_token(parent.id)
+        return web.json_response({'token':token,'parent':{'id':parent.id,'name':parent.display_name,'email':parent.email,'email_verified':True,'phone':parent.phone},'children':[_child_json(request,c) for c in children]})
 
 
 async def request_password_reset(request:web.Request)->web.Response:
-    data=await request.json();email=str(data.get('email') or '').strip().lower()
+    data=await request.json();email=_normalize_email(data.get('email'))
     code=None
     async with SessionLocal() as db:
-        parent=await db.scalar(select(Parent).where(Parent.email==email))
+        parent=await _parent_by_email(db,email)
         if parent:
-            code=_new_email_code();parent.email_verification_code_hash=_email_code_hash(email,code,'reset');parent.email_verification_expires_at=datetime.utcnow()+timedelta(minutes=10);await db.commit()
+            code=_new_email_code();parent.email_verification_code_hash=hash_verification_code(email,code,'reset');parent.email_verification_expires_at=_utcnow()+timedelta(minutes=10);await db.commit()
     if code:
         try:await send_password_reset_email(email,code,10)
         except Exception as exc:log.exception('Password reset email failed: %s',exc)
@@ -376,12 +383,12 @@ async def request_password_reset(request:web.Request)->web.Response:
 
 
 async def confirm_password_reset(request:web.Request)->web.Response:
-    data=await request.json();email=str(data.get('email') or '').strip().lower();code=str(data.get('code') or '').strip();password=str(data.get('password') or '')
+    data=await request.json();email=_normalize_email(data.get('email'));code=str(data.get('code') or '').strip();password=str(data.get('password') or '')
     if len(password)<8:raise web.HTTPBadRequest(text=json.dumps({'error':'Пароль должен содержать минимум 8 символов'}),content_type='application/json')
     async with SessionLocal() as db:
-        parent=await db.scalar(select(Parent).where(Parent.email==email));expected=_email_code_hash(email,code,'reset')
-        expired=not parent or not parent.email_verification_expires_at or parent.email_verification_expires_at<datetime.utcnow()
-        bad=not parent or not parent.email_verification_code_hash or not hmac.compare_digest(parent.email_verification_code_hash,expected)
+        parent=await _parent_by_email(db,email)
+        expired=not parent or not parent.email_verification_expires_at or parent.email_verification_expires_at<_utcnow()
+        bad=not parent or not parent.email_verification_code_hash or not verify_verification_code(email,code,parent.email_verification_code_hash,'reset')
         if expired or bad:raise web.HTTPBadRequest(text=json.dumps({'error':'Код неверный или истёк'}),content_type='application/json')
         parent.password_hash=hash_password(password);parent.email_verified=True;parent.email_verification_code_hash=None;parent.email_verification_expires_at=None;await db.commit()
     return web.json_response({'ok':True})

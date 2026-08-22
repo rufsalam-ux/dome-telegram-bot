@@ -2,6 +2,7 @@ from __future__ import annotations
 import asyncio
 import smtplib
 from email.message import EmailMessage
+from email.utils import formataddr
 from app.core.config import settings
 
 
@@ -36,20 +37,34 @@ DOME
     return subject, body
 
 
-def _send_sync(to_email: str, subject: str, body: str) -> None:
-    if not settings.smtp_host or not settings.smtp_from_email:
-        raise RuntimeError("SMTP is not configured")
+def _message(to_email: str, subject: str, body: str) -> EmailMessage:
+    missing = settings.smtp_missing_variables
+    if missing:
+        raise RuntimeError(
+            "SMTP configuration is incomplete; missing Railway variables: "
+            + ", ".join(missing)
+        )
     msg = EmailMessage()
-    msg["From"] = settings.smtp_from_email
+    msg["From"] = formataddr((settings.smtp_from_name.strip(), settings.smtp_from_email))
     msg["To"] = to_email
     msg["Subject"] = subject
     msg.set_content(body)
+    return msg
+
+
+def _deliver(msg: EmailMessage) -> None:
     with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=30) as smtp:
+        smtp.ehlo()
         if settings.smtp_starttls:
             smtp.starttls()
+            smtp.ehlo()
         if settings.smtp_username:
             smtp.login(settings.smtp_username, settings.smtp_password)
         smtp.send_message(msg)
+
+
+def _send_sync(to_email: str, subject: str, body: str) -> None:
+    _deliver(_message(to_email, subject, body))
 
 
 async def send_progress_report(to_email: str, subject: str, body: str) -> None:
@@ -83,19 +98,14 @@ DOME / BilingvaDom
     await asyncio.to_thread(_send_sync, to_email, subject, body)
 
 def _send_with_attachment_sync(to_email: str, subject: str, body: str, attachment_path: str | None = None) -> None:
-    if not settings.smtp_host or not settings.smtp_from_email:
-        raise RuntimeError("SMTP is not configured")
-    msg=EmailMessage(); msg['From']=settings.smtp_from_email; msg['To']=to_email; msg['Subject']=subject; msg.set_content(body)
+    msg = _message(to_email, subject, body)
     if attachment_path:
         from pathlib import Path
         p=Path(attachment_path)
         if p.exists() and p.is_file():
             ext=p.suffix.lower(); maintype,subtype=('application','pdf') if ext=='.pdf' else ('application','octet-stream')
             msg.add_attachment(p.read_bytes(),maintype=maintype,subtype=subtype,filename=p.name)
-    with smtplib.SMTP(settings.smtp_host,settings.smtp_port,timeout=30) as smtp:
-        if settings.smtp_starttls: smtp.starttls()
-        if settings.smtp_username: smtp.login(settings.smtp_username,settings.smtp_password)
-        smtp.send_message(msg)
+    _deliver(msg)
 
 async def send_homework_email(to_email: str, child_name: str, lesson_title: str, summary: str, attachment_path: str | None = None) -> None:
     subject=f'DOME: домашнее задание — {lesson_title}'
