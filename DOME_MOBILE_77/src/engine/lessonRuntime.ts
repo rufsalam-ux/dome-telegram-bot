@@ -60,12 +60,13 @@ export function nextCardQuestion(slide:any,cardId:string,currentIndex:number):{q
   return index<questions.length?{question:questions[index],index,done:false}:{index:questions.length,done:true};
 }
 
-export type LayoutPolicy={landscape:boolean;compact:boolean;visualFlex:number;controlFlex:number;contentPadding:number;bottomPadding:number;visualMaxHeight:number;controlsPinned:true};
+export type LayoutPolicy={landscape:boolean;compact:boolean;visualFlex:number;controlFlex:number;contentPadding:number;bottomPadding:number;visualMinHeight:number;visualMaxHeight:number;controlsPinned:true};
 
 export function lessonLayoutPolicy(width:number,height:number,bottomInset=0):LayoutPolicy{
   const landscape=width>height;const compact=Math.min(width,height)<390||height<700;
   const headerReserve=compact?58:72;const controlReserve=compact?238:276;
-  return {landscape,compact,visualFlex:landscape?1.35:1,controlFlex:landscape?1:0,contentPadding:compact?8:14,bottomPadding:Math.max(bottomInset,8),visualMaxHeight:landscape?Math.max(220,height-headerReserve):Math.max(150,height-headerReserve-controlReserve-bottomInset),controlsPinned:true};
+  const visualMaxHeight=landscape?Math.max(220,height-headerReserve):Math.max(150,height-headerReserve-controlReserve-bottomInset);
+  return {landscape,compact,visualFlex:landscape?1.35:1,controlFlex:landscape?1:0,contentPadding:compact?8:14,bottomPadding:Math.max(bottomInset,8),visualMinHeight:Math.min(visualMaxHeight,compact?168:196),visualMaxHeight,controlsPinned:true};
 }
 
 function tuple(value:any):RectTuple|null{

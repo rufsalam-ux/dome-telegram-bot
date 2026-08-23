@@ -20,6 +20,7 @@ import {
 } from '../src/engine/lessonRuntime.ts';
 import bundledLesson from '../src/data/botLesson.json' with {type:'json'};
 import {buildRuntimeOrder} from '../src/data/lessonInteractions.ts';
+import {beginVisualAssetLoad,failVisualAsset,useLocalizedVisualAsset,visualAssetSourceForKey} from '../src/engine/visualAsset.ts';
 
 const greeting={type:'guided_speaking',answer_mode:'required_voice',adaptive:true,bot_says_target:'Привет! Я рада тебя видеть. Как ты сегодня себя чувствуешь?',simplified_text:'Привет! У меня всё хорошо.'};
 const cards={slide_id:'slide_09',type:'card_selector',answer_mode:'none',card_question_sets:{A:[{id:'A1',text:'Первый?'},{id:'A2',text:'Второй?'},{id:'A3',text:'Третий?'}]}};
@@ -76,7 +77,31 @@ test('portrait and landscape keep controls pinned and readable',()=>{
   assert.equal(portrait.landscape,false);assert.equal(landscape.landscape,true);
   assert.equal(portrait.controlsPinned,true);assert.equal(landscape.controlsPinned,true);
   assert.ok(portrait.bottomPadding>=24);assert.ok(landscape.controlFlex>0);
-  assert.ok(portrait.visualMaxHeight<640);
+  assert.ok(portrait.visualMaxHeight<640);assert.ok(portrait.visualMinHeight>0);assert.ok(portrait.visualMinHeight<=portrait.visualMaxHeight);
+});
+
+test('visual asset shows bundled original immediately and falls back after localized failure',()=>{
+  const original={bundle:'slide-01.png'};const remote={uri:'https://example.test/slide-01.png'};
+  const loading=beginVisualAssetLoad(original,true,'slide-01.png');
+  assert.equal(loading.source,original);assert.equal(loading.status,'loading');assert.equal(loading.kind,'original');
+  const localized=useLocalizedVisualAsset(loading,remote);
+  assert.equal(localized.source,remote);assert.equal(localized.kind,'localized');
+  const fallback=failVisualAsset(localized,'network error');
+  assert.equal(fallback.source,original);assert.equal(fallback.status,'fallback');assert.equal(fallback.kind,'original');
+  const nextOriginal={bundle:'slide-03.png'};
+  assert.equal(visualAssetSourceForKey(fallback,'slide-03.png',nextOriginal),nextOriginal);
+});
+
+test('visual asset without bundled source exposes a non-empty placeholder state',()=>{
+  const loading=beginVisualAssetLoad(undefined,true);assert.equal(loading.status,'loading');assert.equal(loading.source,undefined);
+  const failed=failVisualAsset(loading,'not found');assert.equal(failed.status,'unavailable');assert.equal(failed.source,undefined);
+});
+
+test('opening slide has a safe declarative hero placement and bundled source',()=>{
+  const opening=(bundledLesson.slides as any[]).find(slide=>slide.slide_id==='slide_01');
+  assert.equal(opening.image,'lesson-images/slide-01.png');
+  const resolved=heroBox(opening,bundledLesson) as [number,number,number,number];assert.ok(resolved);
+  for(const box of opening.content_boxes||[])assert.equal(rectanglesOverlap(resolved,box),false);
 });
 
 test('runtime has the authored conversation state machine and follow-up transition',()=>{
