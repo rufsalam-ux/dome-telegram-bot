@@ -20,6 +20,9 @@ class Parent(Base):
     email_reports_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     phone: Mapped[str | None] = mapped_column(String(40), nullable=True)
     active_child_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    # Explicit server-side account classification. Standalone lesson access
+    # never infers QA privileges from a Telegram id, email, or display name.
+    account_role: Mapped[str] = mapped_column(String(30), default="STANDARD", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     children: Mapped[list["Child"]] = relationship(back_populates="parent")
 
@@ -297,6 +300,55 @@ class LessonEntitlement(Base):
     cartoon_generated: Mapped[bool] = mapped_column(Boolean, default=False)
     source: Mapped[str] = mapped_column(String(40), default="SUBSCRIPTION")
     status: Mapped[str] = mapped_column(String(30), default="ACTIVE")
+
+
+class QaAccessGrant(Base):
+    """Explicit, revocable permission to bypass one lesson's run limit.
+
+    A grant does not unlock a lesson and does not bypass expiration. The parent
+    must also be explicitly classified as QA_TEST or ADMIN.
+    """
+
+    __tablename__ = "qa_access_grants"
+    __table_args__ = (
+        UniqueConstraint(
+            "child_id", "lesson_id", "course_id", "permission",
+            name="uq_qa_access_child_lesson_course_permission",
+        ),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    parent_id: Mapped[int] = mapped_column(ForeignKey("parents.id"), index=True)
+    child_id: Mapped[int] = mapped_column(ForeignKey("children.id"), index=True)
+    lesson_id: Mapped[str] = mapped_column(String(100), index=True)
+    course_id: Mapped[str] = mapped_column(String(100), index=True)
+    permission: Mapped[str] = mapped_column(String(60), index=True)
+    status: Mapped[str] = mapped_column(String(30), default="ACTIVE", index=True)
+    external_key: Mapped[str | None] = mapped_column(String(180), unique=True, nullable=True, index=True)
+    granted_by: Mapped[str] = mapped_column(String(180))
+    reason: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class QaAccessAuditEvent(Base):
+    """Append-only audit trail for QA grants and every actual limit bypass."""
+
+    __tablename__ = "qa_access_audit_events"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    event_type: Mapped[str] = mapped_column(String(60), index=True)
+    grant_id: Mapped[int | None] = mapped_column(ForeignKey("qa_access_grants.id"), nullable=True, index=True)
+    parent_id: Mapped[int] = mapped_column(ForeignKey("parents.id"), index=True)
+    child_id: Mapped[int] = mapped_column(ForeignKey("children.id"), index=True)
+    lesson_id: Mapped[str] = mapped_column(String(100), index=True)
+    course_id: Mapped[str] = mapped_column(String(100), index=True)
+    entitlement_id: Mapped[int | None] = mapped_column(ForeignKey("lesson_entitlements.id"), nullable=True)
+    lesson_session_id: Mapped[int | None] = mapped_column(ForeignKey("lesson_sessions.id"), nullable=True)
+    actor: Mapped[str] = mapped_column(String(180))
+    completed_runs: Mapped[int] = mapped_column(Integer, default=0)
+    max_completed_runs: Mapped[int] = mapped_column(Integer, default=0)
+    details_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
 class PaymentWebhookEvent(Base):
     __tablename__ = "payment_webhook_events"

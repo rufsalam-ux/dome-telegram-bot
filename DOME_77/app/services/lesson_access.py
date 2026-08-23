@@ -5,6 +5,7 @@ from sqlalchemy import select, update
 
 from app.db.session import SessionLocal
 from app.db.models import LessonEntitlement, LessonSession, Subscription
+from app.services.qa_access import active_run_limit_grant, add_qa_audit_event
 
 
 async def _consume_subscription_allocation(db, entitlement: LessonEntitlement) -> None:
@@ -29,15 +30,37 @@ async def get_entitlement(child_id: int, lesson_id: str, course_id: str) -> Less
 
 
 async def can_start(child_id: int, lesson_id: str, course_id: str) -> tuple[bool, str, LessonEntitlement | None]:
-    row = await get_entitlement(child_id, lesson_id, course_id)
-    if row is None:
-        return False, "LOCKED", None
-    now = datetime.utcnow()
-    if row.expires_at and row.expires_at < now:
-        return False, "EXPIRED", row
-    if row.completed_runs >= row.max_completed_runs:
-        return False, "RUN_LIMIT", row
-    return True, "OK", row
+    async with SessionLocal() as db:
+        row = await db.scalar(select(LessonEntitlement).where(
+            LessonEntitlement.child_id == child_id,
+            LessonEntitlement.lesson_id == lesson_id,
+            LessonEntitlement.course_id == course_id,
+        ).order_by(LessonEntitlement.id.desc()))
+        if row is None:
+            return False, "LOCKED", None
+        now = datetime.utcnow()
+        if row.expires_at and row.expires_at < now:
+            return False, "EXPIRED", row
+        if row.completed_runs >= row.max_completed_runs:
+            parent, grant = await active_run_limit_grant(
+                db, child_id=child_id, lesson_id=lesson_id, course_id=course_id
+            )
+            if parent is None or grant is None:
+                return False, "RUN_LIMIT", row
+            add_qa_audit_event(
+                db,
+                event_type="RUN_LIMIT_BYPASS_AUTHORIZED",
+                grant=grant,
+                parent_id=parent.id,
+                child_id=child_id,
+                lesson_id=lesson_id,
+                course_id=course_id,
+                entitlement=row,
+                actor=f"account-role:{parent.account_role}",
+            )
+            await db.commit()
+            return True, "QA_RUN_LIMIT_BYPASS", row
+        return True, "OK", row
 
 
 async def mark_completed(child_id: int, lesson_id: str, course_id: str) -> LessonEntitlement:
@@ -50,10 +73,29 @@ async def mark_completed(child_id: int, lesson_id: str, course_id: str) -> Lesso
         ).order_by(LessonEntitlement.id.desc()))
         if row is None:
             raise RuntimeError("Lesson entitlement is missing; lesson must be unlocked before completion")
-        row.completed_runs = min(row.max_completed_runs, row.completed_runs + 1)
+        previous_runs = int(row.completed_runs or 0)
+        parent, grant = await active_run_limit_grant(
+            db, child_id=child_id, lesson_id=lesson_id, course_id=course_id
+        )
+        if grant is not None:
+            row.completed_runs = previous_runs + 1
+        else:
+            row.completed_runs = min(row.max_completed_runs, previous_runs + 1)
         await _consume_subscription_allocation(db,row)
         if row.completed_runs >= row.max_completed_runs:
             row.status = "COMPLETED"
+        if parent is not None and grant is not None and previous_runs >= row.max_completed_runs:
+            add_qa_audit_event(
+                db,
+                event_type="QA_LIMIT_BYPASS_COMPLETED",
+                grant=grant,
+                parent_id=parent.id,
+                child_id=child_id,
+                lesson_id=lesson_id,
+                course_id=course_id,
+                entitlement=row,
+                actor=f"account-role:{parent.account_role}",
+            )
         await db.commit()
         await db.refresh(row)
         return row
@@ -83,10 +125,30 @@ async def complete_session_once(
         )
         newly_completed = bool(result.rowcount)
         if newly_completed:
-            entitlement.completed_runs = min(entitlement.max_completed_runs, entitlement.completed_runs + 1)
+            previous_runs = int(entitlement.completed_runs or 0)
+            parent, grant = await active_run_limit_grant(
+                db, child_id=child_id, lesson_id=lesson_id, course_id=course_id
+            )
+            if grant is not None:
+                entitlement.completed_runs = previous_runs + 1
+            else:
+                entitlement.completed_runs = min(entitlement.max_completed_runs, previous_runs + 1)
             await _consume_subscription_allocation(db,entitlement)
             if entitlement.completed_runs >= entitlement.max_completed_runs:
                 entitlement.status = "COMPLETED"
+            if parent is not None and grant is not None and previous_runs >= entitlement.max_completed_runs:
+                add_qa_audit_event(
+                    db,
+                    event_type="QA_LIMIT_BYPASS_COMPLETED",
+                    grant=grant,
+                    parent_id=parent.id,
+                    child_id=child_id,
+                    lesson_id=lesson_id,
+                    course_id=course_id,
+                    entitlement=entitlement,
+                    lesson_session_id=session_id,
+                    actor=f"account-role:{parent.account_role}",
+                )
         await db.commit()
         await db.refresh(entitlement)
         return entitlement, newly_completed

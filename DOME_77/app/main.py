@@ -16,6 +16,7 @@ from app.services.standalone_demo_access import backfill_free_demo_entitlements
 from app.services.mobile_lesson_movie import recover_interrupted_mobile_movie_jobs
 from app.services.pricing_versions import ensure_versioned_pricing_config
 from app.services.subscription_price_migrations import backfill_subscription_provider_plan_ids
+from app.services.qa_access import bootstrap_qa_access_grants
 from sqlalchemy import select
 from zoneinfo import ZoneInfo
 
@@ -78,6 +79,8 @@ async def main():
     await recover_interrupted_mobile_movie_jobs()
     free_demo_created=await backfill_free_demo_entitlements()
     log.info('Standalone free demo entitlements created: %s',free_demo_created)
+    qa_bootstrap=await bootstrap_qa_access_grants()
+    log.info('Explicit QA access bootstrap: %s',qa_bootstrap)
     orders = validate_lesson_revision('demo_001')
     log.info('Legacy conversation lesson validated: %s runtime slides', len(orders))
     web_runner=await start_webapp_server(); log.info('Mini App server started on port %s',settings.effective_webapp_port)

@@ -95,6 +95,7 @@ from app.services.authored_content import load_authored_lesson, load_homework, l
 from app.services.lesson_access import can_start as can_start_authored, complete_session_once, get_entitlement as get_authored_entitlement, mark_cartoon_generated
 from app.services.subscription_release import release_due_lessons, ensure_test_entitlement, active_subscription
 from app.services.lesson_pacing import decide_pacing
+from app.services.qa_access import grant_run_limit_access, revoke_run_limit_access
 from app.services.lesson_importer import import_package as import_lesson_package
 from app.services.cartoon_credit import add_cartoon_credit
 from app.services.cartoon_text_overlay import apply_cartoon_text_overlays
@@ -249,6 +250,58 @@ async def _show_parent_course_payment_gate(message: Message, state: FSMContext, 
         "The lesson will unlock for the learner after payment."
     )
     await message.answer(text, reply_markup=course_payment_gate_keyboard(native, allow_test_bypass=allow_test))
+
+
+@router.message(Command("dome_qa_access"))
+async def admin_qa_access(message: Message):
+    """Grant/revoke a scoped, audited QA run-limit permission."""
+    if message.from_user.id not in settings.admin_ids:
+        return
+    parts = (message.text or "").split()
+    if len(parts) not in {3, 4} or not parts[1].isdigit() or parts[2].lower() not in {"on", "off"}:
+        await message.answer("Формат: /dome_qa_access child_id on|off [lesson_id]")
+        return
+    child_id = int(parts[1])
+    enabled = parts[2].lower() == "on"
+    lesson_id = parts[3] if len(parts) == 4 else "demo_001"
+    lesson = load_lesson(lesson_id)
+    if not lesson:
+        await message.answer("Урок не найден.")
+        return
+    course_id = str(lesson.get("course_id") or "conversation")
+    actor = f"telegram-admin:{message.from_user.id}"
+    try:
+        async with SessionLocal() as db:
+            if enabled:
+                _, changed = await grant_run_limit_access(
+                    db,
+                    child_id=child_id,
+                    lesson_id=lesson_id,
+                    course_id=course_id,
+                    actor=actor,
+                    reason="Explicit QA access granted by production administrator",
+                )
+            else:
+                changed = await revoke_run_limit_access(
+                    db,
+                    child_id=child_id,
+                    lesson_id=lesson_id,
+                    course_id=course_id,
+                    actor=actor,
+                    reason="QA access revoked by production administrator",
+                )
+            await db.commit()
+    except ValueError as exc:
+        await message.answer(f"Не удалось изменить QA-доступ: {exc}")
+        return
+    if not changed:
+        await message.answer("QA-доступ уже находится в запрошенном состоянии.")
+        return
+    await message.answer(
+        f"✅ QA-доступ для child_id={child_id}, lesson={lesson_id} "
+        + ("включён. Лимит прохождений обойдён только для этого урока; действие записано в audit log."
+           if enabled else "отключён. Обычный лимит прохождений снова действует.")
+    )
 
 
 @router.message(Command("dome_prices"))

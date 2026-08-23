@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "bootstrap_grants": [
+    {
+      "external_key": "owner-approved-current-test-demo-001-2026-08-23",
+      "child_display_name": "Test",
+      "require_unique_match": true,
+      "require_verified_parent": true,
+      "lesson_id": "demo_001",
+      "course_id": "conversation",
+      "permission": "UNLIMITED_LESSON_RUNS",
+      "account_role": "QA_TEST",
+      "reason": "Owner-approved persistent QA access for the current Test child"
+    }
+  ]
+}
