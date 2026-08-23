@@ -1,4 +1,5 @@
 import hashlib
+import asyncio
 import json
 import os
 import shutil
@@ -101,17 +102,32 @@ def test_mobile_interactions_cover_selection_suitcase_animals_audio_level_and_mo
     assert len(by_id["slide_09"]["selection_options"]) == 6
     assert len(by_id["slide_20"]["selection_options"]) == 4
     assert "selectedCardBranch" in player and "selected_card_id" in player and "card_question_index" in player
-    assert "suitcase-drop-zone" in player and "toggleSuitcase" in player and "persistInteraction" in player
+    assert "DragDropSuitcase" in player and "updateSuitcase" in player and "persistInteraction" in player
+    drag = (ROOT.parent / "DOME_MOBILE_77/src/components/DragDropSuitcase.tsx").read_text(encoding="utf-8")
+    assert "PanResponder.create" in drag and "onPanResponderMove" in drag and "scrollEnabled={!dragging}" in player
+    assert "onPress={()=>toggleSuitcase" not in player
     assert "penguin_parrot" in interactions and "lion_turtle" in interactions
     assert "lesson-target-${slide.slide_id}-${option.id}" in player
     assert "useAudioPlayerStatus" in player and "stage==='AI_SPEAKING'" in player
     assert "runtimePrompt(slide,languageLevel,workingDifficulty,'initial')" in player
     assert "correction_target" in player and "advance_allowed" in (ROOT / "app/webapp/mobile_api.py").read_text(encoding="utf-8")
     assert "MOOD_EMOJIS.map" in player and "completed:true" in player
-    assert "VOICE_EXAMPLES_RU" in player and "isGift" in player and "WAITING_INTERACTION" in player
+    assert "activeAnimalQuestion" in player and "isGift" in player and "WAITING_ACTION" in player
+    assert [row["phrase_id"] for row in by_id["slide_46"]["animal_questions"]] == ["penguin","parrot"]
     assert any(str(value).lower().startswith("спокой") for value in by_id["slide_49"]["mood_options"])
-    assert by_id["slide_45"]["image"].endswith("slide-45-clean.png") and "!isGiraffe||riddleRevealed" in player
+    assert by_id["slide_45"]["image"].endswith("slide-45-clean.png") and "!isRiddle||riddleRevealed" in player
     assert by_id["slide_20"]["image"].endswith("slide-20-repaired.png")
+
+
+def test_suitcase_mobile_assets_are_exact_authored_transparent_crops():
+    lesson = load_lesson();slide = next(row for row in lesson["slides"] if row["slide_id"] == "slide_24")
+    root = ROOT.parent / "DOME_MOBILE_77/assets/lesson/demo_001/suitcase-authored"
+    assert slide["drag_source_asset"] == "lesson-images/slide-24.png"
+    assert {row["id"] for row in slide["drag_items"]} == {"jacket","binoculars","water","compass","teddy","camera","telescope","fish","notebook","sunglasses"}
+    for item in slide["drag_items"]:
+        image = Image.open(root / item["asset"])
+        assert image.mode == "RGBA" and image.getextrema()[3][0] == 0 and image.getextrema()[3][1] == 255
+    assert (root / "suitcase-target.png").exists()
 
 
 def test_red_parrot_uses_verified_visual_ground_truth():
@@ -177,9 +193,20 @@ async def test_completion_and_movie_job_are_idempotent(monkeypatch, tmp_path):
     app = web.Application();mobile_api.register_mobile_routes(app);client = TestClient(TestServer(app));await client.start_server()
     try:
         first = await client.post(f"/api/mobile/session/{session_id}/complete", headers=headers, json={})
+        assert first.status == 200
+        first_payload=await first.json();assert first_payload["movie_status"] in {"PROCESSING","READY"}
+        # Await the registered background job rather than racing the shared
+        # Windows executor with an arbitrary wall-clock polling deadline.
+        pending=[task for task in mobile_api._movie_tasks if not task.done()]
+        if pending:
+            await asyncio.wait_for(asyncio.gather(*pending),timeout=10)
+        for _ in range(20):
+            status_response=await client.get(f"/api/mobile/session/{session_id}/movie",headers=headers)
+            status_payload=await status_response.json()
+            if status_payload["status"]=="READY":break
+            await asyncio.sleep(0.01)
+        assert status_payload["status"]=="READY" and status_payload["url"]
         second = await client.post(f"/api/mobile/session/{session_id}/complete", headers=headers, json={})
-        assert first.status == second.status == 200
-        assert (await first.json())["movie_status"] == "READY"
         assert (await second.json())["movie_status"] == "READY"
     finally:
         await client.close()

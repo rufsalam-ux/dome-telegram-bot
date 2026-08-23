@@ -147,9 +147,9 @@ export function saveSessionProgress(sessionId:number,currentStep:number){
   return request(`/api/mobile/session/${sessionId}/progress`,jsonInit('POST',{current_step:currentStep}));
 }
 
-export async function sendVoice(sessionId:number,uri:string,slideId:string,phraseId:string|undefined,prompt:string){
+export async function sendVoice(sessionId:number,uri:string,slideId:string,phraseId:string|undefined,prompt:string,conversationTurn=0){
   const audio_base64=await FileSystem.readAsStringAsync(uri,{encoding:FileSystem.EncodingType.Base64});
-  return request(`/api/mobile/session/${sessionId}/voice`,jsonInit('POST',{audio_base64,slide_id:slideId,phrase_id:phraseId||null,prompt:prompt||''}));
+  return request(`/api/mobile/session/${sessionId}/voice`,jsonInit('POST',{audio_base64,slide_id:slideId,phrase_id:phraseId||null,prompt:prompt||'',conversation_turn:conversationTurn}));
 }
 
 export function sendInteractive(sessionId:number,slideId:string,taskType:string,result:any){
@@ -160,8 +160,10 @@ export function completeSession(sessionId:number){
   return request(`/api/mobile/session/${sessionId}/complete`,jsonInit('POST',{}));
 }
 
-export async function ttsSource(text:string,targetLanguage='ru',nativeText='',nativeLanguage='ru',sourceLanguage='ru'){
-  const query=new URLSearchParams({text,target_language:targetLanguage,native_text:nativeText,native_language:nativeLanguage,source_language:sourceLanguage});
+export function getMovieStatus(sessionId:number){return request(`/api/mobile/session/${sessionId}/movie`)}
+
+export async function ttsSource(text:string,targetLanguage='ru',nativeText='',nativeLanguage='ru',sourceLanguage='ru',nativeSourceLanguage=sourceLanguage,style='warm'){
+  const query=new URLSearchParams({text,target_language:targetLanguage,native_text:nativeText,native_language:nativeLanguage,source_language:sourceLanguage,native_source_language:nativeSourceLanguage,style});
   return {
     uri:`${API_BASE}/api/mobile/tts?${query.toString()}`,
     headers:{Authorization:`Bearer ${await requiredToken()}`},

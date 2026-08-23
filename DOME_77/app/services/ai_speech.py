@@ -72,10 +72,26 @@ async def translate_text(text: str, source_language: str, target_language: str) 
     return translated
 
 
-async def synthesize_speech(text: str, language: str, cache_dir: Path, purpose: str) -> Path | None:
+async def synthesize_speech(
+    text: str,
+    language: str,
+    cache_dir: Path,
+    purpose: str,
+    delivery_style: str = "warm",
+) -> Path | None:
     if not settings.openai_api_key or not text:
         return None
-    digest = hashlib.sha256(f"DOME_TTS_V3|{settings.openai_tts_model}|{settings.child_tts_voice}|{language}|{text}".encode()).hexdigest()[:24]
+    style = str(delivery_style or "warm").strip().lower()
+    styles = {
+        "happy": "Sound genuinely delighted, with a light smile and a tiny celebratory lift.",
+        "curious": "Sound playfully curious; lift the intonation naturally on the single question.",
+        "surprised": "Sound warmly surprised, then settle into a calm curious tone.",
+        "encouraging": "Sound patient and reassuring, with a short pause before the helpful example.",
+        "gentle_correction": "Correct softly and matter-of-factly; never sound disappointed.",
+        "warm": "Sound warm, attentive and conversational.",
+    }
+    style_instruction = styles.get(style, styles["warm"])
+    digest = hashlib.sha256(f"DOME_TTS_V4|{settings.openai_tts_model}|{settings.child_tts_voice}|{language}|{style}|{text}".encode()).hexdigest()[:24]
     cache_dir.mkdir(parents=True, exist_ok=True)
     output = cache_dir / f"{purpose}_{digest}.ogg"
     if output.exists() and output.stat().st_size > 0:
@@ -90,6 +106,7 @@ async def synthesize_speech(text: str, language: str, cache_dir: Path, purpose: 
             f"Speak to a child learning {language_name(language)}. "
             "Use a soft, friendly, youthful feminine voice for a child. Sound kind, warm, emotionally expressive and genuinely interested. "
             "Sound like a warm, lively female children's presenter: smile in the voice, vary intonation naturally, use playful curiosity, gentle excitement, expressive pauses and a calm conversational pace. Questions should sound curious and praise should sound genuinely pleased. "
+            f"{style_instruction} "
             "Never sound stern, rough, flat, robotic, cold, rushed or babyish. Keep pronunciation very clear."
         ),
     }

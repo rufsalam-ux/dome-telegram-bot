@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,12 +12,15 @@ import httpx
 
 from app.core.config import settings
 from app.core.i18n import language_name
+from app.services.conversational_tutor import TutorTurn, build_assessed_turn
 
 log = logging.getLogger("dome.speech")
 
 _NON_SPEECH_TRANSCRIPTS = {
     "music", "applause", "silence", "background noise", "noise",
     "музыка", "тишина", "шум", "аплодисменты",
+    "uh", "um", "erm", "hmm", "mm", "ah", "eh",
+    "ээ", "эм", "мм", "м-м", "аа", "а-а",
 }
 
 
@@ -35,6 +39,41 @@ def is_non_speech_transcript(value: str) -> bool:
     return bool(compact) and len(set(compact)) == 1 and len(compact) >= 3
 
 
+def _transcription_confidence(payload: dict) -> float:
+    """Derive confidence from provider evidence instead of inventing a score."""
+    token_logprobs: list[float] = []
+    for item in payload.get("logprobs") or []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            token_logprobs.append(float(item["logprob"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+    if token_logprobs:
+        return max(0.0, min(1.0, math.exp(sum(token_logprobs) / len(token_logprobs))))
+
+    weighted_logprob = 0.0
+    total_weight = 0.0
+    no_speech_probability = 0.0
+    for segment in payload.get("segments") or []:
+        if not isinstance(segment, dict):
+            continue
+        try:
+            start = float(segment.get("start", 0.0))
+            end = float(segment.get("end", start))
+            weight = max(0.05, end - start)
+            weighted_logprob += float(segment["avg_logprob"]) * weight
+            total_weight += weight
+            no_speech_probability = max(no_speech_probability, float(segment.get("no_speech_prob", 0.0)))
+        except (KeyError, TypeError, ValueError):
+            continue
+    if total_weight:
+        confidence = math.exp(weighted_logprob / total_weight) * (1.0 - no_speech_probability)
+        return max(0.0, min(1.0, confidence))
+    # Missing confidence evidence is unsafe: semantic grading must not receive it.
+    return 0.0
+
+
 @dataclass
 class SpeechAssessment:
     transcript: str = ""
@@ -48,6 +87,7 @@ class SpeechAssessment:
     corrected_target: str = ""
     response_target: str = ""
     response_native: str = ""
+    tutor_turn: TutorTurn | None = None
 
     def __post_init__(self):
         self.grammar_errors = self.grammar_errors or []
@@ -57,6 +97,10 @@ class SpeechAssessment:
 async def _transcribe_with_model(wav_path: Path, model: str, language: str = "", prompt: str = "") -> tuple[str, str, float]:
     headers = {"Authorization": f"Bearer {settings.openai_api_key}"}
     data = {"model": model, "response_format": "json"}
+    if model.startswith("gpt-4o"):
+        data["include[]"] = "logprobs"
+    elif model == "whisper-1":
+        data["response_format"] = "verbose_json"
     if language:
         data["language"] = language
     if prompt:
@@ -75,7 +119,7 @@ async def _transcribe_with_model(wav_path: Path, model: str, language: str = "",
     payload = response.json()
     text = str(payload.get("text", "")).strip()
     language = str(payload.get("language", "")).strip().lower()
-    return text, language, (0.9 if text else 0.0)
+    return text, language, (_transcription_confidence(payload) if text else 0.0)
 
 
 async def transcribe_audio(wav_path: Path, target_language: str = "", native_language: str = "", goal: str = "") -> tuple[str, str, float]:
@@ -149,16 +193,22 @@ async def _evaluate_with_chat(prompt: dict) -> dict | None:
     instructions = (
         "You are a careful child language tutor. Evaluate a short spoken answer. "
         "Return valid JSON only with keys: detected_language_code, semantic_match, grammar_errors, "
-        "pronunciation_errors, feedback_native, corrected_target, response_target, response_native, decision. "
+        "pronunciation_errors, feedback_native, corrected_target, reaction_target, response_native, "
+        "follow_up_target, model_answer_target, native_hint, emotion, decision. "
         "decision must be CORRECT, RETRY, WRONG_LANGUAGE, or TECHNICAL_UNCERTAINTY. "
         "Do not punish likely transcription errors. Accept correct close paraphrases. Preserve the child's chosen meaning and nouns: never replace cat with dog or one chosen animal/object with another. "
-        "response_target must sound like a real human dialogue with a child, not a test script. "
+        "reaction_target must react to the ACTUAL meaning of this answer with genuine delight, curiosity, surprise, support, or a gentle correction. "
+        "Never output an interchangeable Nice/Great/Good regardless of the answer, and never praise a wrong or empty answer. "
         "Do not mechanically repeat or paraphrase what the child just said when it is already understandable. "
-        "Never ask a follow-up question and never create a new task. The lesson script alone decides what happens next. "
+        "follow_up_target must be empty unless dialogue_policy.allow_follow_up is true, the answer is correct, and follow-up slots remain. "
+        "When allowed, ask exactly one short, naturally connected question based on the child's answer. Never create an unrelated task. "
         "When the child needs help, give one short usable example that directly answers the CURRENT goal. Never reuse nouns, animals, places, facts, or questions from another task. "
         "Use the child's name only occasionally when a name is provided, never in every reply. "
         "At low difficulty accept one-word/very short answers. Never invite an extra reason, detail, comparison or dialogue unless the CURRENT goal explicitly requests it. "
-        "corrected_target must be a valid direct answer to the CURRENT goal, never praise such as That is correct. response_target may only be a short acknowledgement, never a question. response_native may briefly explain the result in the child's native language."
+        "For PRE_A1 use no more than two very short sentences and at most one question in the whole turn. "
+        "corrected_target and model_answer_target must be valid direct answers to the CURRENT goal, never praise. "
+        "response_native/native_hint are brief and only needed for wrong-language, off-topic, confused, or explicitly requested progressive help. "
+        "emotion must be one of warm, happy, curious, surprised, encouraging, gentle_correction."
     )
     headers = {"Authorization": f"Bearer {settings.openai_api_key}", "Content-Type": "application/json"}
     models = [settings.openai_text_model or "gpt-4o-mini"]
@@ -196,6 +246,10 @@ async def assess_speech(
     child_name: str = "",
     working_difficulty: float = 0.15,
     language_level: str = "PRE_A1",
+    allow_follow_up: bool = False,
+    max_follow_ups: int = 0,
+    follow_up_count: int = 0,
+    conversation_goal: str = "",
 ) -> SpeechAssessment:
     transcript, detected, confidence = await transcribe_audio(wav_path, target_language, native_language, goal)
     if is_non_speech_transcript(transcript) or confidence < 0.35:
@@ -213,7 +267,8 @@ async def assess_speech(
             confidence=confidence,
             semantic_match=0.5,
             status="ACCEPTED_BEST_ATTEMPT",
-            response_target="Good. Let's continue.",
+            response_target="Let's continue.",
+            tutor_turn=TutorTurn(reaction_target="Let's continue.", complete=True, reason="offline_fallback"),
         )
 
     prompt = {
@@ -224,6 +279,7 @@ async def assess_speech(
         "transcript": transcript,
         "transcription_detected_language": detected,
         "goal": goal,
+        "conversation_goal": conversation_goal or goal,
         "accepted_meaning": accepted_meaning or [],
         "attempt_number": attempt_number,
         "child_name": child_name,
@@ -233,7 +289,12 @@ async def assess_speech(
             "use_name_sparingly": True,
             "avoid_echo_if_answer_is_understandable": True,
             "offer_real_examples_when_helping": True,
-            "adapt_complexity_during_this_lesson": True
+            "adapt_complexity_during_this_lesson": True,
+            "allow_follow_up": bool(allow_follow_up),
+            "max_follow_ups": max(0, int(max_follow_ups)),
+            "follow_up_count": max(0, int(follow_up_count)),
+            "remaining_follow_ups": max(0, int(max_follow_ups) - int(follow_up_count)),
+            "pre_a1_max_questions_per_turn": 1,
         },
     }
     result = await _evaluate_with_chat(prompt)
@@ -247,6 +308,14 @@ async def assess_speech(
         "WRONG_LANGUAGE": "WRONG_LANGUAGE",
         "TECHNICAL_UNCERTAINTY": "TECHNICAL_UNCERTAINTY",
     }.get(decision, "TECHNICAL_UNCERTAINTY")
+    accepted = status.startswith("ACCEPTED")
+    turn = build_assessed_turn(
+        result,
+        accepted=accepted,
+        allow_follow_up=allow_follow_up,
+        follow_up_count=follow_up_count,
+        max_follow_ups=max_follow_ups,
+    )
     return SpeechAssessment(
         transcript=transcript,
         detected_language=str(result.get("detected_language_code") or detected),
@@ -257,6 +326,7 @@ async def assess_speech(
         status=status,
         feedback_native=str(result.get("feedback_native") or ""),
         corrected_target=str(result.get("corrected_target") or goal),
-        response_target=str(result.get("response_target") or ""),
+        response_target=turn.reaction_target,
         response_native=str(result.get("response_native") or ""),
+        tutor_turn=turn,
     )

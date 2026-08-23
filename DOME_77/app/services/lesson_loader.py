@@ -18,6 +18,28 @@ def _runtime_slides(slides: list[dict]) -> list[dict]:
     return result
 
 
+def _enrich_runtime_layout(slide: dict) -> dict:
+    """Give every slide a common collision/layout contract."""
+
+    boxes = [list(value) for value in slide.get("content_boxes", []) if isinstance(value, list) and len(value) == 4]
+    for option in slide.get("selection_options", []) or []:
+        rect = option.get("rect") if isinstance(option, dict) else None
+        if isinstance(rect, list) and len(rect) == 4:
+            boxes.append(list(rect))
+    for key in ("character_box", "question_card_box", "prompt_box"):
+        value = slide.get(key)
+        if isinstance(value, list) and len(value) == 4:
+            boxes.append(list(value))
+    if not boxes:
+        boxes.append(list(slide.get("visual_content_box") or [0.08, 0.06, 0.84, 0.72]))
+    slide["content_boxes"] = boxes
+    slide["runtime_state_machine"] = [
+        "ENTER", "AI_SPEAKING", "WAITING_ACTION", "WAITING_VOICE",
+        "PROCESSING", "FEEDBACK", "FOLLOW_UP", "RETRY", "COMPLETE",
+    ]
+    return slide
+
+
 def load_lesson(lesson_id: str) -> dict:
     path = settings.content_root / "lessons" / lesson_id / "lesson.json"
     with path.open("r", encoding="utf-8") as f:
@@ -33,11 +55,11 @@ def load_lesson(lesson_id: str) -> dict:
                 lesson["timeline"] = external_timeline
         except Exception:
             pass
-    lesson["slides"] = _runtime_slides(lesson.get("slides") or [])
+    lesson["slides"] = [_enrich_runtime_layout(slide) for slide in _runtime_slides(lesson.get("slides") or [])]
     bad = [s for s in lesson["slides"] if int(s.get("order", 0) or 0) in REMOVED_ORDERS]
     if bad:
         raise RuntimeError(f"Removed slides leaked into runtime: {[s.get('slide_id') for s in bad]}")
-    lesson["runtime_revision"] = 56
+    lesson["runtime_revision"] = 79
     return lesson
 
 

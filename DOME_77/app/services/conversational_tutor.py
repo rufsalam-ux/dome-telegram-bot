@@ -1,0 +1,133 @@
+from __future__ import annotations
+
+import re
+from dataclasses import asdict, dataclass
+
+
+_ALLOWED_EMOTIONS = {
+    "warm",
+    "happy",
+    "curious",
+    "surprised",
+    "encouraging",
+    "gentle_correction",
+}
+
+
+@dataclass(frozen=True)
+class TutorTurn:
+    """One bounded, child-safe conversational turn returned to every client."""
+
+    reaction_target: str = ""
+    reaction_native: str = ""
+    correction_target: str = ""
+    follow_up_target: str = ""
+    model_answer_target: str = ""
+    native_hint: str = ""
+    emotion: str = "warm"
+    complete: bool = False
+    skipped: bool = False
+    reason: str = ""
+
+    def payload(self) -> dict:
+        return asdict(self)
+
+
+def _compact(text: object, *, max_chars: int = 280) -> str:
+    value = " ".join(str(text or "").strip().split())
+    return value[:max_chars].strip()
+
+
+def _one_question(text: object) -> str:
+    """Keep a PRE_A1 turn short and enforce at most one question."""
+
+    value = _compact(text)
+    if not value:
+        return ""
+    question_seen = False
+    output: list[str] = []
+    for part in re.split(r"(?<=[.!?])\s+", value):
+        if "?" in part:
+            if question_seen:
+                continue
+            question_seen = True
+            part = part.split("?", 1)[0].strip() + "?"
+        output.append(part)
+        if len(output) >= 2:
+            break
+    return " ".join(output).strip()
+
+
+def build_assessed_turn(
+    result: dict,
+    *,
+    accepted: bool,
+    allow_follow_up: bool,
+    follow_up_count: int,
+    max_follow_ups: int,
+) -> TutorTurn:
+    """Normalize an AI assessment into the shared runtime contract.
+
+    The model can suggest a follow-up, but authored lesson policy is the final
+    authority. This prevents accidental extra questions or endless dialogue.
+    """
+
+    reaction = _compact(result.get("reaction_target") or result.get("response_target")).replace("?", ".")
+    correction = _compact(result.get("corrected_target"))
+    follow_up = _one_question(result.get("follow_up_target"))
+    can_follow = accepted and allow_follow_up and follow_up_count < max(0, int(max_follow_ups))
+    if not can_follow:
+        follow_up = ""
+    emotion = str(result.get("emotion") or "warm").strip().lower()
+    if emotion not in _ALLOWED_EMOTIONS:
+        emotion = "warm"
+    return TutorTurn(
+        reaction_target=reaction,
+        reaction_native=_compact(result.get("response_native")),
+        correction_target=correction,
+        follow_up_target=follow_up,
+        model_answer_target=_compact(result.get("model_answer_target") or correction),
+        native_hint=_compact(result.get("native_hint")),
+        emotion=emotion,
+        complete=accepted and not follow_up,
+        reason="accepted" if accepted else "retry",
+    )
+
+
+def no_speech_turn(
+    attempt_number: int,
+    max_attempts: int,
+    *,
+    target_retry: str,
+    native_hint: str = "",
+    model_answer: str = "",
+) -> TutorTurn:
+    """Progressive assistance for silence; never represents success."""
+
+    attempt = max(1, int(attempt_number))
+    maximum = max(1, int(max_attempts))
+    if attempt == 1:
+        return TutorTurn(
+            reaction_target=_compact(target_retry),
+            native_hint=_compact(native_hint),
+            emotion="encouraging",
+            complete=False,
+            reason="no_speech_retry",
+        )
+    if attempt < maximum:
+        return TutorTurn(
+            reaction_target=_compact(target_retry),
+            model_answer_target=_compact(model_answer),
+            native_hint=_compact(native_hint),
+            emotion="encouraging",
+            complete=False,
+            reason="no_speech_model",
+        )
+    return TutorTurn(
+        reaction_target=_compact(target_retry),
+        native_hint=_compact(native_hint),
+        emotion="warm",
+        complete=True,
+        skipped=True,
+        reason="no_speech_skipped",
+    )

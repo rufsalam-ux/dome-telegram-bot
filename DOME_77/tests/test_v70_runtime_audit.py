@@ -93,7 +93,7 @@ def test_legacy_conversation_uses_same_two_run_entitlement_ledger():
     demo=json.loads(Path('content/lessons/demo_001/lesson.json').read_text('utf-8'))
     assert demo['max_completed_runs']==2
     assert demo['expires_after_months']==10
-    assert demo['cartoon_on_first_run_only'] is True
+    assert demo['cartoon_on_first_run_only'] is False
     h=Path('app/bot/handlers.py').read_text('utf-8')
     resume=h[h.index('async def _resume_or_start_lesson'):h.index('@router.callback_query(F.data == "lesson:continue")')]
     assert 'can_start_authored' in resume and 'ensure_test_entitlement' in resume

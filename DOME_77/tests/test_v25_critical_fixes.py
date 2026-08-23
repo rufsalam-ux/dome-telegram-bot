@@ -6,7 +6,9 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_transcription_format_is_supported():
     text = (ROOT / 'app/services/speech_pipeline.py').read_text(encoding='utf-8')
     assert '"response_format": "json"' in text
-    assert 'verbose_json' not in text
+    assert 'data["include[]"] = "logprobs"' in text
+    assert 'data["response_format"] = "verbose_json"' in text
+    assert '_transcription_confidence(payload)' in text
 
 
 def test_suitcase_has_dedicated_wait_state_and_next_guard():

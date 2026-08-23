@@ -58,12 +58,14 @@ export const lessonImages: Record<string, any> = {
 };
 
 export const suitcaseImages:Record<string,any>={
-  jacket:require('../../assets/lesson/demo_001/suitcase/jacket.png'),
-  hat:require('../../assets/lesson/demo_001/suitcase/hat.png'),
-  boots:require('../../assets/lesson/demo_001/suitcase/boots.png'),
-  camera:require('../../assets/lesson/demo_001/suitcase/camera.png'),
-  gloves:require('../../assets/lesson/demo_001/suitcase/gloves.png'),
-  swimsuit:require('../../assets/lesson/demo_001/suitcase/swimsuit.png'),
-  flippers:require('../../assets/lesson/demo_001/suitcase/flippers.png'),
-  shorts:require('../../assets/lesson/demo_001/suitcase/shorts.png'),
+  jacket:require('../../assets/lesson/demo_001/suitcase-authored/jacket.png'),
+  binoculars:require('../../assets/lesson/demo_001/suitcase-authored/binoculars.png'),
+  water:require('../../assets/lesson/demo_001/suitcase-authored/water.png'),
+  compass:require('../../assets/lesson/demo_001/suitcase-authored/compass.png'),
+  teddy:require('../../assets/lesson/demo_001/suitcase-authored/teddy.png'),
+  camera:require('../../assets/lesson/demo_001/suitcase-authored/camera.png'),
+  telescope:require('../../assets/lesson/demo_001/suitcase-authored/telescope.png'),
+  fish:require('../../assets/lesson/demo_001/suitcase-authored/fish.png'),
+  notebook:require('../../assets/lesson/demo_001/suitcase-authored/notebook.png'),
+  sunglasses:require('../../assets/lesson/demo_001/suitcase-authored/sunglasses.png'),
 };

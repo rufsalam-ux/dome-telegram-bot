@@ -45,13 +45,15 @@ export const VOICE_EXAMPLES_RU:Record<string,string>={
 
 export const SUITCASE_ITEMS=[
   {id:'jacket',label:'Jacket',useful:true},
-  {id:'hat',label:'Hat',useful:true},
-  {id:'boots',label:'Boots',useful:true},
+  {id:'binoculars',label:'Binoculars',useful:true},
+  {id:'water',label:'Water bottle',useful:true},
+  {id:'compass',label:'Compass',useful:true},
+  {id:'teddy',label:'Teddy bear',useful:false},
   {id:'camera',label:'Camera',useful:true},
-  {id:'gloves',label:'Gloves',useful:true},
-  {id:'swimsuit',label:'Swimsuit',useful:false},
-  {id:'flippers',label:'Flippers',useful:false},
-  {id:'shorts',label:'Shorts',useful:false},
+  {id:'telescope',label:'Telescope',useful:true},
+  {id:'fish',label:'Fish',useful:false},
+  {id:'notebook',label:'Notebook',useful:true},
+  {id:'sunglasses',label:'Sunglasses',useful:true},
 ] as const;
 
 export function buildRuntimeOrder(slides:any[]):any[]{

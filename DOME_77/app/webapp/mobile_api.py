@@ -16,6 +16,7 @@ from app.services.character_processor import process_character
 from app.services.audio_processing import VoiceActivity, analyze_voice_activity, prepare_child_voice
 from app.services.speech_pipeline import SpeechAssessment, assess_speech
 from app.services.lesson_runtime import apply_adaptive_assessment, complexity_support, no_speech_feedback, voice_attempt_outcome
+from app.services.conversational_tutor import no_speech_turn
 from app.services.mobile_lesson_movie import MovieRenderInputs,build_mobile_lesson_movie,select_movie_voice_takes
 from app.services.email_reports import send_homework_email,_send_with_attachment_sync,send_verification_email,send_password_reset_email
 from app.services.ai_speech import synthesize_speech, translate_text
@@ -39,6 +40,7 @@ from app.services.subscription_provider import (
 
 log=logging.getLogger('dome.mobile_api')
 MOBILE_LANGUAGES={'ru','en','es','de','fr','it','pt','tr','ar','zh'}
+_movie_tasks:set[asyncio.Task]=set()
 
 
 def _utcnow() -> datetime:
@@ -360,7 +362,7 @@ async def voice(request:web.Request)->web.Response:
         raw=root/f'voice_{secrets.token_hex(6)}.m4a'
         try:raw.write_bytes(base64.b64decode(payload,validate=True))
         except Exception:raise web.HTTPBadRequest(text=json.dumps({'error':'Invalid audio_base64'}),content_type='application/json')
-        fields={'slide_id':str(data.get('slide_id') or ''),'prompt':str(data.get('prompt') or ''),'phrase_id':data.get('phrase_id')}
+        fields={'slide_id':str(data.get('slide_id') or ''),'prompt':str(data.get('prompt') or ''),'phrase_id':data.get('phrase_id'),'conversation_turn':data.get('conversation_turn',0)}
     else:
         reader=await request.multipart()
         while True:
@@ -377,6 +379,8 @@ async def voice(request:web.Request)->web.Response:
     if raw is None:raise web.HTTPBadRequest(text=json.dumps({'error':'No audio received'}),content_type='application/json')
     uploaded=time.perf_counter()
     slide_id=fields.get('slide_id','');prompt=fields.get('prompt','');pid=fields.get('phrase_id') or None
+    try:conversation_turn=max(0,int(fields.get('conversation_turn') or 0))
+    except (TypeError,ValueError):conversation_turn=0
     lesson_data=load_lesson(sess.lesson_id);sl=_slide(lesson_data,slide_id);ph=_phrase(lesson_data,pid or sl.get('required_phrase_id'))
     if raw.stat().st_size<1000:
         activity=VoiceActivity(0.0,0.0,0.0,None,None,False,'TOO_SHORT')
@@ -395,7 +399,15 @@ async def voice(request:web.Request)->web.Response:
     attempt_number=int(n)+1;max_attempts=max(1,int(sl.get('max_attempts') or 3))
     goal=prompt or ph.get('target_text') or sl.get('question') or sl.get('bot_says_target') or ''
     if activity.has_speech:
-        assessment=await assess_speech(wav,c.target_language or 'ru',c.native_language or 'ru',goal,ph.get('accepted_meaning') or [],attempt_number,c.display_name,c.working_difficulty,c.language_level or 'PRE_A1')
+        assessment=await assess_speech(
+            wav,c.target_language or 'ru',c.native_language or 'ru',goal,
+            ph.get('accepted_meaning') or sl.get('accepted_meaning') or [],attempt_number,
+            c.display_name,c.working_difficulty,c.language_level or 'PRE_A1',
+            allow_follow_up=bool(sl.get('allow_ai_followup')) and not bool(sl.get('suppress_ai_followup')),
+            max_follow_ups=max(0,int(sl.get('max_ai_followups') or 0)),
+            follow_up_count=conversation_turn,
+            conversation_goal=str(sl.get('conversation_goal') or goal),
+        )
     else:
         assessment=SpeechAssessment(status='NO_SPEECH')
     assessed=time.perf_counter()
@@ -403,8 +415,19 @@ async def voice(request:web.Request)->web.Response:
     status=outcome.status;accepted=outcome.accepted
     correction_target=str(assessment.corrected_target or ph.get('simplified_text') or sl.get('simplified_text') or ph.get('target_text') or goal)
     feedback=assessment.feedback_native or assessment.response_native or assessment.response_target
+    tutor_turn=assessment.tutor_turn
     if str(assessment.status or '')=='NO_SPEECH':
-        feedback,correction_target=no_speech_feedback(attempt_number,max_attempts,correction_target)
+        feedback,_legacy_example=no_speech_feedback(attempt_number,max_attempts,correction_target)
+        retry_ru = 'Я тебя не услышала. Попробуй ещё раз.' if attempt_number < max_attempts else 'Я тебя не услышала. Пойдём дальше, а попытку отметим как пропущенную.'
+        native_ru = str(sl.get('bot_explains_native') or sl.get('question') or '')
+        example_ru = correction_target if attempt_number > 1 and attempt_number < max_attempts else ''
+        target_retry,native_hint,model_answer=await asyncio.gather(
+            translate_text(retry_ru,'ru',c.target_language or 'ru'),
+            translate_text(native_ru,'ru',c.native_language or 'ru') if native_ru else asyncio.sleep(0,result=''),
+            translate_text(example_ru,'ru',c.target_language or 'ru') if example_ru else asyncio.sleep(0,result=''),
+        )
+        tutor_turn=no_speech_turn(attempt_number,max_attempts,target_retry=target_retry,native_hint=native_hint,model_answer=model_answer)
+        correction_target=model_answer
     async with SessionLocal() as db:
         db_child=await db.get(Child,c.id)
         va=VoiceAttempt(lesson_session_id=sid,phrase_id=storage_phrase_id,attempt_number=attempt_number,audio_path=str(wav),status=status,transcript=assessment.transcript,detected_language=assessment.detected_language,confidence=assessment.confidence,grammar_errors=json.dumps(assessment.grammar_errors,ensure_ascii=False),pronunciation_errors=json.dumps(assessment.pronunciation_errors,ensure_ascii=False),semantic_match=assessment.semantic_match);db.add(va)
@@ -418,7 +441,7 @@ async def voice(request:web.Request)->web.Response:
         await db.commit()
     saved=time.perf_counter()
     log.info('MOBILE_VOICE_LATENCY session=%s slide=%s phrase=%s upload_ms=%d prepare_ms=%d assess_ms=%d save_ms=%d total_ms=%d attempt=%d status=%s activity=%s speech_ms=%d',sid,slide_id,storage_phrase_id,round((uploaded-started)*1000),round((prepared-uploaded)*1000),round((assessed-prepared)*1000),round((saved-assessed)*1000),round((saved-started)*1000),attempt_number,status,activity.reason,round(activity.speech_seconds*1000))
-    return web.json_response({'status':status,'accepted':accepted,'advance_allowed':outcome.advance_allowed,'needs_retry':outcome.needs_retry,'attempt_number':attempt_number,'max_attempts':max_attempts,'transcript':assessment.transcript,'feedback':feedback,'feedback_source_language':'ru' if str(assessment.status or '')=='NO_SPEECH' else (c.native_language or 'ru'),'correction_target':correction_target if not accepted else '','correction_source_language':'ru' if str(assessment.status or '')=='NO_SPEECH' else (c.target_language or 'ru'),'response_target':assessment.response_target,'response_native':assessment.response_native,'semantic_match':assessment.semantic_match,'voice_activity':{'reason':activity.reason,'duration_seconds':activity.duration_seconds,'speech_seconds':activity.speech_seconds,'speech_ratio':activity.speech_ratio},'adaptive_profile':{'working_difficulty':working_difficulty,'language_level':language_level,'support':complexity_support(working_difficulty)}})
+    return web.json_response({'status':status,'accepted':accepted,'advance_allowed':outcome.advance_allowed,'needs_retry':outcome.needs_retry,'attempt_number':attempt_number,'max_attempts':max_attempts,'transcript':assessment.transcript,'feedback':feedback,'feedback_source_language':c.native_language or 'ru','correction_target':correction_target if not accepted else '','correction_source_language':c.target_language or 'ru','response_target':assessment.response_target,'response_native':assessment.response_native,'semantic_match':assessment.semantic_match,'tutor_turn':tutor_turn.payload() if tutor_turn else None,'voice_activity':{'reason':activity.reason,'duration_seconds':activity.duration_seconds,'speech_seconds':activity.speech_seconds,'speech_ratio':activity.speech_ratio,'mean_volume_db':activity.mean_volume_db,'max_volume_db':activity.max_volume_db},'adaptive_profile':{'working_difficulty':working_difficulty,'language_level':language_level,'support':complexity_support(working_difficulty)}})
 
 async def interactive(request:web.Request)->web.Response:
     p=await _parent(request);sid=int(request.match_info['session_id']);data=await request.json()
@@ -444,19 +467,45 @@ async def update_child_language(request:web.Request)->web.Response:
 
 async def tts(request:web.Request)->web.StreamResponse:
     started=time.perf_counter();await _parent(request)
-    text=str(request.query.get('text',''))[:1000];native_text=str(request.query.get('native_text',''))[:1000];source=str(request.query.get('source_language','ru'));target=str(request.query.get('target_language','ru'));native=str(request.query.get('native_language','ru'))
+    text=str(request.query.get('text',''))[:1000];native_text=str(request.query.get('native_text',''))[:1000];source=str(request.query.get('source_language','ru'));native_source=str(request.query.get('native_source_language',source));target=str(request.query.get('target_language','ru'));native=str(request.query.get('native_language','ru'));style=str(request.query.get('style','warm'))[:32]
     if not text and not native_text:raise web.HTTPBadRequest()
     try:
         spoken_target=await translate_text(text,source,target) if text else ''
-        spoken_native=await translate_text(native_text,source,native) if native_text else ''
+        spoken_native=await translate_text(native_text,native_source,native) if native_text else ''
     except Exception as exc:raise web.HTTPServiceUnavailable(text=f'Translation unavailable: {exc}')
     translated=time.perf_counter()
     combined=spoken_target
     if spoken_native and (native!=target or spoken_native!=spoken_target):combined=(combined+'\n\n'+spoken_native).strip()
-    path=await synthesize_speech(combined,target,settings.storage_root/'tts-cache-mobile','mobile')
+    path=await synthesize_speech(combined,target,settings.storage_root/'tts-cache-mobile','mobile',style)
     if not path:raise web.HTTPServiceUnavailable(text='TTS unavailable')
     ready=time.perf_counter();log.info('MOBILE_TTS_LATENCY source=%s target=%s translate_ms=%d synth_or_cache_ms=%d total_ms=%d',source,target,round((translated-started)*1000),round((ready-translated)*1000),round((ready-started)*1000))
     return web.FileResponse(path)
+
+
+def _spawn_movie_task(coro)->asyncio.Task:
+    task=asyncio.create_task(coro,name='dome-mobile-movie-render')
+    _movie_tasks.add(task);task.add_done_callback(_movie_tasks.discard)
+    return task
+
+
+async def _render_mobile_movie_job(movie_id:int,inputs:MovieRenderInputs,child_id:int,lesson_id:str,course_id:str,parent_email:str|None,email_enabled:bool,run_no:int,lesson_title:str)->None:
+    try:
+        await asyncio.to_thread(build_mobile_lesson_movie,inputs)
+        async with SessionLocal() as db:
+            movie=await db.get(LessonMovie,movie_id)
+            if movie:
+                movie.status='READY';movie.output_path=str(inputs.output);movie.error=None;await db.commit()
+        await mark_cartoon_generated(child_id,lesson_id,course_id)
+        if email_enabled and parent_email:
+            subject=f'DOME — мультфильм после прохождения {run_no}: {lesson_title}'
+            body=f'Прохождение {run_no} завершено. Персональный мультфильм прикреплён к письму.'
+            try:await asyncio.to_thread(_send_with_attachment_sync,parent_email,subject,body,str(inputs.output))
+            except Exception as exc:log.warning('Mobile movie email failed: %s',exc)
+    except Exception as exc:
+        log.exception('Mobile authored movie failed: %s',exc)
+        async with SessionLocal() as db:
+            movie=await db.get(LessonMovie,movie_id)
+            if movie:movie.status='FAILED';movie.error=str(exc)[:2000];await db.commit()
 
 async def complete(request:web.Request)->web.Response:
     p=await _parent(request);sid=int(request.match_info['session_id'])
@@ -491,20 +540,9 @@ async def complete(request:web.Request)->web.Response:
             movie_id=movie.id if movie else None
         if should_render:
             lesson_dir=Path(settings.content_root)/'lessons'/sess.lesson_id
-            try:
-                await asyncio.to_thread(build_mobile_lesson_movie,MovieRenderInputs(base_video=lesson_dir/str(lesson_data['cartoon_base']),character=Path(char.processed_path or char.original_path),audio_by_phrase=audio_by_phrase,timeline=list(lesson_data.get('timeline') or []),output=out,lesson_dir=lesson_dir,target_language=c.target_language or 'ru'))
-                async with SessionLocal() as db:
-                    movie=await db.get(LessonMovie,movie_id);movie.status='READY';movie.output_path=str(out);movie.error=None;await db.commit()
-                movie_status='READY'
-                if par and par.email_reports_enabled and par.email:
-                    subject=f'DOME — мультфильм после прохождения {run_no}: {lesson_data.get("title") or sess.lesson_id}';body=f'{c.display_name} завершил(а) прохождение {run_no}. Персональный мультфильм прикреплён к письму.'
-                    try:await asyncio.to_thread(_send_with_attachment_sync,par.email,subject,body,str(out))
-                    except Exception as exc:log.warning('Mobile movie email failed: %s',exc)
-            except Exception as exc:
-                movie_status='FAILED';log.exception('Mobile authored movie failed: %s',exc)
-                async with SessionLocal() as db:
-                    movie=await db.get(LessonMovie,movie_id)
-                    if movie:movie.status='FAILED';movie.error=str(exc)[:2000];await db.commit()
+            inputs=MovieRenderInputs(base_video=lesson_dir/str(lesson_data['cartoon_base']),character=Path(char.processed_path or char.original_path),audio_by_phrase=audio_by_phrase,timeline=list(lesson_data.get('timeline') or []),output=out,lesson_dir=lesson_dir,target_language=c.target_language or 'ru')
+            _spawn_movie_task(_render_mobile_movie_job(movie_id,inputs,c.id,sess.lesson_id,course,par.email if par else None,bool(par and par.email_reports_enabled),run_no,str(lesson_data.get('title') or sess.lesson_id)))
+            movie_status='PROCESSING'
         elif movie_status!='READY':
             movie_status='PROCESSING'
         if movie_status=='READY' and out.exists():
@@ -522,6 +560,19 @@ async def complete(request:web.Request)->web.Response:
             except Exception as exc:log.warning('Mobile homework email failed: %s',exc)
     return web.json_response({'ok':True,'run_number':run_no,'movie_url':movie_url,'movie_status':movie_status,'missing_voice_phrases':missing_voice,'homework_sent':homework_sent,'completed_runs':ent.completed_runs,'max_runs':ent.max_completed_runs})
 
+
+async def movie_status(request:web.Request)->web.Response:
+    p=await _parent(request);sid=int(request.match_info['session_id'])
+    async with SessionLocal() as db:
+        sess=await db.get(LessonSession,sid);c=await db.get(Child,sess.child_id) if sess else None
+        if not sess or not c or c.parent_id!=p.id:raise web.HTTPForbidden()
+        movie=await db.scalar(select(LessonMovie).where(LessonMovie.lesson_session_id==sid))
+    if not movie:return web.json_response({'status':'NOT_CREATED','url':None})
+    url=None;path=Path(movie.output_path) if movie.output_path else None
+    if movie.status=='READY' and path and path.exists():
+        value=f'movie:{c.id}:{path.name}';token=signed_media_token(value,86400*30);url=f'{_base(request)}/api/mobile/movie/{c.id}/{path.name}?t={token}'
+    return web.json_response({'status':movie.status,'url':url,'error':movie.error if movie.status=='FAILED' else None,'run_number':movie.run_number})
+
 async def movie_file(request:web.Request)->web.StreamResponse:
     cid=int(request.match_info['child_id']);filename=request.match_info['filename'];val=f'movie:{cid}:{filename}'
     if not verify_media_token(val,request.query.get('t','')):raise web.HTTPForbidden()
@@ -531,10 +582,14 @@ async def movie_file(request:web.Request)->web.StreamResponse:
     return web.FileResponse(path)
 
 async def movies(request:web.Request)->web.Response:
-    p=await _parent(request);cid=int(request.match_info['child_id']);await _owned_child(p.id,cid);root=settings.storage_root/'children'/str(cid)/'cartoons';items=[]
-    if root.exists():
-        for path in sorted(root.glob('mobile_*.mp4'),key=lambda x:x.stat().st_mtime,reverse=True):
-            val=f'movie:{cid}:{path.name}';t=signed_media_token(val,86400*30);items.append({'filename':path.name,'title':path.stem.replace('_',' '),'created_at':datetime.fromtimestamp(path.stat().st_mtime).isoformat(),'url':f'{_base(request)}/api/mobile/movie/{cid}/{path.name}?t={t}'})
+    p=await _parent(request);cid=int(request.match_info['child_id']);await _owned_child(p.id,cid);items=[]
+    async with SessionLocal() as db:
+        rows=(await db.scalars(select(LessonMovie).where(LessonMovie.child_id==cid).order_by(LessonMovie.id.desc()))).all()
+    for movie in rows:
+        path=Path(movie.output_path) if movie.output_path else None;url=None
+        if movie.status=='READY' and path and path.exists():
+            value=f'movie:{cid}:{path.name}';token=signed_media_token(value,86400*30);url=f'{_base(request)}/api/mobile/movie/{cid}/{path.name}?t={token}'
+        items.append({'filename':path.name if path else None,'title':f'{movie.lesson_id} · прохождение {movie.run_number}','created_at':movie.created_at.isoformat() if movie.created_at else '','url':url,'status':movie.status,'session_id':movie.lesson_session_id})
     return web.json_response({'movies':items})
 
 
@@ -661,5 +716,5 @@ def register_mobile_routes(app:web.Application):
     app.router.add_post('/api/mobile/register',register);app.router.add_post('/api/mobile/verify-email',verify_email);app.router.add_post('/api/mobile/resend-verification',resend_verification);app.router.add_post('/api/mobile/login',login);app.router.add_post('/api/mobile/password-reset/request',request_password_reset);app.router.add_post('/api/mobile/password-reset/confirm',confirm_password_reset);app.router.add_get('/api/mobile/bootstrap',bootstrap);app.router.add_post('/api/mobile/children',create_child);app.router.add_get('/api/mobile/lesson/{lesson_id}/visual/{filename}',lesson_visual);app.router.add_get('/api/mobile/lesson/{lesson_id}',lesson)
     app.router.add_get('/api/mobile/hero/file/{child_id}/{character_id}',hero_file);app.router.add_post('/api/mobile/child/{child_id}/hero/preset',hero_preset);app.router.add_post('/api/mobile/child/{child_id}/hero/upload',hero_upload)
     app.router.add_get('/api/mobile/child/{child_id}/subscription',subscription_overview);app.router.add_post('/api/mobile/child/{child_id}/subscription/plan-change/preview',subscription_plan_change_preview);app.router.add_post('/api/mobile/child/{child_id}/subscription/plan-change',subscription_plan_change_confirm);app.router.add_delete('/api/mobile/child/{child_id}/subscription/plan-change',subscription_plan_change_cancel)
-    app.router.add_post('/api/mobile/session/start',session_start);app.router.add_post('/api/mobile/session/{session_id}/progress',session_progress);app.router.add_post('/api/mobile/session/{session_id}/voice',voice);app.router.add_post('/api/mobile/session/{session_id}/interactive',interactive);app.router.add_post('/api/mobile/session/{session_id}/complete',complete)
+    app.router.add_post('/api/mobile/session/start',session_start);app.router.add_post('/api/mobile/session/{session_id}/progress',session_progress);app.router.add_post('/api/mobile/session/{session_id}/voice',voice);app.router.add_post('/api/mobile/session/{session_id}/interactive',interactive);app.router.add_post('/api/mobile/session/{session_id}/complete',complete);app.router.add_get('/api/mobile/session/{session_id}/movie',movie_status)
     app.router.add_get('/api/mobile/tts',tts);app.router.add_post('/api/mobile/translate',translate);app.router.add_patch('/api/mobile/child/{child_id}/language',update_child_language);app.router.add_get('/api/mobile/child/{child_id}/movies',movies);app.router.add_get('/api/mobile/movie/{child_id}/{filename}',movie_file)

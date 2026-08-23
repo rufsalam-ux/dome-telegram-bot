@@ -1,5 +1,8 @@
 import base64
 import json
+import math
+import struct
+import wave
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,11 +13,12 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.config import settings
 from app.db.models import Base, Child, InteractiveResult, LessonSession, Parent, VoiceAttempt
-from app.services.audio_processing import VoiceActivity
+from app.services.audio_processing import VoiceActivity, analyze_voice_activity
+from app.services.conversational_tutor import build_assessed_turn, no_speech_turn
 from app.services.lesson_loader import load_lesson
 from app.services.lesson_runtime import apply_adaptive_assessment, no_speech_feedback, voice_attempt_outcome
 from app.services.mobile_tokens import issue_session_token
-from app.services.speech_pipeline import SpeechAssessment, is_non_speech_transcript
+from app.services.speech_pipeline import SpeechAssessment, _transcription_confidence, is_non_speech_transcript
 from app.services import visual_localization
 from app.webapp import mobile_api
 
@@ -30,8 +34,53 @@ def test_no_speech_never_becomes_correct_even_when_retries_are_exhausted():
     assert third.status == "NO_SPEECH_CONTINUE"
     assert third.advance_allowed and not third.accepted and not third.needs_retry
     assert "не засчитана" in no_speech_feedback(3, 3)[0]
-    assert all(is_non_speech_transcript(value) for value in ("", "[music]", "тишина", "аааа"))
+    assert all(is_non_speech_transcript(value) for value in ("", "[music]", "тишина", "аааа", "um", "мм"))
     assert not is_non_speech_transcript("yes")
+
+
+def test_asr_confidence_uses_provider_evidence_and_fails_closed_without_it():
+    high = _transcription_confidence({"logprobs":[{"token":"Yes","logprob":-0.05},{"token":".","logprob":-0.1}]})
+    quiet_whisper = _transcription_confidence({"segments":[{"start":0,"end":2,"avg_logprob":-0.3,"no_speech_prob":0.9}]})
+    assert high > 0.9
+    assert quiet_whisper < 0.1
+    assert _transcription_confidence({"text":"hallucinated without evidence"}) == 0.0
+
+
+def _write_pcm(path: Path, amplitude: int) -> None:
+    rate = 16_000
+    with wave.open(str(path), "wb") as stream:
+        stream.setnchannels(1);stream.setsampwidth(2);stream.setframerate(rate)
+        samples = [int(amplitude * math.sin(2 * math.pi * 220 * index / rate)) for index in range(rate * 2)]
+        stream.writeframes(b"".join(struct.pack("<h", value) for value in samples))
+
+
+def test_real_silent_and_near_silent_wav_are_rejected_before_asr(tmp_path):
+    silent = tmp_path / "silent.wav";near = tmp_path / "near-silent.wav";voiced = tmp_path / "voiced.wav"
+    _write_pcm(silent, 0);_write_pcm(near, 20);_write_pcm(voiced, 6_000)
+    assert not analyze_voice_activity(silent).has_speech
+    assert analyze_voice_activity(silent).reason == "INSUFFICIENT_SPEECH"
+    assert not analyze_voice_activity(near).has_speech
+    assert analyze_voice_activity(near).reason in {"INSUFFICIENT_SPEECH", "TOO_QUIET"}
+    assert analyze_voice_activity(voiced).has_speech
+
+
+def test_conversational_turn_is_bounded_and_progressive():
+    turn = build_assessed_turn(
+        {"reaction_target":"You chose the red kite — that sounds exciting!", "follow_up_target":"Where would you fly it? And who comes with you?", "emotion":"surprised"},
+        accepted=True, allow_follow_up=True, follow_up_count=0, max_follow_ups=1,
+    )
+    assert turn.follow_up_target.count("?") == 1 and not turn.complete
+    assert build_assessed_turn({"follow_up_target":"Another?"},accepted=True,allow_follow_up=True,follow_up_count=1,max_follow_ups=1).follow_up_target == ""
+    assert no_speech_turn(1,3,target_retry="I didn't hear you.",native_hint="Попробуй ещё раз.").reason == "no_speech_retry"
+    third = no_speech_turn(3,3,target_retry="Let's continue.")
+    assert third.skipped and third.complete and third.reason == "no_speech_skipped"
+    correction = build_assessed_turn(
+        {"reaction_target":"Almost — a penguin cannot fly.","corrected_target":"A parrot can fly.","model_answer_target":"A parrot can fly.","native_hint":"Попугай умеет летать.","emotion":"gentle_correction"},
+        accepted=False,allow_follow_up=True,follow_up_count=0,max_follow_ups=1,
+    )
+    assert correction.reason == "retry" and not correction.complete
+    assert correction.follow_up_target == "" and correction.model_answer_target == "A parrot can fly."
+    assert correction.emotion == "gentle_correction"
 
 
 def test_live_adaptation_changes_difficulty_after_current_answer():
@@ -63,6 +112,8 @@ def test_demo_definition_contains_original_card_questions_and_declarative_mila_h
     assert slides["slide_20"]["interaction_kind"] == "gift_selector"
     assert [item["id"] for item in slides["slide_20"]["selection_options"]] == ["teddy", "book", "flowers", "backpack"]
     assert lesson["default_hero_placement"] == "hidden"
+    expected_states = ["ENTER","AI_SPEAKING","WAITING_ACTION","WAITING_VOICE","PROCESSING","FEEDBACK","FOLLOW_UP","RETRY","COMPLETE"]
+    assert all(slide["runtime_state_machine"] == expected_states for slide in lesson["slides"])
 
 
 @pytest.mark.asyncio
@@ -70,17 +121,26 @@ async def test_localized_visual_is_immutable_cached_and_reused(monkeypatch, tmp_
     source = tmp_path / "slide-01.png"; original = b"russian-source" * 200; source.write_bytes(original)
     calls = 0
 
-    async def fake_provider(_source, language):
+    async def fake_plan(_source, language):
+        assert language == "en"
+        return {"has_visible_text":True,"has_cyrillic":True,"text_regions":[{"source_text":"Привет","translated_text":"Hello","bbox_norm":[0.1,0.1,0.3,0.1]}]}
+
+    async def fake_provider(_source, language, plan):
         nonlocal calls; calls += 1
         assert language == "en"
+        assert plan["text_regions"][0]["translated_text"] == "Hello"
         return b"english-localized" * 200
 
+    monkeypatch.setattr(visual_localization, "_request_localization_plan", fake_plan)
     monkeypatch.setattr(visual_localization, "_request_localized_image", fake_provider)
     first = await visual_localization.localize_embedded_text_image(source, tmp_path / "cache", "en", asset_version="78")
     second = await visual_localization.localize_embedded_text_image(source, tmp_path / "cache", "en", asset_version="78")
     assert first == second and first != source and calls == 1
     assert source.read_bytes() == original
     assert b"english-localized" in first.read_bytes()
+    manifest = json.loads(first.with_suffix(".json").read_text("utf-8"))
+    assert manifest["pipeline"] == ["ocr_text_region_detection", "translation", "background_restoration_inpainting", "translated_text_render", "language_verification", "immutable_cache"]
+    assert manifest["target_language"] == "en"
 
 
 @pytest.mark.asyncio
@@ -134,6 +194,9 @@ async def test_mobile_silence_gate_three_attempts_and_resume_selection(monkeypat
         assert responses[0]["needs_retry"] is True and responses[0]["accepted"] is False
         assert responses[2]["status"]=="NO_SPEECH_CONTINUE"
         assert responses[2]["advance_allowed"] is True and responses[2]["accepted"] is False
+        assert responses[0]["tutor_turn"]["reason"] == "no_speech_retry"
+        assert responses[1]["tutor_turn"]["reason"] == "no_speech_model"
+        assert responses[2]["tutor_turn"]["skipped"] is True
         assert "засчитана" in responses[2]["feedback"] and "отлич" not in responses[2]["feedback"].lower()
         async with sessions() as db:
             state,phrases=await mobile_api._mobile_resume_state(db,session_id)
@@ -168,3 +231,6 @@ def test_mobile_uses_localized_asset_pipeline_without_white_masks():
     assert "lessonVisualSource" in player and "lessonVisualSource" in api
     assert "LOCALIZED_IMAGE_MASKS" not in player
     assert "runtime-stage-${stage}" in player and "useSafeAreaInsets" in player and "useWindowDimensions" in player
+    assert "const initialHint=slide.always_bilingual?" in player
+    root_app=(MOBILE_ROOT/"src/screens/RootApp.tsx").read_text("utf-8")
+    assert "Смотреть / скачать" in root_app and "Поделиться" in root_app and "m.status==='PROCESSING'" in root_app

@@ -4,6 +4,14 @@
   "target_language": "ru",
   "max_voice_seconds": 5.0,
   "default_hero_placement": "hidden",
+  "hero_layout": {
+    "anchors": {
+      "left_of_mila": [0.04, 0.35, 0.24, 0.61],
+      "left": [0.02, 0.34, 0.22, 0.62],
+      "right": [0.76, 0.34, 0.22, 0.62]
+    },
+    "fallback_order": ["left", "right"]
+  },
   "cartoon_base": "M-1.mp4",
   "required_phrases": [
     {
@@ -338,8 +346,10 @@
       "allow_help": true,
       "allow_skip": true,
       "expects_answer": true,
-      "allow_ai_followup": false,
-      "suppress_ai_followup": true
+      "allow_ai_followup": true,
+      "suppress_ai_followup": false,
+      "max_ai_followups": 1,
+      "conversation_goal": "React to how the child feels, then ask one short connected question about why or what happened."
     },
     {
       "slide_id": "slide_03",
@@ -751,6 +761,8 @@
         0.6
       ],
       "hero_placement": "left_of_mila",
+      "hero_anchor": "left_of_mila",
+      "hero_fallback_anchors": ["left"],
       "hero_box": [
         0.04,
         0.35,
@@ -841,8 +853,8 @@
       "order": 24,
       "type": "drag_and_drop",
       "image": "lesson-images/slide-24.png",
-      "bot_says_target": "Мы летим в Исландию. Собери чемодан правильно: выбери вещи, которые пригодятся в прохладную и ветреную погоду.",
-      "bot_explains_native": "Выбирай подходящие вещи. После выбора бот попросит назвать выбранные вещи и объяснить, зачем они нужны.",
+      "bot_says_target": "Мы летим в Исландию! Перетащи нужные вещи в чемодан.",
+      "bot_explains_native": "Перетащи предметы в чемодан. Потом назови выбранные вещи и коротко скажи, зачем они нужны.",
       "question": "Что нужно взять в Исландию и почему?",
       "answer_mode": "required_voice",
       "required_phrase_id": "take_trip",
@@ -860,15 +872,31 @@
       "reasoning_task": true,
       "correct_item_ids": [
         "jacket",
-        "hat",
-        "boots",
+        "binoculars",
+        "water",
+        "compass",
         "camera",
-        "gloves"
+        "telescope",
+        "notebook",
+        "sunglasses"
       ],
       "incorrect_item_ids": [
-        "swimsuit",
-        "flippers",
-        "shorts"
+        "teddy",
+        "fish"
+      ],
+      "drag_source_asset": "lesson-images/slide-24.png",
+      "drag_target_asset": "suitcase-authored/suitcase-target.png",
+      "drag_items": [
+        {"id": "jacket", "label_en": "Jacket", "label_ru": "куртка", "useful": true, "asset": "jacket.png"},
+        {"id": "binoculars", "label_en": "Binoculars", "label_ru": "бинокль", "useful": true, "asset": "binoculars.png"},
+        {"id": "water", "label_en": "Water bottle", "label_ru": "бутылка воды", "useful": true, "asset": "water.png"},
+        {"id": "compass", "label_en": "Compass", "label_ru": "компас", "useful": true, "asset": "compass.png"},
+        {"id": "teddy", "label_en": "Teddy bear", "label_ru": "мишка", "useful": false, "asset": "teddy.png"},
+        {"id": "camera", "label_en": "Camera", "label_ru": "фотоаппарат", "useful": true, "asset": "camera.png"},
+        {"id": "telescope", "label_en": "Telescope", "label_ru": "телескоп", "useful": true, "asset": "telescope.png"},
+        {"id": "fish", "label_en": "Fish", "label_ru": "рыба", "useful": false, "asset": "fish.png"},
+        {"id": "notebook", "label_en": "Notebook", "label_ru": "блокнот", "useful": true, "asset": "notebook.png"},
+        {"id": "sunglasses", "label_en": "Sunglasses", "label_ru": "солнцезащитные очки", "useful": true, "asset": "sunglasses.png"}
       ],
       "allow_ai_followup": false,
       "suppress_ai_followup": true
@@ -985,7 +1013,11 @@
       "suppress_ai_followup": true,
       "required_phrase_source": "selected_animal",
       "advance_after_required_phrase": true,
-      "pair_question_count": 2
+      "pair_question_count": 2,
+      "animal_questions": [
+        {"id": "penguin", "correct_id": "penguin", "phrase_id": "penguin", "prompt_ru": "Сначала выбери пингвина. Скажи про него одну короткую фразу.", "example_ru": "Пингвин любит холод."},
+        {"id": "parrot", "correct_id": "parrot", "phrase_id": "parrot", "prompt_ru": "Теперь выбери попугая. Скажи про него одну короткую фразу.", "example_ru": "Попугай красный и красивый."}
+      ]
     },
     {
       "slide_id": "slide_43",
@@ -1039,12 +1071,21 @@
       "post_required_phrase_id": null,
       "required_phrase_source": "selected_animal",
       "advance_after_required_phrase": true,
-      "pair_question_count": 2
+      "pair_question_count": 1,
+      "animal_questions": [
+        {"id": "lion", "correct_id": "lion", "phrase_id": "lion", "prompt_ru": "Выбери льва. Скажи про него одну короткую фразу.", "example_ru": "Лев сильный."}
+      ]
     },
     {
       "slide_id": "slide_45",
       "order": 45,
       "type": "animal_riddle",
+      "riddle_options": [
+        {"id": "elephant", "label": "Elephant", "emoji": "🐘"},
+        {"id": "giraffe", "label": "Giraffe", "emoji": "🦒"},
+        {"id": "polar_bear", "label": "Polar bear", "emoji": "🐻‍❄️"}
+      ],
+      "correct_choice_id": "giraffe",
       "image": "lesson-images/slide-45-clean.png",
       "bot_says_target": "Угадай животное. Я очень высокий, у меня длинная шея и пятна. Кто я?",
       "bot_explains_native": "Сначала угадай животное по признакам.",
@@ -1328,5 +1369,5 @@
   "active": true,
   "max_completed_runs": 2,
   "expires_after_months": 10,
-  "cartoon_on_first_run_only": true
+  "cartoon_on_first_run_only": false
 }

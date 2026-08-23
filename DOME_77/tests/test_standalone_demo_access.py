@@ -184,7 +184,7 @@ async def test_mobile_session_auth_resume_progress_translate_and_tts(monkeypatch
         async def fake_translate(text, _source, _target):
             return f"translated:{text}"
 
-        async def fake_synthesize(text, _language, _root, _prefix):
+        async def fake_synthesize(text, _language, _root, _prefix, _delivery_style="warm"):
             audio = tmp_path / "tts.mp3"
             audio.write_bytes(text.encode("utf-8"))
             return audio
