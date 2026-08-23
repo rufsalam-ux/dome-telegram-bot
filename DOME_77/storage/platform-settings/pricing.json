@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.0",
+  "schema_version": "2.0",
   "currency": "EUR",
   "regular_course": {
     "monthly_markup_per_lesson": 6.0,
@@ -13,26 +13,144 @@
       {
         "id": "weekly1",
         "lessons_per_week": 1,
-        "monthly_price": 39
+        "monthly_price": 39.0,
+        "annual_price": 429.0,
+        "currency": "EUR",
+        "monthly_version_id": "global-weekly1-month-v1"
       },
       {
         "id": "weekly2",
         "lessons_per_week": 2,
-        "monthly_price": 79
+        "monthly_price": 69.0,
+        "annual_price": 759.0,
+        "currency": "EUR",
+        "monthly_version_id": "global-weekly2-month-v1"
       },
       {
         "id": "weekly3",
         "lessons_per_week": 3,
-        "monthly_price": 109
+        "monthly_price": 99.0,
+        "annual_price": 1089.0,
+        "currency": "EUR",
+        "monthly_version_id": "global-weekly3-month-v1"
       },
       {
         "id": "weekly4",
         "lessons_per_week": 4,
-        "monthly_price": 139
+        "monthly_price": 139.0,
+        "annual_price": 1536.0,
+        "currency": "EUR",
+        "monthly_version_id": "global-weekly4-month-v1"
       }
     ],
+    "profitability": {
+      "hide_unprofitable_plans": true,
+      "estimated_cost_per_lesson": 0.0,
+      "fixed_cost_per_period": 0.0,
+      "minimum_margin_percent": 0.0,
+      "billing_weeks_per_month": 4,
+      "billing_weeks_per_year": 52
+    },
     "cartoon_on_first_run_only": true,
-    "trial_days": 7
+    "trial_days": 7,
+    "subscription_plan_versions": [
+      {
+        "version_id": "global-weekly1-month-v1",
+        "plan_id": "weekly1",
+        "version": 1,
+        "lessons_per_week": 1,
+        "billing_period": "MONTH",
+        "price": 39.0,
+        "currency": "EUR",
+        "active": true,
+        "created_at": "2026-08-23T14:16:34.525884Z",
+        "created_by": "system:versioned-pricing-migration"
+      },
+      {
+        "version_id": "global-weekly2-month-v1",
+        "plan_id": "weekly2",
+        "version": 1,
+        "lessons_per_week": 2,
+        "billing_period": "MONTH",
+        "price": 69.0,
+        "currency": "EUR",
+        "active": true,
+        "created_at": "2026-08-23T14:16:34.525884Z",
+        "created_by": "system:versioned-pricing-migration"
+      },
+      {
+        "version_id": "global-weekly3-month-v1",
+        "plan_id": "weekly3",
+        "version": 1,
+        "lessons_per_week": 3,
+        "billing_period": "MONTH",
+        "price": 99.0,
+        "currency": "EUR",
+        "active": true,
+        "created_at": "2026-08-23T14:16:34.525884Z",
+        "created_by": "system:versioned-pricing-migration"
+      },
+      {
+        "version_id": "global-weekly4-month-v1",
+        "plan_id": "weekly4",
+        "version": 1,
+        "lessons_per_week": 4,
+        "billing_period": "MONTH",
+        "price": 139.0,
+        "currency": "EUR",
+        "active": true,
+        "created_at": "2026-08-23T14:16:34.525884Z",
+        "created_by": "system:versioned-pricing-migration"
+      },
+      {
+        "version_id": "global-weekly1-year-v1",
+        "plan_id": "weekly1",
+        "version": 1,
+        "lessons_per_week": 1,
+        "billing_period": "YEAR",
+        "price": 429.0,
+        "currency": "EUR",
+        "active": true,
+        "created_at": "2026-08-23T14:16:34.525884Z",
+        "created_by": "system:versioned-pricing-migration"
+      },
+      {
+        "version_id": "global-weekly2-year-v1",
+        "plan_id": "weekly2",
+        "version": 1,
+        "lessons_per_week": 2,
+        "billing_period": "YEAR",
+        "price": 759.0,
+        "currency": "EUR",
+        "active": true,
+        "created_at": "2026-08-23T14:16:34.525884Z",
+        "created_by": "system:versioned-pricing-migration"
+      },
+      {
+        "version_id": "global-weekly3-year-v1",
+        "plan_id": "weekly3",
+        "version": 1,
+        "lessons_per_week": 3,
+        "billing_period": "YEAR",
+        "price": 1089.0,
+        "currency": "EUR",
+        "active": true,
+        "created_at": "2026-08-23T14:16:34.525884Z",
+        "created_by": "system:versioned-pricing-migration"
+      },
+      {
+        "version_id": "global-weekly4-year-v1",
+        "plan_id": "weekly4",
+        "version": 1,
+        "lessons_per_week": 4,
+        "billing_period": "YEAR",
+        "price": 1536.0,
+        "currency": "EUR",
+        "active": true,
+        "created_at": "2026-08-23T14:16:34.525884Z",
+        "created_by": "system:versioned-pricing-migration"
+      }
+    ]
   },
   "interest_lessons": {
     "profit_per_lesson": 30.0,

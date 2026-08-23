@@ -88,6 +88,7 @@ from app.services.course_scheduler import choose_next_lesson, first_active_cours
 from app.services.course_catalog import list_courses
 from app.services.course_transitions import get_route, set_route, course_titles, save_choice, load_choice, apply_transition, course_progress, load_notice_state, mark_notice, save_course_switch, load_course_switch, clear_course_switch, apply_course_switch
 from app.services.pricing_engine import subscription_plans_for_course, set_course_plan_price
+from app.services.pricing_versions import MONTH, YEAR, is_plan_profitable, plan_versions_for_course, set_plan_price
 from app.services.runtime_mode import CONVERSATION_ONLY, client_course_allowed
 from app.services.pilot_access import find_pilot, access_until
 from app.services.authored_content import load_authored_lesson, load_homework, lesson_dir, ensure_persistent_lesson, validate_content_lesson, validate_homework, backup_lesson_version, list_lesson_versions, restore_lesson_version, canonical_content_type
@@ -254,8 +255,8 @@ async def _show_parent_course_payment_gate(message: Message, state: FSMContext, 
 async def admin_prices(message: Message):
     if message.from_user.id not in settings.admin_ids:
         return
-    cfg=load_settings('pricing'); plans=(cfg.get('regular_course') or {}).get('subscription_plans') or []
-    lines=['💶 DOME · тарифы (одинаковые для всех 3 курсов)']+[f"{p['lessons_per_week']}×/нед — €{p['monthly_price']}/мес" for p in plans]
+    cfg=load_settings('pricing'); plans=plan_versions_for_course(None,include_unprofitable=True)
+    lines=['💶 DOME · актуальные версии тарифов (новые подписки)']+[f"{p['lessons_per_week']}×/нед — €{p['price']:g}/{'год' if p['billing_period']==YEAR else 'мес'} · {p['version_id']}"+(' · СКРЫТ КАК НЕРЕНТАБЕЛЬНЫЙ' if not is_plan_profitable(p) else '') for p in plans]
     family=cfg.get('family') or {}; lines.append(f"Семья: 1-й ребёнок — полная цена; 2–5-й — минус €{float(family.get('additional_child_discount_per_lesson_eur',0.5)):g} с каждого урока")
     pay=load_settings('payments'); lines.append('Оплата: '+('ВКЛ' if pay.get('billing_enabled') else 'ВЫКЛ — тест бесплатно'))
     await message.answer('\n'.join(lines))
@@ -264,18 +265,19 @@ async def admin_prices(message: Message):
 async def admin_set_price(message: Message):
     if message.from_user.id not in settings.admin_ids: return
     parts=(message.text or '').split()
-    if len(parts)!=3 or not parts[1].isdigit():
-        await message.answer('Формат: /dome_price 2 79'); return
-    freq=int(parts[1])
-    try: price=float(parts[2].replace(',','.'))
+    if len(parts) not in {3,4}:
+        await message.answer('Формат: /dome_price monthly 2 69 или /dome_price annual 2 759'); return
+    if len(parts)==3:period,freq_raw,price_raw=MONTH,parts[1],parts[2]
+    else:period,freq_raw,price_raw=parts[1],parts[2],parts[3]
+    if not freq_raw.isdigit():await message.answer('Частота должна быть 1–4.');return
+    period=YEAR if str(period).lower() in {'annual','year','yearly'} else MONTH if str(period).lower() in {'month','monthly'} or period==MONTH else ''
+    if not period:await message.answer('Период: monthly или annual.');return
+    freq=int(freq_raw)
+    try: price=float(price_raw.replace(',','.'))
     except Exception: await message.answer('Цена должна быть числом.'); return
     if freq not in {1,2,3,4} or price<=0: await message.answer('Частота 1–4, цена > 0.'); return
-    cfg=load_settings('pricing'); r=cfg.setdefault('regular_course',{}); plans=r.setdefault('subscription_plans',[])
-    found=False
-    for p in plans:
-        if int(p.get('lessons_per_week',0))==freq: p['monthly_price']=price; found=True
-    if not found: plans.append({'id':f'weekly{freq}','lessons_per_week':freq,'monthly_price':price})
-    save_settings('pricing',cfg); await message.answer(f'✅ {freq}×/нед = €{price:g}/мес. Сохранено без redeploy.')
+    version=set_plan_price(lessons_per_week=freq,billing_period=period,price=price,created_by=f'telegram-admin:{message.from_user.id}')
+    await message.answer(f"✅ Создана новая версия {version['version_id']}: {freq}×/нед = €{price:g}/{'год' if period==YEAR else 'мес'}. Действующие подписки сохраняют прежнюю цену.")
 
 
 @router.message(Command("dome_course_price"))
@@ -283,15 +285,36 @@ async def admin_set_course_price(message: Message):
     if message.from_user.id not in settings.admin_ids: return
     parts=(message.text or '').split()
     valid={c.course_id for c in list_courses()}
-    if len(parts)!=4 or parts[1] not in valid or not parts[2].isdigit():
-        await message.answer('Формат: /dome_course_price conversation 2 79'); return
-    course_id=parts[1]; freq=int(parts[2])
-    try: price=float(parts[3].replace(',','.'))
+    if len(parts) not in {4,5} or parts[1] not in valid:
+        await message.answer('Формат: /dome_course_price conversation monthly 2 69'); return
+    course_id=parts[1]
+    if len(parts)==4:period,freq_raw,price_raw=MONTH,parts[2],parts[3]
+    else:period,freq_raw,price_raw=parts[2],parts[3],parts[4]
+    if not freq_raw.isdigit():await message.answer('Частота должна быть 1–4.');return
+    period=YEAR if str(period).lower() in {'annual','year','yearly'} else MONTH if str(period).lower() in {'month','monthly'} or period==MONTH else ''
+    if not period:await message.answer('Период: monthly или annual.');return
+    freq=int(freq_raw)
+    try: price=float(price_raw.replace(',','.'))
     except Exception: await message.answer('Цена должна быть числом.'); return
     if freq not in {1,2,3,4} or price<=0:
         await message.answer('Частота 1–4, цена > 0.'); return
-    set_course_plan_price(course_id,freq,price)
-    await message.answer(f'✅ Цена курса {course_id}: {freq}×/нед = €{price:g}/мес. Изменено без redeploy.')
+    version=set_plan_price(course_id=course_id,lessons_per_week=freq,billing_period=period,price=price,created_by=f'telegram-admin:{message.from_user.id}')
+    await message.answer(f"✅ Цена курса {course_id}: создана версия {version['version_id']} · {freq}×/нед = €{price:g}/{'год' if period==YEAR else 'мес'}. Действующие подписки не изменены.")
+
+
+@router.message(Command("dome_profitability"))
+async def admin_profitability(message: Message):
+    if message.from_user.id not in settings.admin_ids:return
+    parts=(message.text or '').split()
+    if len(parts) not in {3,4}:
+        await message.answer('Формат: /dome_profitability cost_per_lesson margin_percent [fixed_cost_per_period]');return
+    try:cost=float(parts[1].replace(',','.'));margin=float(parts[2].replace(',','.'));fixed=float(parts[3].replace(',','.')) if len(parts)==4 else 0.0
+    except ValueError:await message.answer('Стоимость и маржа должны быть числами.');return
+    if min(cost,margin,fixed)<0:await message.answer('Значения не могут быть отрицательными.');return
+    cfg=load_settings('pricing');guard=cfg.setdefault('regular_course',{}).setdefault('profitability',{})
+    guard.update({'hide_unprofitable_plans':True,'estimated_cost_per_lesson':cost,'minimum_margin_percent':margin,'fixed_cost_per_period':fixed,'billing_weeks_per_month':int(guard.get('billing_weeks_per_month',4) or 4),'billing_weeks_per_year':int(guard.get('billing_weeks_per_year',52) or 52)})
+    save_settings('pricing',cfg)
+    await message.answer('✅ Порог рентабельности обновлён. Нерентабельные версии скрыты для новых продаж; действующие подписки не изменены.')
 
 @router.message(Command("dome_route"))
 async def admin_set_course_route(message: Message):
@@ -353,7 +376,7 @@ async def admin_test_plan(message: Message):
         await message.answer('Формат: /dome_testplan child_id reading 2'); return
     child_id=int(parts[1]); course_id=parts[2]; freq=int(parts[3])
     if freq not in {1,2,3,4}: await message.answer('Частота 1–4.'); return
-    pricing=load_settings('pricing'); plans=((pricing.get('regular_course') or {}).get('subscription_plans') or []); spec=next((x for x in plans if int(x.get('lessons_per_week',0))==freq),None)
+    pricing=load_settings('pricing'); plans=subscription_plans_for_course(course_id); spec=next((x for x in plans if int(x.get('lessons_per_week',0))==freq),None)
     if not spec: await message.answer('Тариф не найден.'); return
     async with SessionLocal() as db:
         sub=await db.scalar(select(Subscription).where(Subscription.child_id==child_id,Subscription.course_id==course_id).order_by(Subscription.id.desc()))
@@ -368,7 +391,7 @@ async def admin_test_plan(message: Message):
             sub=Subscription(child_id=child_id,course_id=course_id,started_at=datetime.utcnow(),release_baseline_count=baseline); db.add(sub)
         elif restart:
             sub.started_at=datetime.utcnow(); sub.release_baseline_count=baseline
-        sub.plan_id=str(spec.get('id') or f'weekly{freq}'); sub.current_plan_id=sub.plan_id; sub.lessons_per_week=freq; sub.monthly_price=float(spec.get('monthly_price') or 0); sub.currency=str(pricing.get('currency') or 'EUR'); sub.status='ACTIVE'; sub.test_mode=True; sub.cancelled_at=None; sub.provider_subscription_id=None
+        sub.plan_id=str(spec.get('id') or f'weekly{freq}'); sub.current_plan_id=sub.plan_id; sub.current_plan_version_id=str(spec.get('version_id') or f'test-{sub.plan_id}-month');sub.billing_period=MONTH;sub.lessons_per_week=freq; sub.monthly_price=float(spec.get('monthly_price') or 0);sub.current_plan_price=sub.monthly_price; sub.currency=str(pricing.get('currency') or 'EUR'); sub.status='ACTIVE'; sub.test_mode=True; sub.cancelled_at=None; sub.provider_subscription_id=None
         enroll=await db.scalar(select(CourseEnrollment).where(CourseEnrollment.child_id==child_id,CourseEnrollment.course_id==course_id).order_by(CourseEnrollment.id.desc()))
         if enroll is None: db.add(CourseEnrollment(child_id=child_id,course_id=course_id,status='ACTIVE',access_source='ADMIN_TEST',payment_reference='ADMIN_TEST'))
         else: enroll.status='ACTIVE'; enroll.access_source='ADMIN_TEST'
@@ -1356,7 +1379,7 @@ async def course_switch_mode(cb: CallbackQuery, state: FSMContext):
     fp=await family_price_for_child(child.parent_id,child.id,new_base,freq)
     new_price=fp.effective_price
     if sub and not sub.test_mode and abs(new_price-old_price)>0.001:
-        await state.update_data(pending_course_id=target,pending_payment_plan=str((new_spec or {}).get('id') or f'weekly{freq}'),course_switch_from=current,course_switch_target=target,course_switch_mode=('after_current' if mode=='after' else 'immediate'))
+        await state.update_data(pending_course_id=target,pending_payment_plan=str((new_spec or {}).get('id') or f'weekly{freq}'),pending_payment_billing_period=MONTH,course_switch_from=current,course_switch_target=target,course_switch_mode=('after_current' if mode=='after' else 'immediate'))
         await cb.message.answer(f'Цена нового курса для этого ребёнка: €{new_price:g}/мес вместо €{old_price:g}/мес. Сначала подтвердите изменение подписки у платёжного провайдера; курс переключится после подтверждения оплаты.')
         await _show_checkout(cb.message,state,child,str((new_spec or {}).get('id') or f'weekly{freq}'))
         await cb.answer(); return
@@ -2425,7 +2448,8 @@ async def menu_payment(cb: CallbackQuery, state: FSMContext):
     fp=await family_price_for_child(child.parent_id,child.id,0,1)
     discount_per_lesson=0.5 if fp.child_position>1 else 0.0
     note=(f" Для этого ребёнка действует семейная скидка €{discount_per_lesson:.2f} с каждого урока." if discount_per_lesson else "")
-    await cb.message.answer(("Выберите тариф. После выбора откроется безопасная страница оплаты."+note if (child.native_language or "ru") == "ru" else "Choose a plan. A secure payment page will open next."), reply_markup=payment_plans_keyboard(child.native_language or "en",additional_child_discount_per_lesson=discount_per_lesson))
+    data=await state.get_data();course_id=str(data.get('pending_course_id') or first_active_course_id() or 'conversation')
+    await cb.message.answer(("Выберите тариф. После выбора откроется безопасная страница оплаты."+note if (child.native_language or "ru") == "ru" else "Choose a plan. A secure payment page will open next."), reply_markup=payment_plans_keyboard(child.native_language or "en",additional_child_discount_per_lesson=discount_per_lesson,course_id=course_id))
     await cb.answer()
 
 
@@ -2437,9 +2461,10 @@ async def course_payment_plans(cb: CallbackQuery, state: FSMContext):
         await cb.answer("/start", show_alert=True); return
     fp=await family_price_for_child(child.parent_id,child.id,0,1)
     discount_per_lesson=0.5 if fp.child_position>1 else 0.0
+    data=await state.get_data();course_id=str(data.get('pending_course_id') or first_active_course_id() or 'conversation')
     await cb.message.answer(
         "👩 Родителю: выберите пакет для оплаты. После подтверждённой оплаты доступ к курсу открывается выбранному ребёнку." + (f"\n👨‍👩‍👧‍👦 Семейная скидка для этого ребёнка: €{discount_per_lesson:.2f} с каждого урока." if discount_per_lesson else ""),
-        reply_markup=payment_plans_keyboard(child.native_language or "ru",additional_child_discount_per_lesson=discount_per_lesson),
+        reply_markup=payment_plans_keyboard(child.native_language or "ru",additional_child_discount_per_lesson=discount_per_lesson,course_id=course_id),
     )
     await cb.answer()
 
@@ -2468,10 +2493,11 @@ async def course_payment_test_bypass(cb: CallbackQuery, state: FSMContext):
             ))
         sub=await db.scalar(select(Subscription).where(Subscription.child_id==child.id,Subscription.course_id==course_id,Subscription.status=='ACTIVE').order_by(Subscription.id.desc()))
         if sub is None:
-            pricing=load_settings('pricing'); plans=((pricing.get('regular_course') or {}).get('subscription_plans') or [])
+            pricing=load_settings('pricing'); plans=subscription_plans_for_course(course_id)
             spec=next((x for x in plans if int(x.get('lessons_per_week',1))==1),{'id':'weekly1','lessons_per_week':1,'monthly_price':39})
             plan_id=str(spec.get('id') or 'weekly1')
-            db.add(Subscription(child_id=child.id,course_id=course_id,plan_id=plan_id,current_plan_id=plan_id,lessons_per_week=int(spec.get('lessons_per_week') or 1),monthly_price=float(spec.get('monthly_price') or 39),currency=str(pricing.get('currency') or 'EUR'),status='ACTIVE',test_mode=True))
+            price=float(spec.get('monthly_price') or 39)
+            db.add(Subscription(child_id=child.id,course_id=course_id,plan_id=plan_id,current_plan_id=plan_id,current_plan_version_id=str(spec.get('version_id') or f'test-{plan_id}-month'),current_plan_price=price,billing_period=MONTH,lessons_per_week=int(spec.get('lessons_per_week') or 1),monthly_price=price,currency=str(pricing.get('currency') or 'EUR'),status='ACTIVE',test_mode=True))
         await db.commit()
     await state.update_data(selected_lesson_id=lesson_id, current_lesson_id=lesson_id)
     await cb.message.answer("🧪 Тестовый режим: оплата пропущена. Открываю урок.")
@@ -2484,8 +2510,9 @@ async def payment_plan(cb: CallbackQuery, state: FSMContext):
     child = await get_child_from_state_or_user(state, cb.from_user.id)
     if not child:
         await cb.answer("/start", show_alert=True); return
-    plan = cb.data.rsplit(":", 1)[1]
-    await state.update_data(pending_payment_plan=plan, consent_return="payment")
+    parts=cb.data.split(':');plan=parts[-1];billing_period=parts[-2] if len(parts)>=4 else MONTH
+    if billing_period not in {MONTH,YEAR}:billing_period=MONTH
+    await state.update_data(pending_payment_plan=plan,pending_payment_billing_period=billing_period, consent_return="payment")
     if not await _has_consent(child.parent_id, child.id, "PAYMENT", settings.payment_consent_version):
         await _request_consent(cb.message, child, "PAYMENT")
         await cb.answer(); return
@@ -2493,38 +2520,37 @@ async def payment_plan(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
 
 async def _show_checkout(message: Message, state: FSMContext, child: Child, plan: str) -> None:
-    pricing=load_settings("pricing"); data=await state.get_data(); course_id=str(data.get("pending_course_id") or first_active_course_id() or "conversation"); plans={str(p.get("id")):p for p in subscription_plans_for_course(course_id)}
-    spec=plans.get(plan,{})
+    pricing=load_settings("pricing"); data=await state.get_data(); course_id=str(data.get("pending_course_id") or first_active_course_id() or "conversation");billing_period=str(data.get('pending_payment_billing_period') or MONTH).upper()
     url=settings.payment_url
-    base_price=float(spec.get('monthly_price',0))
-    freq=int(spec.get('lessons_per_week',1))
-    fp=await family_price_for_child(child.parent_id,child.id,base_price,freq)
-    effective_price=fp.effective_price
+    from app.services.subscription_plan_changes import plan_catalog_for_child,plan_snapshot_for_child
+    async with SessionLocal() as db:
+        spec=await plan_snapshot_for_child(db,parent_id=child.parent_id,child_id=child.id,course_id=course_id,plan_id=plan,billing_period=billing_period)
+        catalog=await plan_catalog_for_child(db,parent_id=child.parent_id,child_id=child.id,course_id=course_id)
+    freq=spec.lessons_per_week;effective_price=spec.price
     names={}
-    for pid,p in plans.items():
-        pfreq=int(p.get('lessons_per_week',1)); pfp=await family_price_for_child(child.parent_id,child.id,float(p.get('monthly_price',0)),pfreq)
-        names[pid]=f"{pfreq}×/нед · €{pfp.effective_price:g}/мес"
+    for p in catalog:
+        names[f'{p.plan_id}:{p.billing_period}']=f"{p.lessons_per_week}×/нед · €{p.price:g}/{'год' if p.billing_period==YEAR else 'мес'}"
 
     payments=load_settings('payments'); provider=str(payments.get('provider') or settings.payment_provider or 'custom').lower()
     base=settings.effective_webapp_base_url or 'https://t.me'
-    currency=str(pricing.get('currency') or 'EUR')
-    idem=f"dome:{provider}:{child.id}:{course_id}:{plan}:{int(time.time()//600)}"
+    currency=spec.currency
+    idem=f"dome:{provider}:{child.id}:{course_id}:{spec.version_id}:{int(time.time()//600)}"
     switch_from=str(data.get('course_switch_from') or '')
     async with SessionLocal() as db:
         q=select(Subscription).where(Subscription.child_id==child.id,Subscription.status=='ACTIVE',Subscription.test_mode==False)
         q=q.where(Subscription.course_id==(switch_from or course_id))
         active_paid=await db.scalar(q.order_by(Subscription.id.desc()))
     if active_paid is not None:
-        if str(active_paid.plan_id)==str(plan) and int(active_paid.lessons_per_week or 1)==freq:
-            await message.answer(f"✅ У {child.display_name} уже активен этот тариф: {names.get(plan,plan)}.")
+        if str(active_paid.current_plan_version_id or '')==spec.version_id:
+            await message.answer(f"✅ У {child.display_name} уже активен этот тариф: {names.get(f'{plan}:{billing_period}',plan)}.")
             return
         try:
             from app.services.subscription_plan_changes import preview_plan_change
             async with SessionLocal() as db:
                 stored=await db.get(Subscription,active_paid.id)
-                preview=await preview_plan_change(db,stored,parent_id=child.parent_id,requested_plan_id=plan)
+                preview=await preview_plan_change(db,stored,parent_id=child.parent_id,requested_plan_id=plan,requested_billing_period=billing_period,expected_version_id=spec.version_id)
             date=preview.effective_at.strftime('%d.%m.%Y')
-            await state.update_data(pending_payment_plan_confirmation=plan,pending_course_id=course_id)
+            await state.update_data(pending_payment_plan_confirmation=plan,pending_payment_plan_version_confirmation=spec.version_id,pending_payment_billing_period=billing_period,pending_course_id=course_id)
             await message.answer(
                 "Новый тариф начнёт действовать со следующего оплачиваемого периода.\n"
                 "До этой даты действует ваш текущий тариф.\n\n"
@@ -2542,32 +2568,32 @@ async def _show_checkout(message: Message, state: FSMContext, child: Child, plan
     if provider=='stripe' and settings.stripe_secret_key:
         try:
             from app.services.payment_adapter import create_stripe_subscription_checkout
-            url=create_stripe_subscription_checkout(child_id=child.id,course_id=course_id,plan_id=plan,lessons_per_week=freq,monthly_price=effective_price,currency=currency,success_url=base+'/payment/success',cancel_url=base+'/payment/cancel',idempotency_key=idem)
+            url=create_stripe_subscription_checkout(child_id=child.id,course_id=course_id,plan_id=plan,plan_version_id=spec.version_id,billing_period=billing_period,lessons_per_week=freq,monthly_price=effective_price,currency=currency,success_url=base+'/payment/success',cancel_url=base+'/payment/cancel',idempotency_key=idem)
         except Exception as exc:
             await message.answer(f'Не удалось создать страницу оплаты: {exc}'); return
     elif provider=='unipay':
         try:
             from app.services.unipay_adapter import create_unipay_subscription_checkout
-            url=await create_unipay_subscription_checkout(child_id=child.id,course_id=course_id,plan_id=plan,lessons_per_week=freq,monthly_price=effective_price,currency=currency,success_url=base+'/payment/success',cancel_url=base+'/payment/cancel',webhook_url=base+'/webhooks/unipay',idempotency_key=idem)
+            url=await create_unipay_subscription_checkout(child_id=child.id,course_id=course_id,plan_id=plan,plan_version_id=spec.version_id,billing_period=billing_period,lessons_per_week=freq,monthly_price=effective_price,currency=currency,success_url=base+'/payment/success',cancel_url=base+'/payment/cancel',webhook_url=base+'/webhooks/unipay',idempotency_key=idem)
         except Exception as exc:
             await message.answer(f'Не удалось создать страницу UniPAY: {exc}'); return
     elif provider=='unlimit':
         try:
             from app.services.unlimit_adapter import create_unlimit_subscription_checkout
-            url=await create_unlimit_subscription_checkout(child_id=child.id,course_id=course_id,plan_id=plan,lessons_per_week=freq,monthly_price=effective_price,currency=currency,success_url=base+'/payment/success',cancel_url=base+'/payment/cancel',webhook_url=base+'/webhooks/unlimit',idempotency_key=idem)
+            url=await create_unlimit_subscription_checkout(child_id=child.id,course_id=course_id,plan_id=plan,plan_version_id=spec.version_id,billing_period=billing_period,lessons_per_week=freq,monthly_price=effective_price,currency=currency,success_url=base+'/payment/success',cancel_url=base+'/payment/cancel',webhook_url=base+'/webhooks/unlimit',idempotency_key=idem)
         except Exception as exc:
             await message.answer(f'Не удалось создать страницу Unlimit: {exc}'); return
     elif provider=='paypal':
         try:
             from app.services.paypal_adapter import create_paypal_subscription_checkout
-            url=await create_paypal_subscription_checkout(child_id=child.id,course_id=course_id,plan_id=plan,lessons_per_week=freq,monthly_price=effective_price,currency=currency,success_url=base+'/payment/success',cancel_url=base+'/payment/cancel',idempotency_key=idem)
+            url=await create_paypal_subscription_checkout(child_id=child.id,course_id=course_id,plan_id=plan,plan_version_id=spec.version_id,billing_period=billing_period,lessons_per_week=freq,monthly_price=effective_price,currency=currency,success_url=base+'/payment/success',cancel_url=base+'/payment/cancel',idempotency_key=idem)
         except Exception as exc:
             await message.answer(f'Не удалось создать страницу PayPal: {exc}'); return
     if not url:
         await message.answer("Платёжный провайдер пока не настроен. Настройте выбранный провайдер в Railway Variables. Для Stripe, UniPAY, Unlimit или PayPal добавьте соответствующие merchant credentials и webhook настройки. ZIP менять не потребуется.")
         return
     await message.answer(
-        f"Выбран тариф: {names.get(plan, plan)}. Оплата поступит в аккаунт платёжного провайдера, который создал эту ссылку.",
+        f"Выбран тариф: {names.get(f'{plan}:{billing_period}', plan)}. Оплата поступит в аккаунт платёжного провайдера, который создал эту ссылку.",
         reply_markup=payment_checkout_keyboard("Перейти к безопасной оплате", url, child.native_language or "ru"),
     )
 
@@ -2579,7 +2605,7 @@ async def payment_confirm_plan_change(cb: CallbackQuery, state: FSMContext):
     plan=cb.data.rsplit(':',1)[1];data=await state.get_data()
     if str(data.get('pending_payment_plan_confirmation') or '')!=plan:
         await cb.answer('Сначала заново выберите тариф.',show_alert=True);return
-    course_id=str(data.get('pending_course_id') or first_active_course_id() or 'conversation')
+    course_id=str(data.get('pending_course_id') or first_active_course_id() or 'conversation');billing_period=str(data.get('pending_payment_billing_period') or MONTH);version_id=str(data.get('pending_payment_plan_version_confirmation') or '')
     try:
         from app.services.subscription_plan_changes import preview_plan_change,schedule_plan_change
         from app.services.subscription_provider import schedule_provider_plan_change
@@ -2589,15 +2615,15 @@ async def payment_confirm_plan_change(cb: CallbackQuery, state: FSMContext):
                 Subscription.status=='ACTIVE',Subscription.test_mode==False,
             ).order_by(Subscription.id.desc()))
             if sub is None:raise RuntimeError('Активная оплаченная подписка не найдена')
-            preview=await preview_plan_change(db,sub,parent_id=child.parent_id,requested_plan_id=plan)
+            preview=await preview_plan_change(db,sub,parent_id=child.parent_id,requested_plan_id=plan,requested_billing_period=billing_period,expected_version_id=version_id)
             base=settings.effective_webapp_base_url or 'https://t.me'
             provider=await schedule_provider_plan_change(
                 sub,preview.requested,effective_at=preview.effective_at,base_url=base,
-                idempotency_key=f'plan-change:{sub.id}:{plan}:{int(preview.effective_at.timestamp())}',
+                idempotency_key=f'plan-change:{sub.id}:{preview.requested.version_id}:{int(preview.effective_at.timestamp())}',
             )
-            schedule_plan_change(db,sub,parent_id=child.parent_id,preview=preview,provider_status=provider.status,provider_reference=provider.reference)
+            schedule_plan_change(db,sub,parent_id=child.parent_id,preview=preview,provider_status=provider.status,provider_reference=provider.reference,provider_plan_id=provider.provider_plan_id)
             await db.commit()
-        await state.update_data(pending_payment_plan_confirmation=None)
+        await state.update_data(pending_payment_plan_confirmation=None,pending_payment_plan_version_confirmation=None)
         date=preview.effective_at.strftime('%d.%m.%Y')
         if provider.approval_url:
             await cb.message.answer('Войдите в PayPal и подтвердите смену. Без этого текущий тариф останется без изменений.',reply_markup=payment_checkout_keyboard('Подтвердить новый тариф в PayPal',provider.approval_url,child.native_language or 'ru'))

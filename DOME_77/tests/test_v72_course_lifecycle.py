@@ -26,11 +26,11 @@ def test_parent_can_switch_now_or_after_current():
     assert '_apply_pending_course_switch_after_lesson' in h
 
 def test_course_specific_prices_are_admin_editable():
-    h=text('app/bot/handlers.py'); p=text('app/services/pricing_engine.py')
+    h=text('app/bot/handlers.py'); p=text('app/services/pricing_engine.py'); versions=text('app/services/pricing_versions.py')
     assert 'Command("dome_course_price")' in h
-    assert 'set_course_plan_price' in h
-    assert 'subscription_plans_for_course(course_id)' in h
-    assert 'course_prices' in p
+    assert 'set_plan_price' in h
+    assert 'plan_versions_for_course' in h
+    assert 'course_prices' in versions
 
 def test_price_change_does_not_create_second_subscription_on_course_switch():
     h=text('app/bot/handlers.py');k=text('app/bot/keyboards.py')

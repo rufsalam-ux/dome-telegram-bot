@@ -126,7 +126,7 @@ def _date_json(value:datetime|None)->str|None:
 
 def _plan_json(plan)->dict:
     return {
-        'plan_id':plan.plan_id,'title':plan.title,'lessons_per_week':plan.lessons_per_week,
+        'plan_id':plan.plan_id,'version_id':plan.version_id,'title':plan.title,'lessons_per_week':plan.lessons_per_week,
         'price':plan.price,'currency':plan.currency,'billing_period':plan.billing_period,
     }
 
@@ -144,6 +144,7 @@ def _subscription_json(sub:Subscription|None)->dict|None:
     if sub.pending_plan_id:
         pending={
             'plan_id':sub.pending_plan_id,'lessons_per_week':sub.pending_lessons_per_week,
+            'version_id':sub.pending_plan_version_id,'billing_period':sub.pending_plan_billing_period or 'MONTH',
             'price':sub.pending_plan_price,'currency':sub.pending_plan_currency or sub.currency,
             'created_at':_date_json(sub.pending_plan_created_at),
             'effective_at':_date_json(sub.pending_plan_effective_at),
@@ -169,12 +170,12 @@ async def subscription_overview(request:web.Request)->web.Response:
 
 
 async def subscription_plan_change_preview(request:web.Request)->web.Response:
-    p=await _parent(request);cid=int(request.match_info['child_id']);data=await request.json();course_id=str(data.get('course_id') or 'conversation');plan_id=str(data.get('plan_id') or '')
+    p=await _parent(request);cid=int(request.match_info['child_id']);data=await request.json();course_id=str(data.get('course_id') or 'conversation');plan_id=str(data.get('plan_id') or '');billing_period=str(data.get('billing_period') or 'MONTH');version_id=str(data.get('version_id') or '')
     await _owned_child(p.id,cid)
     async with SessionLocal() as db:
         sub=await _subscription_for_child(db,cid,course_id)
         if sub is None:raise web.HTTPConflict(text=json.dumps({'error':'Активная подписка не найдена'}),content_type='application/json')
-        try:preview=await preview_plan_change(db,sub,parent_id=p.id,requested_plan_id=plan_id)
+        try:preview=await preview_plan_change(db,sub,parent_id=p.id,requested_plan_id=plan_id,requested_billing_period=billing_period,expected_version_id=version_id)
         except PlanChangeError as exc:raise web.HTTPConflict(text=json.dumps({'error':str(exc)}),content_type='application/json')
         return web.json_response({
             'subscription_id':preview.subscription_id,'current_plan':_plan_json(preview.current),
@@ -185,21 +186,21 @@ async def subscription_plan_change_preview(request:web.Request)->web.Response:
 
 
 async def subscription_plan_change_confirm(request:web.Request)->web.Response:
-    p=await _parent(request);cid=int(request.match_info['child_id']);data=await request.json();course_id=str(data.get('course_id') or 'conversation');plan_id=str(data.get('plan_id') or '')
+    p=await _parent(request);cid=int(request.match_info['child_id']);data=await request.json();course_id=str(data.get('course_id') or 'conversation');plan_id=str(data.get('plan_id') or '');billing_period=str(data.get('billing_period') or 'MONTH');version_id=str(data.get('version_id') or '')
     await _owned_child(p.id,cid)
     async with SessionLocal() as db:
         sub=await _subscription_for_child(db,cid,course_id)
         if sub is None:raise web.HTTPConflict(text=json.dumps({'error':'Активная подписка не найдена'}),content_type='application/json')
         try:
-            preview=await preview_plan_change(db,sub,parent_id=p.id,requested_plan_id=plan_id)
+            preview=await preview_plan_change(db,sub,parent_id=p.id,requested_plan_id=plan_id,requested_billing_period=billing_period,expected_version_id=version_id)
             provider=await schedule_provider_plan_change(
                 sub,preview.requested,effective_at=preview.effective_at,
                 base_url=settings.effective_webapp_base_url or _base(request),
-                idempotency_key=f'plan-change:{sub.id}:{plan_id}:{int(preview.effective_at.timestamp())}',
+                idempotency_key=f'plan-change:{sub.id}:{preview.requested.version_id}:{int(preview.effective_at.timestamp())}',
             )
             event=schedule_plan_change(
                 db,sub,parent_id=p.id,preview=preview,provider_status=provider.status,
-                provider_reference=provider.reference,
+                provider_reference=provider.reference,provider_plan_id=provider.provider_plan_id,
             )
             await db.commit();await db.refresh(sub)
         except (PlanChangeError,SubscriptionProviderError,RuntimeError) as exc:

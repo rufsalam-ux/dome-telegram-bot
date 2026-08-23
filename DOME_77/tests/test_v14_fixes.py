@@ -8,7 +8,8 @@ def test_removed_slides_32_39_are_absent():
     lesson = json.loads((ROOT / 'content/lessons/demo_001/lesson.json').read_text(encoding='utf-8'))
     orders = {int(s.get('order', 0)) for s in lesson['slides']}
     assert not orders.intersection(set(range(32, 40)))
-    assert 31 in orders and 40 in orders
+    assert 24 in orders and 40 in orders
+    assert next(s for s in lesson['slides'] if s['order']==24)['next_slide']=='slide_40'
 
 
 def test_slide9_is_blocking():
@@ -21,14 +22,14 @@ def test_slide9_is_blocking():
 def test_required_cartoon_phrase_cannot_be_skipped():
     code = (ROOT / 'app/bot/handlers.py').read_text(encoding='utf-8')
     assert 'data.get("current_required_phrase")' in code
-    assert 'slides[step].get("post_required_phrase_id")' in code
+    assert 'slide_now.get("post_required_phrase_id")' in code
 
 
 def test_first_scene_is_higher():
     lesson = json.loads((ROOT / 'content/lessons/demo_001/lesson.json').read_text(encoding='utf-8'))
     scene = next(x for x in lesson['timeline'] if x['phrase_id'] == 'lesha_clothes')
-    assert scene['y'] <= 150
-    assert scene['height'] >= 280
+    assert scene['floor_y_norm'] >= 0.9
+    assert scene['height_norm'] >= 0.4
 
 
 def test_sms_consent_and_payment_docs_exist():

@@ -225,7 +225,14 @@ class Subscription(Base):
     # code. The fields below are the billing source of truth for period-boundary
     # plan changes.
     current_plan_id: Mapped[str] = mapped_column(String(40), default="weekly1")
+    current_plan_version_id: Mapped[str | None] = mapped_column(String(180), nullable=True, index=True)
+    current_plan_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    billing_period: Mapped[str] = mapped_column(String(20), default="MONTH")
+    provider_plan_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     pending_plan_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    pending_plan_version_id: Mapped[str | None] = mapped_column(String(180), nullable=True)
+    pending_plan_billing_period: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    pending_provider_plan_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     pending_plan_created_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     pending_plan_effective_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     pending_plan_price: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -264,6 +271,8 @@ class SubscriptionAuditEvent(Base):
     event_type: Mapped[str] = mapped_column(String(60), index=True)
     old_plan_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
     new_plan_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    old_plan_version_id: Mapped[str | None] = mapped_column(String(180), nullable=True)
+    new_plan_version_id: Mapped[str | None] = mapped_column(String(180), nullable=True)
     requested_at: Mapped[datetime] = mapped_column(DateTime)
     effective_at: Mapped[datetime] = mapped_column(DateTime)
     old_price: Mapped[float] = mapped_column(Float, default=0.0)

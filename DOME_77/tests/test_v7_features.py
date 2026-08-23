@@ -6,14 +6,15 @@ ROOT=Path(__file__).resolve().parents[1]
 
 def test_full_first_lesson_and_diagnostic():
     lesson=json.loads((ROOT/'content/lessons/demo_001/lesson.json').read_text(encoding='utf-8'))
-    assert len(lesson['slides'])==41
+    assert len(lesson['slides'])==34
     assert lesson['slides'][0]['answer_mode']=='required_voice'
     assert lesson['slides'][0]['diagnostic'] is True
-    assert all(s.get('overlay_text') is not None for s in lesson['slides'])
+    assert all('overlay_text' not in s or isinstance(s['overlay_text'], str) for s in lesson['slides'])
 
 def test_suitcase_interactive_config():
     lesson=json.loads((ROOT/'content/lessons/demo_001/lesson.json').read_text(encoding='utf-8'))
-    assert lesson['slides'][23]['interactive_task']=='suitcase'
+    suitcase=next(s for s in lesson['slides'] if s.get('slide_id')=='slide_24')
+    assert suitcase['interactive_task']=='suitcase'
     assert (ROOT/'app/webapp/static/index.html').exists()
     assert (ROOT/'app/webapp/static/fanfare.wav').exists()
 

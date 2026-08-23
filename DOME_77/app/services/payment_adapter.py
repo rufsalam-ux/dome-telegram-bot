@@ -1,5 +1,6 @@
 from __future__ import annotations
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Protocol
 from app.core.config import settings
 from app.services.platform_settings import load_settings, save_settings
@@ -44,14 +45,15 @@ def get_payment_adapter(name:str) -> PaymentAdapter:
         return UnsupportedPaymentAdapter('unipay_saved_card')
     return UnsupportedPaymentAdapter(n)
 
-def create_stripe_subscription_checkout(*,child_id:int,course_id:str,plan_id:str,lessons_per_week:int,monthly_price:float,currency:str,success_url:str,cancel_url:str,idempotency_key:str="")->str:
+def create_stripe_subscription_checkout(*,child_id:int,course_id:str,plan_id:str,plan_version_id:str='',lessons_per_week:int,monthly_price:float,currency:str,billing_period:str='MONTH',success_url:str,cancel_url:str,idempotency_key:str="")->str:
     if not settings.stripe_secret_key: raise RuntimeError('STRIPE_SECRET_KEY не настроен')
     import stripe
     stripe.api_key=settings.stripe_secret_key
-    metadata={'child_id':str(child_id),'course_id':course_id,'plan_id':plan_id,'lessons_per_week':str(lessons_per_week),'monthly_price':str(monthly_price)}
+    period=str(billing_period or 'MONTH').upper(); interval='year' if period=='YEAR' else 'month'
+    metadata={'child_id':str(child_id),'course_id':course_id,'plan_id':plan_id,'plan_version_id':str(plan_version_id),'billing_period':period,'lessons_per_week':str(lessons_per_week),'monthly_price':str(monthly_price)}
     kwargs=dict(
         mode='subscription',
-        line_items=[{'price_data':{'currency':currency.lower(),'product_data':{'name':f'DOME · {lessons_per_week}×/нед'},'unit_amount':int(round(monthly_price*100)),'recurring':{'interval':'month'}},'quantity':1}],
+        line_items=[{'price_data':{'currency':currency.lower(),'product_data':{'name':f'DOME · {lessons_per_week}×/нед · {period}'},'unit_amount':int(round(monthly_price*100)),'recurring':{'interval':interval}},'quantity':1}],
         success_url=success_url, cancel_url=cancel_url, metadata=metadata, subscription_data={'metadata':metadata},
     )
     if idempotency_key: kwargs['idempotency_key']=idempotency_key
@@ -59,37 +61,61 @@ def create_stripe_subscription_checkout(*,child_id:int,course_id:str,plan_id:str
     return str(session.url)
 
 
-def change_stripe_subscription_plan(*, subscription_id:str, child_id:int, course_id:str, plan_id:str, lessons_per_week:int, monthly_price:float, currency:str, idempotency_key:str="") -> dict:
-    """Set the fixed price used by the next renewal, without a mid-period charge."""
+def change_stripe_subscription_plan(*, subscription_id:str, child_id:int, course_id:str, plan_id:str, plan_version_id:str='', provider_plan_id:str='', lessons_per_week:int, monthly_price:float, currency:str, billing_period:str='MONTH', effective_at:datetime|None=None, idempotency_key:str="") -> dict:
+    """Schedule the immutable price for the next period without changing this one."""
     if not settings.stripe_secret_key: raise RuntimeError('STRIPE_SECRET_KEY не настроен')
     import stripe
     stripe.api_key=settings.stripe_secret_key
     current=stripe.Subscription.retrieve(subscription_id)
     items=((current.get('items') or {}).get('data') or [])
     if not items: raise RuntimeError('Stripe subscription has no items')
-    item_id=str(items[0].get('id') or '')
-    if not item_id: raise RuntimeError('Stripe subscription item id missing')
-    metadata={'child_id':str(child_id),'course_id':course_id,'plan_id':plan_id,'lessons_per_week':str(lessons_per_week),'monthly_price':f'{monthly_price:.2f}'}
+    current_price=items[0].get('price') or {}
+    current_price_id=str(current_price.get('id') if isinstance(current_price,dict) else current_price)
+    if not current_price_id: raise RuntimeError('Stripe subscription price id missing')
+    quantity=max(1,int(items[0].get('quantity') or 1))
+    period=str(billing_period or 'MONTH').upper(); interval='year' if period=='YEAR' else 'month'
+    version_id=str(plan_version_id or f'legacy-{plan_id}-{period.lower()}-{currency.lower()}-{monthly_price:.2f}')
+    metadata={'child_id':str(child_id),'course_id':course_id,'plan_id':plan_id,'plan_version_id':version_id,'billing_period':period,'lessons_per_week':str(lessons_per_week),'monthly_price':f'{monthly_price:.2f}'}
     cfg=load_settings('payments'); cache=dict(cfg.get('stripe_price_cache') or {})
-    cache_key=f'{plan_id}:{currency.upper()}:{monthly_price:.2f}'
-    price_id=str(cache.get(cache_key) or '')
+    cache_key=f'{version_id}:{period}:{currency.upper()}:{monthly_price:.2f}'
+    price_id=str(provider_plan_id or cache.get(cache_key) or '')
     if not price_id:
         price_kwargs=dict(
             currency=currency.lower(), unit_amount=int(round(monthly_price*100)),
-            recurring={'interval':'month'}, product_data={'name':f'DOME · {lessons_per_week}×/нед'},
+            recurring={'interval':interval}, product_data={'name':f'DOME · {lessons_per_week}×/нед · {period} · {version_id}'},
         )
         if idempotency_key: price_kwargs['idempotency_key']='price:'+idempotency_key
         price=stripe.Price.create(**price_kwargs)
         price_id=str(price.get('id') or '')
         if not price_id: raise RuntimeError('Stripe did not return price id')
         cache[cache_key]=price_id; cfg['stripe_price_cache']=cache; save_settings('payments',cfg)
-    kwargs={
-        'items':[{'id':item_id,'price':price_id}],
-        'metadata':metadata,
-        # Same-interval price change: Stripe keeps the billing anchor, creates no
-        # prorations, and invoices the full new fixed price on the next renewal.
-        'proration_behavior':'none',
-    }
-    if idempotency_key: kwargs['idempotency_key']=idempotency_key
-    updated=stripe.Subscription.modify(subscription_id,**kwargs)
-    return {'id':str(updated.get('id') or subscription_id),'status':str(updated.get('status') or ''),'price_id':price_id}
+    def timestamp(value):
+        if isinstance(value,(int,float)):return int(value)
+        if isinstance(value,datetime):
+            aware=value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+            return int(aware.timestamp())
+        return 0
+    current_start=timestamp(current.get('current_period_start'))
+    current_end=timestamp(current.get('current_period_end')) or timestamp(effective_at)
+    if not current_end: raise RuntimeError('Stripe subscription current period end missing')
+    if not current_start or current_start>=current_end: current_start='now'
+    current_metadata=dict(current.get('metadata') or {})
+    schedule_ref=current.get('schedule')
+    if isinstance(schedule_ref,dict):schedule_id=str(schedule_ref.get('id') or '')
+    else:schedule_id=str(schedule_ref or '')
+    if not schedule_id:
+        create_kwargs={'from_subscription':subscription_id}
+        if idempotency_key:create_kwargs['idempotency_key']='schedule:'+idempotency_key
+        schedule=stripe.SubscriptionSchedule.create(**create_kwargs)
+        schedule_id=str(schedule.get('id') or '')
+    if not schedule_id:raise RuntimeError('Stripe did not return subscription schedule id')
+    phases=[
+        {'start_date':current_start,'end_date':current_end,'items':[{'price':current_price_id,'quantity':quantity}],
+         'metadata':current_metadata,'proration_behavior':'none'},
+        {'start_date':current_end,'iterations':1,'items':[{'price':price_id,'quantity':quantity}],
+         'metadata':metadata,'proration_behavior':'none'},
+    ]
+    modify_kwargs={'end_behavior':'release','phases':phases,'proration_behavior':'none'}
+    if idempotency_key:modify_kwargs['idempotency_key']=idempotency_key
+    updated=stripe.SubscriptionSchedule.modify(schedule_id,**modify_kwargs)
+    return {'id':subscription_id,'status':str(updated.get('status') or 'scheduled'),'price_id':price_id,'schedule_id':schedule_id}

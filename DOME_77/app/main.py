@@ -14,6 +14,8 @@ from app.db.session import SessionLocal
 from app.db.models import Child, Parent, Subscription
 from app.services.standalone_demo_access import backfill_free_demo_entitlements
 from app.services.mobile_lesson_movie import recover_interrupted_mobile_movie_jobs
+from app.services.pricing_versions import ensure_versioned_pricing_config
+from app.services.subscription_price_migrations import backfill_subscription_provider_plan_ids
 from sqlalchemy import select
 from zoneinfo import ZoneInfo
 
@@ -68,9 +70,11 @@ async def subscription_release_loop(bot):
 
 async def main():
     configure_logging(); log=logging.getLogger('dome'); # Previous verified banner: DOME v73 RUNTIME INTERACTIONS + VOICE FIX
-    log.info('DOME v75 CONVERSATION ONLY SAFE MODE')
+    log.info('DOME v77 VERSIONED PRICING + CONVERSATION SAFE MODE')
     if not settings.bot_token: raise RuntimeError('BOT_TOKEN is missing in .env')
     await init_db(); log.info('Database ready and migrations applied')
+    pricing=ensure_versioned_pricing_config(); log.info('Versioned pricing ready: schema %s',pricing.get('schema_version'))
+    provider_plans=await backfill_subscription_provider_plan_ids(); log.info('Subscription provider plan ids backfilled: %s',provider_plans)
     await recover_interrupted_mobile_movie_jobs()
     free_demo_created=await backfill_free_demo_entitlements()
     log.info('Standalone free demo entitlements created: %s',free_demo_created)

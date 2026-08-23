@@ -27,7 +27,8 @@ def test_followup_blocks_progression():
 
 def test_render_logs_and_low_resource_mode():
     builder = (ROOT / 'app/services/cartoon_builder.py').read_text(encoding='utf-8')
-    assert '"-threads", "1"' in builder
+    assert '"-threads", str(render_threads)' in builder
+    assert 'max(1,min(4' in builder
     assert '"-preset", "ultrafast"' in builder
     assert 'log.error("FFmpeg failed' in builder
     assert 'filters.append("[0:a][voice]amix' in builder

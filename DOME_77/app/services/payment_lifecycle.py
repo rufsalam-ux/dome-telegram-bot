@@ -10,6 +10,7 @@ from app.services.subscription_plan_changes import (
     mark_pending_provider_scheduled,
     record_successful_billing_period,
 )
+from app.services.pricing_versions import MONTH, normalize_billing_period
 
 ACTIVE={'ACTIVE','TRIALING','PAID','SUCCEEDED'}
 PAST_DUE={'PAST_DUE','FAILED','UNPAID'}
@@ -24,6 +25,9 @@ class NormalizedPaymentEvent:
     child_id: int = 0
     course_id: str = ''
     plan_id: str = ''
+    plan_version_id: str = ''
+    billing_period: str = MONTH
+    provider_plan_id: str = ''
     lessons_per_week: int = 1
     monthly_price: float = 0.0
     currency: str = 'EUR'
@@ -54,7 +58,19 @@ async def _matching_subscription(db, ev:NormalizedPaymentEvent):
         row=await db.scalar(select(Subscription).where(Subscription.provider_subscription_id==ev.provider_subscription_id, Subscription.payment_provider==ev.provider).order_by(Subscription.id.desc()))
         if row: return row
     if ev.child_id and ev.course_id:
-        return await db.scalar(select(Subscription).where(Subscription.child_id==ev.child_id,Subscription.course_id==ev.course_id).order_by(Subscription.id.desc()))
+        row=await db.scalar(select(Subscription).where(Subscription.child_id==ev.child_id,Subscription.course_id==ev.course_id).order_by(Subscription.id.desc()))
+        # A new provider subscription after cancellation is a new commercial
+        # agreement. Never revive the cancelled row: doing so could accidentally
+        # restore its grandfathered price/version and overwrite billing history.
+        # A provider id may still be attached to a legacy or pending row that did
+        # not have one when checkout was first recorded.
+        if ev.provider_subscription_id and row is not None:
+            existing_provider_id=str(row.provider_subscription_id or '')
+            if str(row.status or '').upper() == 'CANCELLED':
+                return None
+            if existing_provider_id and existing_provider_id != str(ev.provider_subscription_id):
+                return None
+        return row
     return None
 
 async def apply_normalized_event(db, ev:NormalizedPaymentEvent) -> Subscription|None:
@@ -63,11 +79,16 @@ async def apply_normalized_event(db, ev:NormalizedPaymentEvent) -> Subscription|
     sub=await _matching_subscription(db,ev)
     creating = ev.event_type in {'SUBSCRIPTION_CREATED','CHECKOUT_COMPLETED','PAYMENT_SUCCEEDED','SUBSCRIPTION_ACTIVE'}
     if creating and ev.child_id and ev.course_id and sub is None:
+        period=normalize_billing_period(ev.billing_period or MONTH)
+        price=max(0.0,float(ev.monthly_price or 0.0))
+        version_id=str(ev.plan_version_id or f"legacy-{ev.plan_id or 'weekly1'}-{period.lower()}-{str(ev.currency or 'EUR').lower()}-{price:.2f}")
         sub=Subscription(
             child_id=ev.child_id, course_id=ev.course_id,
             plan_id=ev.plan_id or 'weekly1', current_plan_id=ev.plan_id or 'weekly1',
+            current_plan_version_id=version_id,current_plan_price=price,billing_period=period,
+            provider_plan_id=ev.provider_plan_id or None,
             lessons_per_week=max(1,min(4,int(ev.lessons_per_week or 1))),
-            monthly_price=max(0.0,float(ev.monthly_price or 0.0)), currency=str(ev.currency or 'EUR').upper(),
+            monthly_price=price, currency=str(ev.currency or 'EUR').upper(),
             started_at=now, current_period_start=ev.period_start or now,
             current_period_end=ev.period_end, next_charge_at=ev.period_end,
             provider_subscription_id=ev.provider_subscription_id or None,
@@ -91,6 +112,7 @@ async def apply_normalized_event(db, ev:NormalizedPaymentEvent) -> Subscription|
         if owner is not None:cancel_plan_change(db,sub,parent_id=owner.parent_id,now=now)
     elif provider_update_is_pending and (not ev.plan_id or ev.plan_id == str(sub.pending_plan_id)):
         mark_pending_provider_scheduled(sub, provider_reference=ev.provider_subscription_id or ev.event_id)
+        if ev.provider_plan_id:sub.pending_provider_plan_id=ev.provider_plan_id
     payment_activates_pending = bool(sub.pending_plan_id and ev.event_type == 'PAYMENT_SUCCEEDED')
     if ev.plan_id and not provider_update_event and not payment_activates_pending:
         sub.plan_id=ev.plan_id
@@ -104,8 +126,16 @@ async def apply_normalized_event(db, ev:NormalizedPaymentEvent) -> Subscription|
         sub.started_at=datetime.utcnow()
     if not provider_update_event and not payment_activates_pending:
         sub.lessons_per_week=new_freq
-        if ev.monthly_price > 0: sub.monthly_price=float(ev.monthly_price)
+        if ev.monthly_price > 0:
+            sub.monthly_price=float(ev.monthly_price);sub.current_plan_price=float(ev.monthly_price)
         if ev.currency: sub.currency=ev.currency.upper()
+        if ev.plan_version_id:sub.current_plan_version_id=ev.plan_version_id
+        if ev.billing_period:sub.billing_period=normalize_billing_period(ev.billing_period)
+        if ev.provider_plan_id:sub.provider_plan_id=ev.provider_plan_id
+    if not sub.current_plan_version_id:
+        price=float(sub.current_plan_price if sub.current_plan_price is not None else sub.monthly_price or 0.0)
+        sub.current_plan_version_id=f"legacy-{sub.current_plan_id or sub.plan_id or 'weekly1'}-{str(sub.billing_period or MONTH).lower()}-{str(sub.currency or 'EUR').lower()}-{price:.2f}"
+    if sub.current_plan_price is None:sub.current_plan_price=float(sub.monthly_price or 0.0)
     if ev.provider_subscription_id: sub.provider_subscription_id=ev.provider_subscription_id
     sub.payment_provider=ev.provider
     sub.test_mode=False
@@ -132,7 +162,9 @@ async def apply_normalized_event(db, ev:NormalizedPaymentEvent) -> Subscription|
         if child is not None:
             activated=activate_pending_after_successful_payment(
                 db,sub,parent_id=child.parent_id,paid_at=paid_at,
-                charged_plan_id=ev.plan_id,charged_amount=float(ev.charged_amount or ev.monthly_price or 0.0),
+                charged_plan_id=ev.plan_id,charged_plan_version_id=ev.plan_version_id,
+                charged_provider_plan_id=ev.provider_plan_id,
+                charged_amount=float(ev.charged_amount or ev.monthly_price or 0.0),
                 period_end=ev.period_end,
             )
         elif not sub.pending_plan_id:

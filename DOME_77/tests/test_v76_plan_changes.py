@@ -57,7 +57,7 @@ async def test_request_update_cancel_are_next_period_only_and_audited():
     async with Session() as db:
         parent,_,sub,effective=await paid_subscription(db,now=now)
         preview=await preview_plan_change(db,sub,parent_id=parent.id,requested_plan_id='weekly2',now=now)
-        assert preview.effective_at==effective and preview.requested.price==79
+        assert preview.effective_at==effective and preview.requested.price==69
         schedule_plan_change(db,sub,parent_id=parent.id,preview=preview,provider_status='SCHEDULED',now=now)
         assert sub.current_plan_id=='weekly1' and sub.lessons_per_week==1 and sub.monthly_price==39
         assert sub.pending_plan_id=='weekly2' and sub.pending_plan_effective_at==effective
@@ -85,20 +85,20 @@ async def test_successful_recurring_payment_activates_pending_plan_and_allocatio
         schedule_plan_change(db,sub,parent_id=parent.id,preview=preview,provider_status='SCHEDULED',now=now)
         assert renewal_charge_for(sub,now=effective-relativedelta(seconds=1)).plan_id=='weekly1'
         due=renewal_charge_for(sub,now=effective)
-        assert due.plan_id=='weekly2' and due.amount==79 and due.activates_pending
+        assert due.plan_id=='weekly2' and due.amount==69 and due.activates_pending
         event=NormalizedPaymentEvent(
             provider='stripe',event_id='invoice-1',event_type='PAYMENT_SUCCEEDED',status='ACTIVE',
             child_id=sub.child_id,course_id=sub.course_id,plan_id='weekly2',lessons_per_week=2,
-            monthly_price=79,currency='EUR',provider_subscription_id='sub_plan_test',
-            occurred_at=effective,period_start=effective,period_end=effective+relativedelta(months=1),charged_amount=79,
+            monthly_price=69,currency='EUR',provider_subscription_id='sub_plan_test',
+            occurred_at=effective,period_start=effective,period_end=effective+relativedelta(months=1),charged_amount=69,
         )
         await apply_normalized_event(db,event);await db.commit()
         assert sub.current_plan_id=='weekly2' and sub.plan_id=='weekly2'
-        assert sub.pending_plan_id is None and sub.lessons_per_week==2 and sub.monthly_price==79
+        assert sub.pending_plan_id is None and sub.lessons_per_week==2 and sub.monthly_price==69
         assert sub.lessons_allocated==8 and sub.lessons_used==0
         assert sub.current_period_start==effective and sub.next_charge_at==effective+relativedelta(months=1)
         activated=await db.scalar(select(SubscriptionAuditEvent).where(SubscriptionAuditEvent.event_type==PLAN_CHANGE_ACTIVATED))
-        assert activated is not None and activated.old_price==39 and activated.new_price==79
+        assert activated is not None and activated.old_price==39 and activated.new_price==69
     await engine.dispose()
 
 
@@ -140,6 +140,8 @@ def test_stripe_plan_change_disables_proration_and_immediate_invoice():
     assert "'proration_behavior':'none'" in function
     assert "'proration_behavior':'always_invoice'" not in function
     assert 'payment_behavior' not in function
+    assert 'SubscriptionSchedule.create' in function and 'SubscriptionSchedule.modify' in function
+    assert "'start_date':current_end" in function
 
 
 @pytest.mark.asyncio
@@ -165,12 +167,12 @@ async def test_authenticated_mobile_plan_change_api_uses_same_domain(monkeypatch
         assert response.status==200
         overview=await response.json()
         assert overview['subscription']['current_plan']['plan_id']=='weekly1'
-        assert next(x for x in overview['plans'] if x['plan_id']=='weekly2')['price']==79
+        assert next(x for x in overview['plans'] if x['plan_id']=='weekly2' and x['billing_period']=='MONTH')['price']==69
 
         response=await client.post(f'/api/mobile/child/{child_id}/subscription/plan-change/preview',headers=headers,json={'course_id':'conversation','plan_id':'weekly2'})
         assert response.status==200
         preview=await response.json()
-        assert preview['new_plan']['price']==79
+        assert preview['new_plan']['price']==69
         assert preview['effective_at'].startswith(effective.isoformat())
 
         response=await client.post(f'/api/mobile/child/{child_id}/subscription/plan-change',headers=headers,json={'course_id':'conversation','plan_id':'weekly2'})

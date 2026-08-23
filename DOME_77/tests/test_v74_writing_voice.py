@@ -12,9 +12,9 @@ def lesson(name):
     return json.loads((ROOT/'content/lessons'/name/'lesson.json').read_text(encoding='utf-8'))
 
 
-def test_v74_banner_and_version():
-    assert (ROOT/'VERSION').read_text().strip()=='74'
-    assert 'DOME v74 RUNTIME WRITING + VOICE READY' in MAIN
+def test_current_banner_and_version():
+    assert (ROOT/'VERSION').read_text().strip()=='77'
+    assert 'DOME v77 VERSIONED PRICING + CONVERSATION SAFE MODE' in MAIN
 
 
 def test_ios_downward_gesture_is_locked_during_interaction():

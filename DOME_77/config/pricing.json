@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.0",
+  "schema_version": "2.0",
   "currency": "EUR",
   "regular_course": {
     "monthly_markup_per_lesson": 6.0,
@@ -15,24 +15,36 @@
       {
         "id": "weekly1",
         "lessons_per_week": 1,
-        "monthly_price": 39
+        "monthly_price": 39,
+        "annual_price": 429
       },
       {
         "id": "weekly2",
         "lessons_per_week": 2,
-        "monthly_price": 79
+        "monthly_price": 69,
+        "annual_price": 759
       },
       {
         "id": "weekly3",
         "lessons_per_week": 3,
-        "monthly_price": 109
+        "monthly_price": 99,
+        "annual_price": 1089
       },
       {
         "id": "weekly4",
         "lessons_per_week": 4,
-        "monthly_price": 139
+        "monthly_price": 139,
+        "annual_price": 1536
       }
-    ]
+    ],
+    "profitability": {
+      "hide_unprofitable_plans": true,
+      "estimated_cost_per_lesson": 0.0,
+      "fixed_cost_per_period": 0.0,
+      "minimum_margin_percent": 0.0,
+      "billing_weeks_per_month": 4,
+      "billing_weeks_per_year": 52
+    }
   },
   "interest_lessons": {
     "profit_per_lesson": 30.0,

@@ -16,6 +16,7 @@ class ProviderPlanChangeResult:
     status: str
     reference: str = ""
     approval_url: str = ""
+    provider_plan_id: str = ""
 
 
 async def schedule_provider_plan_change(
@@ -38,6 +39,9 @@ async def schedule_provider_plan_change(
         child_id=sub.child_id,
         course_id=sub.course_id,
         plan_id=target.plan_id,
+        plan_version_id=target.version_id,
+        billing_period=target.billing_period,
+        provider_plan_id=target.provider_plan_id,
         lessons_per_week=target.lessons_per_week,
         monthly_price=target.price,
         currency=target.currency,
@@ -46,8 +50,11 @@ async def schedule_provider_plan_change(
     if provider == "stripe":
         from app.services.payment_adapter import change_stripe_subscription_plan
 
-        result = change_stripe_subscription_plan(**common)
-        return ProviderPlanChangeResult(status="SCHEDULED", reference=str(result.get("id") or subscription_id))
+        result = change_stripe_subscription_plan(**common, effective_at=effective_at)
+        return ProviderPlanChangeResult(
+            status="SCHEDULED", reference=str(result.get("id") or subscription_id),
+            provider_plan_id=str(result.get("price_id") or ""),
+        )
     if provider == "paypal":
         from app.services.paypal_adapter import change_paypal_subscription_plan
 
@@ -61,6 +68,7 @@ async def schedule_provider_plan_change(
             status="PENDING_APPROVAL" if approval else "SCHEDULED",
             reference=str(result.get("id") or subscription_id),
             approval_url=approval,
+            provider_plan_id=str(result.get("plan_id") or ""),
         )
     if provider in {"unipay", "unlimit"}:
         # Merchant-specific APIs in this repository do not expose a documented,

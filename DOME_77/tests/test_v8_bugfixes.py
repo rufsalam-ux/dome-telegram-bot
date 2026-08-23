@@ -15,15 +15,16 @@ def test_payment_buttons_exist():
 
 def test_voice_protocol_is_bounded():
     text = Path("app/bot/handlers.py").read_text(encoding="utf-8")
+    policy = Path("app/services/conversation_engine.py").read_text(encoding="utf-8")
     assert "technical_count < 2" in text
-    assert "correction_count <= 3" in text
+    assert "correction_count < max_corrections" in policy
     assert "simplified_mode" in text
     assert "ACCEPTED_BEST_ATTEMPT" in text
 
 
 def test_transcription_has_fallback():
     text = Path("app/services/speech_pipeline.py").read_text(encoding="utf-8")
-    assert 'models.append("whisper-1")' in text
+    assert 'else ["whisper-1"]' in text
     assert 'models.append("gpt-4o-mini")' in text
 
 

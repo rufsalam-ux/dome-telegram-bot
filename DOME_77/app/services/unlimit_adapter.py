@@ -34,13 +34,13 @@ async def _post(url:str,payload:dict,idempotency_key:str='')->dict:
             try:return json.loads(text)
             except:raise UnlimitError('Unlimit вернул не-JSON ответ')
 
-def _meta(child_id,course_id,plan_id,lessons_per_week,monthly_price):
-    return {'child_id':child_id,'course_id':course_id,'plan_id':plan_id,'lessons_per_week':lessons_per_week,'monthly_price':monthly_price}
+def _meta(child_id,course_id,plan_id,lessons_per_week,monthly_price,plan_version_id='',billing_period='MONTH'):
+    return {'child_id':child_id,'course_id':course_id,'plan_id':plan_id,'plan_version_id':plan_version_id,'billing_period':str(billing_period or 'MONTH').upper(),'lessons_per_week':lessons_per_week,'monthly_price':monthly_price}
 
-async def create_unlimit_subscription_checkout(*,child_id:int,course_id:str,plan_id:str,lessons_per_week:int,monthly_price:float,currency:str,success_url:str,cancel_url:str,webhook_url:str,idempotency_key:str='')->str:
+async def create_unlimit_subscription_checkout(*,child_id:int,course_id:str,plan_id:str,plan_version_id:str='',lessons_per_week:int,monthly_price:float,currency:str,billing_period:str='MONTH',success_url:str,cancel_url:str,webhook_url:str,idempotency_key:str='')->str:
     # Payment Page flow. Exact merchant endpoint/terminal credentials come from Unlimit onboarding.
     url=(settings.unlimit_recurring_url or settings.unlimit_payment_url).strip()
-    payload={'merchant_order':{'id':f'dome-{child_id}-{course_id}-{plan_id}-{idempotency_key[-12:]}','description':f'DOME {lessons_per_week}x/week'},'payment_data':{'amount':f'{monthly_price:.2f}','currency':currency.upper(),'recurring':True},'return_urls':{'success_url':success_url,'decline_url':cancel_url,'cancel_url':cancel_url},'callback_url':webhook_url,'metadata':_meta(child_id,course_id,plan_id,lessons_per_week,monthly_price)}
+    payload={'merchant_order':{'id':f'dome-{child_id}-{course_id}-{plan_id}-{idempotency_key[-12:]}','description':f'DOME {lessons_per_week}x/week'},'payment_data':{'amount':f'{monthly_price:.2f}','currency':currency.upper(),'recurring':True,'interval':'year' if str(billing_period).upper()=='YEAR' else 'month'},'return_urls':{'success_url':success_url,'decline_url':cancel_url,'cancel_url':cancel_url},'callback_url':webhook_url,'metadata':_meta(child_id,course_id,plan_id,lessons_per_week,monthly_price,plan_version_id,billing_period)}
     data=await _post(url,payload,idempotency_key)
     candidates=[data]
     for k in ('payment_data','redirect','data'):
@@ -50,11 +50,11 @@ async def create_unlimit_subscription_checkout(*,child_id:int,course_id:str,plan
             if obj.get(key):return str(obj[key])
     raise UnlimitError('Unlimit не вернул redirect URL')
 
-async def change_unlimit_subscription_plan(*,subscription_id:str,child_id:int,course_id:str,plan_id:str,lessons_per_week:int,monthly_price:float,currency:str,webhook_url:str,idempotency_key:str='')->dict:
+async def change_unlimit_subscription_plan(*,subscription_id:str,child_id:int,course_id:str,plan_id:str,plan_version_id:str='',lessons_per_week:int,monthly_price:float,currency:str,billing_period:str='MONTH',webhook_url:str,idempotency_key:str='')->dict:
     url=settings.unlimit_recurring_update_url.strip()
     if not url:raise UnlimitError('UNLIMIT_RECURRING_UPDATE_URL не настроен; новая подписка поверх активной не создаётся')
     url=url.replace('{subscription_id}',subscription_id)
-    payload={'subscription_id':subscription_id,'amount':f'{monthly_price:.2f}','currency':currency.upper(),'metadata':_meta(child_id,course_id,plan_id,lessons_per_week,monthly_price),'callback_url':webhook_url}
+    payload={'subscription_id':subscription_id,'amount':f'{monthly_price:.2f}','currency':currency.upper(),'interval':'year' if str(billing_period).upper()=='YEAR' else 'month','metadata':_meta(child_id,course_id,plan_id,lessons_per_week,monthly_price,plan_version_id,billing_period),'callback_url':webhook_url}
     return await _post(url,payload,idempotency_key)
 
 def verify_unlimit_webhook(raw:bytes,headers:Any)->bool:
@@ -87,4 +87,4 @@ def normalize_unlimit_event(data:dict)->NormalizedPaymentEvent:
     def fv(v,d=0.0):
         try:return float(v)
         except:return d
-    return NormalizedPaymentEvent(provider='unlimit',event_id=event_id,event_type=typ,status=status,child_id=iv(meta.get('child_id') or payload.get('child_id')),course_id=str(meta.get('course_id') or payload.get('course_id') or ''),plan_id=str(meta.get('plan_id') or payload.get('plan_id') or ''),lessons_per_week=max(1,min(4,iv(meta.get('lessons_per_week') or payload.get('lessons_per_week'),1))),monthly_price=fv(meta.get('monthly_price') or payload.get('amount')),currency=str(payload.get('currency') or 'EUR'),provider_subscription_id=str(payload.get('subscription_id') or payload.get('recurring_id') or ''),raw=data)
+    return NormalizedPaymentEvent(provider='unlimit',event_id=event_id,event_type=typ,status=status,child_id=iv(meta.get('child_id') or payload.get('child_id')),course_id=str(meta.get('course_id') or payload.get('course_id') or ''),plan_id=str(meta.get('plan_id') or payload.get('plan_id') or ''),plan_version_id=str(meta.get('plan_version_id') or payload.get('plan_version_id') or ''),billing_period=str(meta.get('billing_period') or payload.get('billing_period') or 'MONTH'),lessons_per_week=max(1,min(4,iv(meta.get('lessons_per_week') or payload.get('lessons_per_week'),1))),monthly_price=fv(meta.get('monthly_price') or payload.get('amount')),currency=str(payload.get('currency') or 'EUR'),provider_subscription_id=str(payload.get('subscription_id') or payload.get('recurring_id') or ''),raw=data)

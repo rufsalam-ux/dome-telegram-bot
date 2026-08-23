@@ -5,6 +5,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from typing import Mapping
 
 from app.services.platform_settings import load_settings
+from app.services.pricing_versions import MONTH, plan_versions_for_course, set_plan_price
 
 
 @dataclass(frozen=True)
@@ -74,26 +75,26 @@ def quote_regular_period(estimated_cost_per_lesson: float, lesson_count: int, an
 
 
 def subscription_plans_for_course(course_id: str | None = None) -> list[dict]:
-    cfg = load_settings("pricing")
-    regular = cfg.get("regular_course") or {}
-    default = [dict(x) for x in (regular.get("subscription_plans") or [])]
-    if not course_id:
-        return default
-    overrides = ((cfg.get("course_prices") or {}).get(str(course_id)) or {}).get("subscription_plans")
-    return [dict(x) for x in overrides] if overrides else default
+    """Compatibility monthly catalog backed by immutable active price versions."""
+    return [
+        {
+            "id": str(row.get("plan_id") or ""),
+            "plan_id": str(row.get("plan_id") or ""),
+            "version_id": str(row.get("version_id") or ""),
+            "lessons_per_week": int(row.get("lessons_per_week") or 1),
+            "monthly_price": float(row.get("price") or 0.0),
+            "currency": str(row.get("currency") or "EUR").upper(),
+            "billing_period": MONTH,
+        }
+        for row in plan_versions_for_course(course_id, MONTH)
+    ]
 
 def set_course_plan_price(course_id: str, lessons_per_week: int, monthly_price: float) -> dict:
-    from app.services.platform_settings import save_settings
-    cfg = load_settings("pricing")
-    freq=max(1,min(4,int(lessons_per_week)))
-    price=float(monthly_price)
-    if price <= 0: raise ValueError("price must be > 0")
-    cp=cfg.setdefault("course_prices",{}).setdefault(str(course_id),{})
-    plans=cp.setdefault("subscription_plans", subscription_plans_for_course(None))
-    found=False
-    for p in plans:
-        if int(p.get("lessons_per_week",0))==freq:
-            p["id"]=str(p.get("id") or f"weekly{freq}"); p["monthly_price"]=price; found=True
-    if not found: plans.append({"id":f"weekly{freq}","lessons_per_week":freq,"monthly_price":price})
-    save_settings("pricing",cfg)
-    return cfg
+    set_plan_price(
+        course_id=course_id,
+        lessons_per_week=lessons_per_week,
+        billing_period=MONTH,
+        price=monthly_price,
+        created_by="admin:legacy-course-command",
+    )
+    return load_settings("pricing")

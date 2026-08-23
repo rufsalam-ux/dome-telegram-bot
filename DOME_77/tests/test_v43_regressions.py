@@ -16,5 +16,5 @@ def test_payment_is_tokenized_and_server_checked():
 
 def test_memory_has_hidden_cards():
     s=Path("app/webapp/static/free_topic_task.html").read_text(encoding="utf-8")
-    assert "e.textContent='❓'" in s
+    assert "b.textContent='❓'" in s
     assert "setTimeout" in s

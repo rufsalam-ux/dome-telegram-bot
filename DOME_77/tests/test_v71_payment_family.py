@@ -76,13 +76,16 @@ def test_stripe_checkout_has_idempotency_and_plan_change(monkeypatch):
     class Checkout: Session=CheckoutSession
     class Subscription:
         @staticmethod
-        def retrieve(sub_id): return {'items':{'data':[{'id':'si1'}]}}
+        def retrieve(sub_id): return {'items':{'data':[{'id':'si1','price':{'id':'price_current'},'quantity':1}]},'current_period_start':100,'current_period_end':200,'metadata':{'plan_version_id':'old-v1'}}
+    class SubscriptionSchedule:
         @staticmethod
-        def modify(sub_id,**kwargs): calls['modify']=(sub_id,kwargs); return {'id':sub_id,'status':'active'}
+        def create(**kwargs): calls['schedule_create']=kwargs; return {'id':'sched1'}
+        @staticmethod
+        def modify(schedule_id,**kwargs): calls['schedule_modify']=(schedule_id,kwargs); return {'id':schedule_id,'status':'active'}
     class Price:
         @staticmethod
         def create(**kwargs): calls['price']=kwargs; return {'id':'price_next'}
-    fake=types.SimpleNamespace(api_key='',checkout=Checkout,Subscription=Subscription,Price=Price)
+    fake=types.SimpleNamespace(api_key='',checkout=Checkout,Subscription=Subscription,SubscriptionSchedule=SubscriptionSchedule,Price=Price)
     monkeypatch.setitem(sys.modules,'stripe',fake)
     monkeypatch.setattr(settings,'stripe_secret_key','sk_test')
     monkeypatch.setattr(pa,'load_settings',lambda _: {})
@@ -90,12 +93,15 @@ def test_stripe_checkout_has_idempotency_and_plan_change(monkeypatch):
     url=pa.create_stripe_subscription_checkout(child_id=2,course_id='reading',plan_id='weekly2',lessons_per_week=2,monthly_price=75,currency='EUR',success_url='https://x/s',cancel_url='https://x/c',idempotency_key='idem1')
     assert url=='https://checkout.test' and calls['checkout']['idempotency_key']=='idem1'
     pa.change_stripe_subscription_plan(subscription_id='sub1',child_id=2,course_id='reading',plan_id='weekly4',lessons_per_week=4,monthly_price=131,currency='EUR',idempotency_key='change1')
-    kw=calls['modify'][1]
+    kw=calls['schedule_modify'][1]
     assert kw['idempotency_key']=='change1'
     assert calls['price']['unit_amount']==13100
     assert kw['proration_behavior']=='none'
     assert 'payment_behavior' not in kw
-    assert kw['items'][0]['price']=='price_next'
+    assert calls['schedule_create']['from_subscription']=='sub1'
+    assert kw['phases'][0]['items'][0]['price']=='price_current'
+    assert kw['phases'][1]['items'][0]['price']=='price_next'
+    assert kw['phases'][0]['end_date']==kw['phases'][1]['start_date']==200
 
 def test_production_guardrails_and_no_second_subscription():
     h=(ROOT/'app/bot/handlers.py').read_text('utf-8'); provider=(ROOT/'app/services/subscription_provider.py').read_text('utf-8')

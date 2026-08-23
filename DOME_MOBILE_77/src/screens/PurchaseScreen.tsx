@@ -11,6 +11,7 @@ import {useAppStore} from '../store/AppStore';
 
 type Plan={
   plan_id:string;
+  version_id:string;
   title:string;
   lessons_per_week:number;
   price:number;
@@ -27,6 +28,7 @@ type Preview={
 
 const date=(value?:string|null)=>value?new Date(value).toLocaleDateString('ru-RU'):'—';
 const money=(value:number|undefined,currency:string|undefined)=>`${Number(value||0).toFixed(2)} ${currency||'EUR'}`;
+const periodLabel=(value?:string)=>value==='YEAR'?'год':'месяц';
 
 export function PurchaseScreen(){
   const store=useAppStore();
@@ -45,10 +47,10 @@ export function PurchaseScreen(){
   useEffect(()=>{void load()},[load]);
   if(!child)return null;
 
-  const choose=async(planId:string)=>{
+  const choose=async(plan:Plan)=>{
     try{
       setBusy(true);
-      setPreview(await getSubscriptionPlanChangePreview(child.id,planId,child.courseId||'conversation'));
+      setPreview(await getSubscriptionPlanChangePreview(child.id,plan.plan_id,plan.billing_period,plan.version_id,child.courseId||'conversation'));
     }catch(error:any){Alert.alert('Не удалось выбрать тариф',error.message)}
     finally{setBusy(false)}
   };
@@ -57,7 +59,7 @@ export function PurchaseScreen(){
     if(!preview)return;
     try{
       setBusy(true);
-      const result=await confirmSubscriptionPlanChange(child.id,preview.new_plan.plan_id,child.courseId||'conversation');
+      const result=await confirmSubscriptionPlanChange(child.id,preview.new_plan.plan_id,preview.new_plan.billing_period,preview.new_plan.version_id,child.courseId||'conversation');
       setPreview(null);setData((current:any)=>({...current,subscription:result.subscription}));
       if(result.approval_url){
         Alert.alert('Нужно подтверждение PayPal','Войдите в PayPal и подтвердите смену. Без этого текущий тариф останется без изменений.');
@@ -92,7 +94,7 @@ export function PurchaseScreen(){
     {subscription&&current?<Card>
       <H2>Текущий тариф: {current.title}</H2>
       <Body>Уроков в неделю: {current.lessons_per_week}</Body>
-      <Body>Текущая цена: {money(current.price,current.currency)} за месяц</Body>
+      <Body>Текущая цена: {money(current.price,current.currency)} за {periodLabel(current.billing_period)}</Body>
       <Body>Следующая дата списания: {date(subscription.next_charge_at)}</Body>
       <Body>Статус подписки: {subscription.status}</Body>
     </Card>:null}
@@ -100,7 +102,7 @@ export function PurchaseScreen(){
     {pending?<Card>
       <H2>Запланировано изменение</H2>
       <Body>Новый тариф: {pending.lessons_per_week} урок(а) в неделю</Body>
-      <Body>Стоимость следующего периода: {money(pending.price,pending.currency)}</Body>
+      <Body>Стоимость следующего периода: {money(pending.price,pending.currency)} за {periodLabel(pending.billing_period)}</Body>
       <Body>Начнёт действовать: {date(pending.effective_at)}</Body>
       {pending.provider_status==='PENDING_APPROVAL'?<Body>Ожидается подтверждение изменения в PayPal.</Body>:null}
       {pending.provider_status==='CANCEL_PENDING_APPROVAL'?<Body>Ожидается подтверждение отмены в PayPal.</Body>:null}
@@ -110,10 +112,10 @@ export function PurchaseScreen(){
     {subscription&&!preview?<>
       <H2>Изменить тариф</H2>
       <Body>Новый тариф начнёт действовать со следующего оплачиваемого периода. До этой даты действует ваш текущий тариф.</Body>
-      {plans.map(plan=><Card key={plan.plan_id}>
+      {plans.map(plan=><Card key={plan.version_id}>
         <H2>{plan.title}</H2>
-        <Body>{money(plan.price,plan.currency)} за месяц</Body>
-        <Button disabled={busy||plan.plan_id===current?.plan_id} secondary={plan.plan_id!==pending?.plan_id} title={plan.plan_id===current?.plan_id?'Текущий тариф':plan.plan_id===pending?.plan_id?'Запланирован':'Выбрать'} onPress={()=>choose(plan.plan_id)}/>
+        <Body>{money(plan.price,plan.currency)} за {periodLabel(plan.billing_period)}</Body>
+        <Button disabled={busy||(plan.plan_id===current?.plan_id&&plan.billing_period===current?.billing_period)} secondary={plan.version_id!==pending?.version_id} title={plan.plan_id===current?.plan_id&&plan.billing_period===current?.billing_period?'Текущий тариф':plan.version_id===pending?.version_id?'Запланирован':'Выбрать'} onPress={()=>choose(plan)}/>
       </Card>)}
     </>:null}
 
@@ -123,7 +125,7 @@ export function PurchaseScreen(){
       <Body>Текущий тариф: {preview.current_plan.title}</Body>
       <Body>Действует до: {date(preview.effective_at)}</Body>
       <Body>Новый тариф: {preview.new_plan.title}</Body>
-      <Body>Стоимость следующего периода: {money(preview.new_plan.price,preview.new_plan.currency)}</Body>
+      <Body>Стоимость следующего периода: {money(preview.new_plan.price,preview.new_plan.currency)} за {periodLabel(preview.new_plan.billing_period)}</Body>
       <Body>Начнет действовать: {date(preview.effective_at)}</Body>
       <Button disabled={busy} title='Подтвердить изменение тарифа' onPress={confirm}/>
       <Button disabled={busy} secondary title='Назад к тарифам' onPress={()=>setPreview(null)}/>

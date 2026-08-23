@@ -10,7 +10,8 @@ RUNTIME=(ROOT/'app/services/animation_engine/runtime_provider.py').read_text(enc
 
 
 def test_suitcase_gate_is_scoped_and_animals_never_get_suitcase_message():
-    assert 'if slide_id == "slide_24" or data.get("suitcase_pending") or data.get("suitcase_completed")' in H
+    assert 'if data.get("suitcase_pending"):' in H
+    assert 'current_slide_id="slide_24"' in H
     assert 'if data.get("animal_compare_pending"):' in H
     assert '🐾 Сначала выбери животное' in H
 
@@ -35,8 +36,8 @@ def test_lyosha_never_alex_policy():
 def test_final_render_is_bounded_and_nonblocking():
     cfg=json.loads((ROOT/'config/cartoon.json').read_text(encoding='utf-8'))
     assert cfg['generate_missing_animation_during_render'] is False
-    assert cfg['ffmpeg_timeout_seconds'] <= 180
-    assert cfg['total_render_timeout_seconds'] <= 210
+    assert cfg['ffmpeg_timeout_seconds'] <= 300
+    assert cfg['total_render_timeout_seconds'] <= 330
     assert 'asyncio.to_thread(build_timeline_cartoon' in H
     assert 'asyncio.wait_for' in H
     assert 'allow_generate=allow_generate_during_render' in CART

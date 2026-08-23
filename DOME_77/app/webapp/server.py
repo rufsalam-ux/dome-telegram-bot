@@ -132,6 +132,15 @@ def _stripe_normalized(event:dict, obj:dict, meta:dict, provider_sub_id:str):
     period={}
     lines=((obj.get('lines') or {}).get('data') or []) if isinstance(obj.get('lines'),dict) else []
     if lines and isinstance(lines[0],dict):period=lines[0].get('period') or {}
+    provider_plan_id=''
+    if lines and isinstance(lines[0],dict):
+        raw_price=lines[0].get('price') or {}
+        if isinstance(raw_price,dict):provider_plan_id=str(raw_price.get('id') or '')
+    if not provider_plan_id:
+        items=((obj.get('items') or {}).get('data') or []) if isinstance(obj.get('items'),dict) else []
+        if items and isinstance(items[0],dict):
+            raw_price=items[0].get('price') or {}
+            if isinstance(raw_price,dict):provider_plan_id=str(raw_price.get('id') or '')
     if not period and isinstance(obj.get('current_period_start'),(int,float)):
         period={'start':obj.get('current_period_start'),'end':obj.get('current_period_end')}
     def dt(value):
@@ -142,6 +151,8 @@ def _stripe_normalized(event:dict, obj:dict, meta:dict, provider_sub_id:str):
     return NormalizedPaymentEvent(
         provider='stripe',event_id=str(event.get('id') or ''),event_type=mapping.get(typ,'SUBSCRIPTION_UPDATED'),status=status,
         child_id=child_id,course_id=str(meta.get('course_id') or ''),plan_id=str(meta.get('plan_id') or ''),
+        plan_version_id=str(meta.get('plan_version_id') or ''),billing_period=str(meta.get('billing_period') or 'MONTH'),
+        provider_plan_id=provider_plan_id,
         lessons_per_week=freq,monthly_price=monthly,currency=str(obj.get('currency') or 'EUR'),
         provider_subscription_id=provider_sub_id,occurred_at=dt(event.get('created')),
         period_start=dt(period.get('start')),period_end=dt(period.get('end')),

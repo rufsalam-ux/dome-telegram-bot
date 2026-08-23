@@ -8,10 +8,11 @@ from app.services.course_scheduler import choose_next_lesson
 
 def test_three_pilot_courses_exist():
     root=Path('content/courses')
-    for name in ('conversation','learn_to_read','reading'):
+    expected={'conversation':True,'learn_to_read':False,'reading':False}
+    for name, active in expected.items():
         data=json.loads((root/f'{name}.json').read_text('utf-8'))
         assert data['course_id']==name
-        assert data['active'] is True
+        assert data['active'] is active
 
 
 def test_conversation_starts_with_existing_production_lesson():

@@ -13,7 +13,7 @@ SETTINGS_DIR = settings.storage_root / "platform-settings"
 SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
 
 DEFAULT_FEATURES: dict[str, Any] = {
-    "schema_version": "1.0",
+    "schema_version": "2.0",
     "features": {
         "interest_lessons": {"mode": "enabled", "title": "Уроки по интересам"},
         "interest_generation": {"mode": "enabled", "title": "Генерация новых AI-уроков"},
@@ -51,11 +51,19 @@ DEFAULT_PRICING: dict[str, Any] = {
         "max_replays": 2,
         "max_completed_runs": 2,
         "subscription_plans": [
-            {"id":"weekly1","lessons_per_week":1,"monthly_price":39},
-            {"id":"weekly2","lessons_per_week":2,"monthly_price":79},
-            {"id":"weekly3","lessons_per_week":3,"monthly_price":109},
-            {"id":"weekly4","lessons_per_week":4,"monthly_price":139},
+            {"id":"weekly1","lessons_per_week":1,"monthly_price":39,"annual_price":429},
+            {"id":"weekly2","lessons_per_week":2,"monthly_price":69,"annual_price":759},
+            {"id":"weekly3","lessons_per_week":3,"monthly_price":99,"annual_price":1089},
+            {"id":"weekly4","lessons_per_week":4,"monthly_price":139,"annual_price":1536},
         ],
+        "profitability": {
+            "hide_unprofitable_plans": True,
+            "estimated_cost_per_lesson": 0.0,
+            "fixed_cost_per_period": 0.0,
+            "minimum_margin_percent": 0.0,
+            "billing_weeks_per_month": 4,
+            "billing_weeks_per_year": 52,
+        },
         "cartoon_on_first_run_only": True,
         "trial_days": 7,
     },
@@ -90,6 +98,9 @@ DEFAULT_PRICING: dict[str, Any] = {
         },
     },
 }
+
+if (CONFIG_DIR / "pricing.json").exists():
+    DEFAULT_PRICING = json.loads((CONFIG_DIR / "pricing.json").read_text("utf-8"))
 
 DEFAULT_LANGUAGES: dict[str, Any] = {
     "schema_version": "1.0",

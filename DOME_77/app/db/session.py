@@ -76,6 +76,22 @@ async def _dedupe_lesson_entitlements(conn) -> None:
         ), {**dict(g), "keep_id": keep_id})
 
 
+async def _backfill_subscription_price_versions(conn) -> None:
+    rows = (await conn.execute(text(
+        "SELECT id, plan_id, current_plan_id, monthly_price, currency, current_plan_version_id, current_plan_price "
+        "FROM subscriptions"
+    ))).mappings().all()
+    for row in rows:
+        price = round(float(row["current_plan_price"] if row["current_plan_price"] is not None else row["monthly_price"] or 0.0), 2)
+        plan_id = str(row["current_plan_id"] or row["plan_id"] or "weekly1")
+        currency = str(row["currency"] or "EUR").upper()
+        version_id = str(row["current_plan_version_id"] or f"legacy-{plan_id}-month-{currency.lower()}-{price:.2f}")
+        await conn.execute(text(
+            "UPDATE subscriptions SET current_plan_version_id=:version_id, current_plan_price=:price, "
+            "billing_period=COALESCE(NULLIF(billing_period,''),'MONTH') WHERE id=:id"
+        ), {"version_id": version_id, "price": price, "id": int(row["id"])})
+
+
 async def init_db() -> None:
     settings.storage_root.mkdir(parents=True, exist_ok=True)
     async with engine.begin() as conn:
@@ -107,7 +123,14 @@ async def init_db() -> None:
             "provider_subscription_id": "VARCHAR(255)",
             "release_baseline_count": "INTEGER NOT NULL DEFAULT 0",
             "current_plan_id": "VARCHAR(40)",
+            "current_plan_version_id": "VARCHAR(180)",
+            "current_plan_price": "FLOAT",
+            "billing_period": "VARCHAR(20) NOT NULL DEFAULT 'MONTH'",
+            "provider_plan_id": "VARCHAR(255)",
             "pending_plan_id": "VARCHAR(40)",
+            "pending_plan_version_id": "VARCHAR(180)",
+            "pending_plan_billing_period": "VARCHAR(20)",
+            "pending_provider_plan_id": "VARCHAR(255)",
             "pending_plan_created_at": "TIMESTAMP",
             "pending_plan_effective_at": "TIMESTAMP",
             "pending_plan_price": "FLOAT",
@@ -123,9 +146,15 @@ async def init_db() -> None:
         })
         await conn.execute(text("UPDATE subscriptions SET current_plan_id=plan_id WHERE current_plan_id IS NULL OR current_plan_id=''"))
         await conn.execute(text("UPDATE subscriptions SET current_period_start=started_at WHERE current_period_start IS NULL"))
+        await _backfill_subscription_price_versions(conn)
         await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_subscriptions_provider_subscription_id ON subscriptions(provider_subscription_id)"))
         await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_subscriptions_payment_provider ON subscriptions(payment_provider)"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_subscriptions_current_plan_version_id ON subscriptions(current_plan_version_id)"))
         await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_subscriptions_pending_plan_effective_at ON subscriptions(pending_plan_effective_at)"))
+        await _add_columns(conn, "subscription_audit_events", {
+            "old_plan_version_id": "VARCHAR(180)",
+            "new_plan_version_id": "VARCHAR(180)",
+        })
         await conn.execute(text("UPDATE subscriptions SET payment_provider='stripe' WHERE (payment_provider IS NULL OR payment_provider='manual') AND provider_subscription_id LIKE 'sub_%'"))
         if settings.database_url.startswith("sqlite"):
             await _add_columns(conn, "characters", {

@@ -18,7 +18,7 @@ def _headers() -> dict[str,str]:
         h[settings.unipay_api_key_header or 'X-Api-Key']=settings.unipay_api_key
     return h
 
-async def create_unipay_subscription_checkout(*, child_id:int, course_id:str, plan_id:str, lessons_per_week:int, monthly_price:float, currency:str, success_url:str, cancel_url:str, webhook_url:str, idempotency_key:str='') -> str:
+async def create_unipay_subscription_checkout(*, child_id:int, course_id:str, plan_id:str, plan_version_id:str='', lessons_per_week:int, monthly_price:float, currency:str, billing_period:str='MONTH', success_url:str, cancel_url:str, webhook_url:str, idempotency_key:str='') -> str:
     """Create a hosted recurring-payment checkout using merchant-supplied UniPAY V3 endpoint.
 
     UniPAY exposes Checkout, saved-card and subscription capabilities, but account-specific
@@ -30,11 +30,12 @@ async def create_unipay_subscription_checkout(*, child_id:int, course_id:str, pl
     if not endpoint: raise UniPayError('UNIPAY_SUBSCRIPTION_URL не настроен')
     if not (settings.unipay_access_token or (settings.unipay_merchant_id and settings.unipay_api_key)):
         raise UniPayError('UniPAY credentials не настроены')
-    metadata={'child_id':child_id,'course_id':course_id,'plan_id':plan_id,'lessons_per_week':lessons_per_week,'monthly_price':monthly_price}
+    period=str(billing_period or 'MONTH').upper()
+    metadata={'child_id':child_id,'course_id':course_id,'plan_id':plan_id,'plan_version_id':plan_version_id,'billing_period':period,'lessons_per_week':lessons_per_week,'monthly_price':monthly_price}
     payload={
         'amount':round(float(monthly_price),2),'currency':currency.upper(),
         'description':f'DOME · {lessons_per_week}×/нед',
-        'recurring':True,'interval':'month','metadata':metadata,
+        'recurring':True,'interval':'year' if period=='YEAR' else 'month','metadata':metadata,
         'success_url':success_url,'cancel_url':cancel_url,'callback_url':webhook_url,
         'webhook_url':webhook_url,'reference':f'dome:{child_id}:{course_id}:{plan_id}'
     }
@@ -111,19 +112,21 @@ def normalize_unipay_event(data:dict[str,Any]) -> NormalizedPaymentEvent:
         child_id=_int(meta.get('child_id') or payload.get('child_id')),
         course_id=str(meta.get('course_id') or payload.get('course_id') or ''),
         plan_id=str(meta.get('plan_id') or payload.get('plan_id') or ''),
+        plan_version_id=str(meta.get('plan_version_id') or payload.get('plan_version_id') or ''),
+        billing_period=str(meta.get('billing_period') or payload.get('billing_period') or 'MONTH'),
         lessons_per_week=max(1,min(4,_int(meta.get('lessons_per_week') or payload.get('lessons_per_week'),1))),
         monthly_price=_float(meta.get('monthly_price') or payload.get('monthly_price') or payload.get('amount')),
         currency=str(payload.get('currency') or data.get('currency') or 'EUR'),
         provider_subscription_id=str(payload.get('subscription_id') or payload.get('subscriptionId') or payload.get('recurring_id') or payload.get('recurringId') or payload.get('RegularpaymentID') or payload.get('RegularPaymentID') or ''), raw=data)
 
 
-async def change_unipay_subscription_plan(*, subscription_id:str, child_id:int, course_id:str, plan_id:str, lessons_per_week:int, monthly_price:float, currency:str, webhook_url:str, idempotency_key:str='') -> dict:
+async def change_unipay_subscription_plan(*, subscription_id:str, child_id:int, course_id:str, plan_id:str, plan_version_id:str='', lessons_per_week:int, monthly_price:float, currency:str, billing_period:str='MONTH', webhook_url:str, idempotency_key:str='') -> dict:
     endpoint=settings.unipay_subscription_update_url.strip()
     if not endpoint:
         raise UniPayError('UNIPAY_SUBSCRIPTION_UPDATE_URL не настроен; новая подписка поверх старой не создаётся ради защиты от двойного списания')
     endpoint=endpoint.replace('{subscription_id}',subscription_id)
-    metadata={'child_id':child_id,'course_id':course_id,'plan_id':plan_id,'lessons_per_week':lessons_per_week,'monthly_price':monthly_price}
-    payload={'subscription_id':subscription_id,'amount':round(float(monthly_price),2),'currency':currency.upper(),'interval':'month','metadata':metadata,'callback_url':webhook_url,'webhook_url':webhook_url}
+    period=str(billing_period or 'MONTH').upper();metadata={'child_id':child_id,'course_id':course_id,'plan_id':plan_id,'plan_version_id':plan_version_id,'billing_period':period,'lessons_per_week':lessons_per_week,'monthly_price':monthly_price}
+    payload={'subscription_id':subscription_id,'amount':round(float(monthly_price),2),'currency':currency.upper(),'interval':'year' if period=='YEAR' else 'month','metadata':metadata,'callback_url':webhook_url,'webhook_url':webhook_url}
     headers=_headers()
     if idempotency_key: headers['Idempotency-Key']=idempotency_key; payload['idempotency_key']=idempotency_key
     timeout=aiohttp.ClientTimeout(total=25)

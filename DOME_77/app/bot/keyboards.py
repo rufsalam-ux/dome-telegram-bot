@@ -180,14 +180,16 @@ def mood_keyboard(items: list[str], language: str = "ru") -> InlineKeyboardMarku
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def payment_plans_keyboard(language: str, *, additional_child_discount_per_lesson: float = 0.0) -> InlineKeyboardMarkup:
+def payment_plans_keyboard(language: str, *, additional_child_discount_per_lesson: float = 0.0, course_id: str | None = None) -> InlineKeyboardMarkup:
     from app.services.platform_settings import load_settings
-    cfg=load_settings("pricing"); plans=((cfg.get("regular_course") or {}).get("subscription_plans") or [])
-    family=(cfg.get("family") or {}); billing_weeks=max(1,int(family.get("billing_weeks_per_month",4) or 4))
+    from app.services.pricing_versions import is_plan_profitable, plan_versions_for_course
+    cfg=load_settings("pricing"); plans=plan_versions_for_course(course_id)
+    family=(cfg.get("family") or {}); monthly_weeks=max(1,int(family.get("billing_weeks_per_month",4) or 4));annual_weeks=max(monthly_weeks,int(family.get("billing_weeks_per_year",52) or 52))
     rows=[]
-    for p in sorted(plans,key=lambda x:int(x.get("lessons_per_week",1))):
-        f=int(p.get("lessons_per_week",1)); base=float(p.get("monthly_price",0)); price=max(0.0,round(base-float(additional_child_discount_per_lesson or 0)*f*billing_weeks,2)); label=f"{f} урок{'а' if f in {2,3,4} else ''} в неделю · €{price:g}/мес"
-        rows.append([InlineKeyboardButton(text=label, callback_data=f"payment:plan:weekly{f}")])
+    for p in sorted(plans,key=lambda x:(str(x.get("billing_period")),int(x.get("lessons_per_week",1)))):
+        f=int(p.get("lessons_per_week",1));period=str(p.get("billing_period") or "MONTH").upper();weeks=annual_weeks if period=="YEAR" else monthly_weeks;base=float(p.get("price",0));price=max(0.0,round(base-float(additional_child_discount_per_lesson or 0)*f*weeks,2));suffix="год" if period=="YEAR" else "мес";label=f"{f} урок{'а' if f in {2,3,4} else ''} в неделю · €{price:g}/{suffix}"
+        if not is_plan_profitable(p,effective_price=price,course_id=course_id):continue
+        rows.append([InlineKeyboardButton(text=label, callback_data=f"payment:plan:{period}:weekly{f}")])
     rows.append([InlineKeyboardButton(text=tr(language, "back_menu"), callback_data="menu:open")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 

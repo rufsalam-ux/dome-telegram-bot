@@ -9,7 +9,8 @@ def test_required_activity_disables_skip():
 
 def test_runtime_knows_implemented_and_future_types():
     assert decide(ActivitySpec(id='a1', type='speak')).supported is True
-    assert decide(ActivitySpec(id='a2', type='pose_action')).supported is False
+    with pytest.raises(ValueError,match='Unknown activity type'):
+        ActivitySpec(id='a2', type='pose_action')
 
 
 def test_manifest_migration_adds_defaults():
@@ -22,7 +23,8 @@ def test_manifest_migration_adds_defaults():
 def test_camera_child_frame_requires_mirror_detection():
     data = {
         'lesson_id':'l1','course_id':'c1','title':'T',
-        'activities':[{'id':'a1','type':'camera_action','camera':{'enabled':True,'coordinate_frame':'child','auto_detect_mirror':False}}]
+        'activities':[{'id':'a1','type':'real_world_find','camera':{'enabled':True,'coordinate_frame':'child','auto_detect_mirror':False}}]
     }
     errors = validate_manifest_dict(data)
     assert any('auto-detect mirror' in e for e in errors)
+import pytest

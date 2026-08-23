@@ -183,12 +183,12 @@ export function getSubscription(childId:string|number,courseId='conversation'){
   return request(`/api/mobile/child/${childId}/subscription?course_id=${encodeURIComponent(courseId)}`);
 }
 
-export function confirmSubscriptionPlanChange(childId:string|number,planId:string,courseId='conversation'){
-  return request(`/api/mobile/child/${childId}/subscription/plan-change`,jsonInit('POST',{plan_id:planId,course_id:courseId}));
+export function confirmSubscriptionPlanChange(childId:string|number,planId:string,billingPeriod:string,versionId:string,courseId='conversation'){
+  return request(`/api/mobile/child/${childId}/subscription/plan-change`,jsonInit('POST',{plan_id:planId,billing_period:billingPeriod,version_id:versionId,course_id:courseId}));
 }
 
-export function getSubscriptionPlanChangePreview(childId:string|number,planId:string,courseId='conversation'){
-  return request(`/api/mobile/child/${childId}/subscription/plan-change/preview`,jsonInit('POST',{plan_id:planId,course_id:courseId}));
+export function getSubscriptionPlanChangePreview(childId:string|number,planId:string,billingPeriod:string,versionId:string,courseId='conversation'){
+  return request(`/api/mobile/child/${childId}/subscription/plan-change/preview`,jsonInit('POST',{plan_id:planId,billing_period:billingPeriod,version_id:versionId,course_id:courseId}));
 }
 
 export function cancelSubscriptionPlanChange(childId:string|number,courseId='conversation'){

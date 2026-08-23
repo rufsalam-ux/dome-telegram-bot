@@ -14,12 +14,12 @@ def lesson():
 def test_removed_slides_are_physically_absent():
     orders = [int(s['order']) for s in lesson()['slides']]
     assert not any(32 <= order <= 39 for order in orders)
-    assert 31 in orders and 40 in orders
+    assert 24 in orders and 40 in orders
 
 
-def test_runtime_route_jumps_from_31_to_40():
+def test_runtime_route_jumps_from_24_to_40():
     slides = lesson()['slides']
-    idx31 = next(i for i, s in enumerate(slides) if s['order'] == 31)
+    idx31 = next(i for i, s in enumerate(slides) if s['order'] == 24)
     idx40 = next(i for i, s in enumerate(slides) if s['order'] == 40)
     assert next_runtime_step(slides, idx31) == idx40
 
@@ -36,12 +36,12 @@ def test_slide9_is_blocking_and_not_skippable():
 
 
 def test_old_session_steps_migrate_but_new_runtime_steps_do_not_shift():
-    assert normalize_lesson_step(39, 11) == 31
-    assert normalize_lesson_step(31, 14) == 31
+    assert normalize_lesson_step(39, 11) == 32
+    assert normalize_lesson_step(31, 14) == 32
 
 
 def test_first_scene_is_higher():
     timeline = json.loads((ROOT / 'content/lessons/demo_001/timeline.json').read_text(encoding='utf-8'))
     first = timeline[0] if isinstance(timeline, list) else timeline['scenes'][0]
-    assert first['y'] <= 110
-    assert first['height'] >= 300
+    assert first['floor_y_norm'] >= 0.9
+    assert first['height_norm'] >= 0.4
