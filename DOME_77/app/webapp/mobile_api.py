@@ -1,20 +1,21 @@
 from __future__ import annotations
-import asyncio, base64, json, logging, mimetypes, secrets
+import asyncio, base64, json, logging, mimetypes, secrets, time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from aiohttp import web
 from sqlalchemy import select, func
+from sqlalchemy.exc import IntegrityError
 from app.core.config import settings
 from app.db.session import SessionLocal
-from app.db.models import Parent,Child,Character,LessonSession,VoiceAttempt,InteractiveResult,HomeworkAssignment
+from app.db.models import Parent,Child,Character,LessonSession,VoiceAttempt,InteractiveResult,HomeworkAssignment,LessonMovie
 from app.services.mobile_tokens import issue_session_token,verify_session_token,signed_media_token,verify_media_token
 from app.services.lesson_loader import load_lesson
-from app.services.lesson_access import can_start,complete_session_once
+from app.services.lesson_access import can_start,complete_session_once,mark_cartoon_generated
 from app.services.preset_characters import preset_character_path,list_preset_characters
 from app.services.character_processor import process_character
 from app.services.audio_processing import prepare_child_voice
 from app.services.speech_pipeline import assess_speech
-from app.services.free_topic_cartoon import build_free_topic_cartoon
+from app.services.mobile_lesson_movie import MovieRenderInputs,build_mobile_lesson_movie,select_movie_voice_takes
 from app.services.email_reports import send_homework_email,_send_with_attachment_sync,send_verification_email,send_password_reset_email
 from app.services.ai_speech import synthesize_speech, translate_text
 from app.services.password_auth import hash_password, hash_verification_code, verify_password, verify_verification_code
@@ -56,7 +57,31 @@ def _hero_url(request:web.Request,c:Child)->str|None:
     return f'{_base(request)}/api/mobile/hero/file/{c.id}/{c.active_character_id}?t={t}'
 
 def _child_json(request:web.Request,c:Child)->dict:
-    return {'id':c.id,'name':c.display_name,'age_years':c.age_years,'native_language':c.native_language,'target_language':c.target_language,'language_level':c.language_level,'country':c.country,'active_character_id':c.active_character_id,'hero_url':_hero_url(request,c)}
+    return {'id':c.id,'name':c.display_name,'age_years':c.age_years,'native_language':c.native_language,'target_language':c.target_language,'language_level':c.language_level,'working_difficulty':c.working_difficulty,'country':c.country,'active_character_id':c.active_character_id,'hero_url':_hero_url(request,c)}
+
+
+async def _mobile_resume_state(db, session_id:int)->tuple[dict,list[str]]:
+    rows=(await db.scalars(select(InteractiveResult).where(InteractiveResult.lesson_session_id==session_id).order_by(InteractiveResult.id))).all()
+    state={}
+    for row in rows:
+        try:state[row.slide_id]=json.loads(row.result_json or '{}')
+        except (TypeError,ValueError,json.JSONDecodeError):continue
+    voices=(await db.scalars(select(VoiceAttempt).where(VoiceAttempt.lesson_session_id==session_id).order_by(VoiceAttempt.id))).all()
+    accepted=[]
+    for row in voices:
+        if str(row.status or '').startswith('ACCEPTED') and row.phrase_id not in accepted:accepted.append(row.phrase_id)
+    return state,accepted
+
+
+def _session_payload(sess:LessonSession,ent,child:Child,*,resumed:bool,interactive_state:dict,recorded_phrases:list[str])->dict:
+    return {
+        'session_id':sess.id,'run_number':int(ent.completed_runs or 0)+1,'lesson_id':sess.lesson_id,
+        'current_step':int(sess.current_step or 0),'resumed':resumed,'interactive_state':interactive_state,
+        'recorded_phrases':recorded_phrases,'adaptive_profile':{
+            'language_level':child.language_level or 'PRE_A1',
+            'working_difficulty':float(child.working_difficulty or 0.15),
+        },
+    }
 
 async def bootstrap(request:web.Request)->web.Response:
     p=await _parent(request)
@@ -137,9 +162,10 @@ async def session_start(request:web.Request)->web.Response:
     async with SessionLocal() as db:
         existing=await db.scalar(select(LessonSession).where(LessonSession.child_id==cid,LessonSession.lesson_id==lid,LessonSession.status=='IN_PROGRESS').order_by(LessonSession.id.desc()))
         if existing:
-            return web.json_response({'session_id':existing.id,'run_number':int(ent.completed_runs or 0)+1,'lesson_id':lid,'current_step':int(existing.current_step or 0),'resumed':True})
+            interactive_state,recorded_phrases=await _mobile_resume_state(db,existing.id)
+            return web.json_response(_session_payload(existing,ent,c,resumed=True,interactive_state=interactive_state,recorded_phrases=recorded_phrases))
         sess=LessonSession(child_id=cid,lesson_id=lid,current_step=0,status='IN_PROGRESS',level_at_start=c.language_level or 'PRE_A1',lesson_revision=int(lesson_data.get('revision') or 1),runtime_state_json=json.dumps({'source':'mobile'},ensure_ascii=False));db.add(sess);await db.commit();await db.refresh(sess)
-    return web.json_response({'session_id':sess.id,'run_number':int(ent.completed_runs or 0)+1,'lesson_id':lid,'current_step':0,'resumed':False})
+    return web.json_response(_session_payload(sess,ent,c,resumed=False,interactive_state={},recorded_phrases=[]))
 
 async def session_progress(request:web.Request)->web.Response:
     p=await _parent(request);sid=int(request.match_info['session_id']);data=await request.json()
@@ -161,7 +187,7 @@ def _phrase(lesson_data:dict,pid:str|None)->dict:
     return next((x for x in lesson_data.get('required_phrases',[]) if x.get('phrase_id')==pid),{}) if pid else {}
 
 async def voice(request:web.Request)->web.Response:
-    p=await _parent(request);sid=int(request.match_info['session_id'])
+    started=time.perf_counter();p=await _parent(request);sid=int(request.match_info['session_id'])
     async with SessionLocal() as db:
         sess=await db.get(LessonSession,sid)
         if not sess:raise web.HTTPNotFound()
@@ -190,19 +216,33 @@ async def voice(request:web.Request)->web.Response:
                         f.write(chunk)
             else:fields[part.name]=await part.text()
     if raw is None:raise web.HTTPBadRequest(text=json.dumps({'error':'No audio received'}),content_type='application/json')
+    uploaded=time.perf_counter()
     slide_id=fields.get('slide_id','');prompt=fields.get('prompt','');pid=fields.get('phrase_id') or None
     lesson_data=load_lesson(sess.lesson_id);sl=_slide(lesson_data,slide_id);ph=_phrase(lesson_data,pid or sl.get('required_phrase_id'))
     if raw.stat().st_size<1000:raise web.HTTPBadRequest(text=json.dumps({'error':'Запись слишком короткая или пустая'}),content_type='application/json')
     wav=raw.with_suffix('.wav');max_sec=5 if (pid or sl.get('required_phrase_id')) else 60
     try:await asyncio.to_thread(prepare_child_voice,raw,wav,max_sec)
     except Exception as exc:raise web.HTTPBadRequest(text=json.dumps({'error':f'Не удалось обработать запись: {exc}'}),content_type='application/json')
+    prepared=time.perf_counter()
+    storage_phrase_id=str(pid or sl.get('required_phrase_id') or slide_id)
     async with SessionLocal() as db:
-        n=(await db.scalar(select(func.count(VoiceAttempt.id)).where(VoiceAttempt.lesson_session_id==sid,VoiceAttempt.phrase_id==(pid or slide_id)))) or 0
-    assessment=await assess_speech(wav,c.target_language or 'ru',c.native_language or 'ru',prompt or sl.get('question') or sl.get('bot_says_target') or '',ph.get('accepted_meaning') or [],int(n)+1,c.display_name,c.working_difficulty)
+        n=(await db.scalar(select(func.count(VoiceAttempt.id)).where(VoiceAttempt.lesson_session_id==sid,VoiceAttempt.phrase_id==storage_phrase_id))) or 0
+    attempt_number=int(n)+1;max_attempts=max(1,int(sl.get('max_attempts') or 3))
+    goal=prompt or ph.get('target_text') or sl.get('question') or sl.get('bot_says_target') or ''
+    assessment=await assess_speech(wav,c.target_language or 'ru',c.native_language or 'ru',goal,ph.get('accepted_meaning') or [],attempt_number,c.display_name,c.working_difficulty,c.language_level or 'PRE_A1')
+    assessed=time.perf_counter()
+    status=str(assessment.status or 'TECHNICAL_UNCERTAINTY')
+    accepted=status.startswith('ACCEPTED')
+    if not accepted and attempt_number>=max_attempts:
+        status='ACCEPTED_WITH_SUPPORT'
+        accepted=True
+    correction_target=str(assessment.corrected_target or ph.get('simplified_text') or sl.get('simplified_text') or ph.get('target_text') or goal)
     async with SessionLocal() as db:
-        va=VoiceAttempt(lesson_session_id=sid,phrase_id=pid or slide_id,attempt_number=int(n)+1,audio_path=str(wav),status=assessment.status,transcript=assessment.transcript,detected_language=assessment.detected_language,confidence=assessment.confidence,grammar_errors=json.dumps(assessment.grammar_errors,ensure_ascii=False),pronunciation_errors=json.dumps(assessment.pronunciation_errors,ensure_ascii=False),semantic_match=assessment.semantic_match);db.add(va);await db.commit()
+        va=VoiceAttempt(lesson_session_id=sid,phrase_id=storage_phrase_id,attempt_number=attempt_number,audio_path=str(wav),status=status,transcript=assessment.transcript,detected_language=assessment.detected_language,confidence=assessment.confidence,grammar_errors=json.dumps(assessment.grammar_errors,ensure_ascii=False),pronunciation_errors=json.dumps(assessment.pronunciation_errors,ensure_ascii=False),semantic_match=assessment.semantic_match);db.add(va);await db.commit()
+    saved=time.perf_counter()
     feedback=assessment.feedback_native or assessment.response_native or assessment.response_target
-    return web.json_response({'status':assessment.status,'transcript':assessment.transcript,'feedback':feedback,'response_target':assessment.response_target,'response_native':assessment.response_native,'semantic_match':assessment.semantic_match})
+    log.info('MOBILE_VOICE_LATENCY session=%s slide=%s phrase=%s upload_ms=%d prepare_ms=%d assess_ms=%d save_ms=%d total_ms=%d attempt=%d status=%s',sid,slide_id,storage_phrase_id,round((uploaded-started)*1000),round((prepared-uploaded)*1000),round((assessed-prepared)*1000),round((saved-assessed)*1000),round((saved-started)*1000),attempt_number,status)
+    return web.json_response({'status':status,'accepted':accepted,'needs_retry':not accepted,'attempt_number':attempt_number,'max_attempts':max_attempts,'transcript':assessment.transcript,'feedback':feedback,'correction_target':correction_target if not str(assessment.status).startswith('ACCEPTED') else '','response_target':assessment.response_target,'response_native':assessment.response_native,'semantic_match':assessment.semantic_match})
 
 async def interactive(request:web.Request)->web.Response:
     p=await _parent(request);sid=int(request.match_info['session_id']);data=await request.json()
@@ -227,17 +267,19 @@ async def update_child_language(request:web.Request)->web.Response:
     return web.json_response(_child_json(request,c))
 
 async def tts(request:web.Request)->web.StreamResponse:
-    await _parent(request)
+    started=time.perf_counter();await _parent(request)
     text=str(request.query.get('text',''))[:1000];native_text=str(request.query.get('native_text',''))[:1000];source=str(request.query.get('source_language','ru'));target=str(request.query.get('target_language','ru'));native=str(request.query.get('native_language','ru'))
     if not text and not native_text:raise web.HTTPBadRequest()
     try:
         spoken_target=await translate_text(text,source,target) if text else ''
         spoken_native=await translate_text(native_text,source,native) if native_text else ''
     except Exception as exc:raise web.HTTPServiceUnavailable(text=f'Translation unavailable: {exc}')
+    translated=time.perf_counter()
     combined=spoken_target
     if spoken_native and (native!=target or spoken_native!=spoken_target):combined=(combined+'\n\n'+spoken_native).strip()
     path=await synthesize_speech(combined,target,settings.storage_root/'tts-cache-mobile','mobile')
     if not path:raise web.HTTPServiceUnavailable(text='TTS unavailable')
+    ready=time.perf_counter();log.info('MOBILE_TTS_LATENCY source=%s target=%s translate_ms=%d synth_or_cache_ms=%d total_ms=%d',source,target,round((translated-started)*1000),round((ready-translated)*1000),round((ready-started)*1000))
     return web.FileResponse(path)
 
 async def complete(request:web.Request)->web.Response:
@@ -254,26 +296,44 @@ async def complete(request:web.Request)->web.Response:
     else: run_no=int(ent.completed_runs or 0)
     async with SessionLocal() as db:
         voices=(await db.scalars(select(VoiceAttempt).where(VoiceAttempt.lesson_session_id==sid).order_by(VoiceAttempt.id))).all();char=await db.get(Character,c.active_character_id) if c.active_character_id else None
-    accepted=[Path(v.audio_path) for v in voices if str(v.status).startswith('ACCEPTED') and Path(v.audio_path).exists()]
-    movie_url=None
-    if char and accepted:
-        char_path=Path(char.processed_path or char.original_path);base=Path(settings.content_root)/'lessons'/sess.lesson_id
-        backgrounds=[]
-        for sl in lesson_data.get('slides',[]):
-            rel=sl.get('image')
-            if rel:
-                q=base/rel
-                if q.exists():backgrounds.append(q)
-        out=settings.storage_root/'children'/str(c.id)/'cartoons'/f'mobile_{sess.lesson_id}_run{run_no}.mp4';out.parent.mkdir(parents=True,exist_ok=True)
-        try:
-            await asyncio.to_thread(build_free_topic_cartoon,backgrounds[:10],char_path,accepted[:10],[],out,75,None,9)
+    audio_by_phrase,missing_voice=select_movie_voice_takes(voices,lesson_data)
+    movie_url=None;movie_status='MISSING_VOICE' if missing_voice else ('MISSING_HERO' if not char else 'PROCESSING')
+    out=settings.storage_root/'children'/str(c.id)/'cartoons'/f'mobile_{sess.lesson_id}_session{sid}.mp4';out.parent.mkdir(parents=True,exist_ok=True)
+    should_render=False;movie_id=None
+    if char and not missing_voice:
+        async with SessionLocal() as db:
+            movie=await db.scalar(select(LessonMovie).where(LessonMovie.lesson_session_id==sid))
+            if movie is None:
+                movie=LessonMovie(lesson_session_id=sid,child_id=c.id,lesson_id=sess.lesson_id,run_number=run_no,status='PROCESSING',output_path=str(out));db.add(movie)
+                try:await db.commit();await db.refresh(movie);should_render=True
+                except IntegrityError:
+                    await db.rollback();movie=await db.scalar(select(LessonMovie).where(LessonMovie.lesson_session_id==sid))
+            elif movie.status=='READY' and movie.output_path and Path(movie.output_path).exists():
+                out=Path(movie.output_path);movie_status='READY'
+            elif movie.status=='FAILED':
+                movie.status='PROCESSING';movie.error=None;movie.output_path=str(out);await db.commit();should_render=True
+            movie_id=movie.id if movie else None
+        if should_render:
+            lesson_dir=Path(settings.content_root)/'lessons'/sess.lesson_id
+            try:
+                await asyncio.to_thread(build_mobile_lesson_movie,MovieRenderInputs(base_video=lesson_dir/str(lesson_data['cartoon_base']),character=Path(char.processed_path or char.original_path),audio_by_phrase=audio_by_phrase,timeline=list(lesson_data.get('timeline') or []),output=out,lesson_dir=lesson_dir,target_language=c.target_language or 'ru'))
+                async with SessionLocal() as db:
+                    movie=await db.get(LessonMovie,movie_id);movie.status='READY';movie.output_path=str(out);movie.error=None;await db.commit()
+                movie_status='READY'
+                if par and par.email_reports_enabled and par.email:
+                    subject=f'DOME — мультфильм после прохождения {run_no}: {lesson_data.get("title") or sess.lesson_id}';body=f'{c.display_name} завершил(а) прохождение {run_no}. Персональный мультфильм прикреплён к письму.'
+                    try:await asyncio.to_thread(_send_with_attachment_sync,par.email,subject,body,str(out))
+                    except Exception as exc:log.warning('Mobile movie email failed: %s',exc)
+            except Exception as exc:
+                movie_status='FAILED';log.exception('Mobile authored movie failed: %s',exc)
+                async with SessionLocal() as db:
+                    movie=await db.get(LessonMovie,movie_id)
+                    if movie:movie.status='FAILED';movie.error=str(exc)[:2000];await db.commit()
+        elif movie_status!='READY':
+            movie_status='PROCESSING'
+        if movie_status=='READY' and out.exists():
+            await mark_cartoon_generated(c.id,sess.lesson_id,course)
             val=f'movie:{c.id}:{out.name}';mt=signed_media_token(val,86400*30);movie_url=f'{_base(request)}/api/mobile/movie/{c.id}/{out.name}?t={mt}'
-            if par and par.email_reports_enabled and par.email:
-                subject=f'DOME — мультфильм после прохождения {run_no}: {lesson_data.get("title") or sess.lesson_id}'
-                body=f'{c.display_name} завершил(а) прохождение {run_no}. Персональный мультфильм прикреплён к письму.'
-                try:await asyncio.to_thread(_send_with_attachment_sync,par.email,subject,body,str(out))
-                except Exception as exc:log.warning('Mobile movie email failed: %s',exc)
-        except Exception as exc:log.exception('Mobile cartoon failed: %s',exc)
     homework_sent=False
     if run_no==1:
         hw=lesson_data.get('homework') or {};body=str(hw.get('instruction_ru') or 'Нарисуй место, куда ты хотел бы отправиться, и назови три вещи, которые возьмёшь с собой.')
@@ -284,7 +344,7 @@ async def complete(request:web.Request)->web.Response:
         if homework_sent and par and par.email_reports_enabled and par.email:
             try:await send_homework_email(par.email,c.display_name,lesson_data.get('title') or sess.lesson_id,body,None)
             except Exception as exc:log.warning('Mobile homework email failed: %s',exc)
-    return web.json_response({'ok':True,'run_number':run_no,'movie_url':movie_url,'homework_sent':homework_sent,'completed_runs':ent.completed_runs,'max_runs':ent.max_completed_runs})
+    return web.json_response({'ok':True,'run_number':run_no,'movie_url':movie_url,'movie_status':movie_status,'missing_voice_phrases':missing_voice,'homework_sent':homework_sent,'completed_runs':ent.completed_runs,'max_runs':ent.max_completed_runs})
 
 async def movie_file(request:web.Request)->web.StreamResponse:
     cid=int(request.match_info['child_id']);filename=request.match_info['filename'];val=f'movie:{cid}:{filename}'

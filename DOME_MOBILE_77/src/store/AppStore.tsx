@@ -31,6 +31,8 @@ function childProfile(raw:any,parentId:string):ChildProfile{
     age:raw.age??raw.age_years,
     learningLanguage:raw.target_language||'ru',
     nativeLanguage:raw.native_language||'ru',
+    languageLevel:raw.language_level||'PRE_A1',
+    workingDifficulty:Number(raw.working_difficulty??0.15),
     courseId:'conversation',
     activeCharacterId:raw.active_character_id,
     heroUrl:raw.hero_url||null,

@@ -24,6 +24,7 @@ export const lessonImages: Record<string, any> = {
   'slide-18.png': require('../../assets/lesson/demo_001/slide-18.png'),
   'slide-19.png': require('../../assets/lesson/demo_001/slide-19.png'),
   'slide-20-clean.png': require('../../assets/lesson/demo_001/slide-20-clean.png'),
+  'slide-20-repaired.png': require('../../assets/lesson/demo_001/slide-20-repaired.png'),
   'slide-20.png': require('../../assets/lesson/demo_001/slide-20.png'),
   'slide-21.png': require('../../assets/lesson/demo_001/slide-21.png'),
   'slide-22.png': require('../../assets/lesson/demo_001/slide-22.png'),
@@ -54,4 +55,15 @@ export const lessonImages: Record<string, any> = {
   'slide-50-clean.png': require('../../assets/lesson/demo_001/slide-50-clean.png'),
   'slide-50.png': require('../../assets/lesson/demo_001/slide-50.png'),
   'slide-51.png': require('../../assets/lesson/demo_001/slide-51.png'),
+};
+
+export const suitcaseImages:Record<string,any>={
+  jacket:require('../../assets/lesson/demo_001/suitcase/jacket.png'),
+  hat:require('../../assets/lesson/demo_001/suitcase/hat.png'),
+  boots:require('../../assets/lesson/demo_001/suitcase/boots.png'),
+  camera:require('../../assets/lesson/demo_001/suitcase/camera.png'),
+  gloves:require('../../assets/lesson/demo_001/suitcase/gloves.png'),
+  swimsuit:require('../../assets/lesson/demo_001/suitcase/swimsuit.png'),
+  flippers:require('../../assets/lesson/demo_001/suitcase/flippers.png'),
+  shorts:require('../../assets/lesson/demo_001/suitcase/shorts.png'),
 };

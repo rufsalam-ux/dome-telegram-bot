@@ -47,6 +47,8 @@ export function AddChildScreen(){
         age:response.age_years??ageNumber,
         learningLanguage:response.target_language||targetLanguage,
         nativeLanguage:response.native_language||nativeLanguage,
+        languageLevel:response.language_level||'PRE_A1',
+        workingDifficulty:Number(response.working_difficulty??0.15),
         courseId:'conversation',
         activeCharacterId:response.active_character_id??null,
         heroUrl:response.hero_url??null,

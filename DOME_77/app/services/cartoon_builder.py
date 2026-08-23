@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import subprocess
 from pathlib import Path
 
@@ -24,6 +25,54 @@ def _cartoon_config() -> dict:
 
 class CartoonBuildError(RuntimeError):
     pass
+
+
+def _probe_video(path: Path) -> tuple[int, int, float]:
+    ffprobe = settings.ffmpeg_bin.replace("ffmpeg", "ffprobe")
+    cmd = [
+        ffprobe, "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream=width,height:format=duration", "-of", "json", str(path),
+    ]
+    try:
+        result = subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=30)
+        payload = json.loads(result.stdout)
+        stream = payload["streams"][0]
+        return int(stream["width"]), int(stream["height"]), float(payload["format"]["duration"])
+    except Exception as probe_exc:
+        # Some self-contained desktop ffmpeg runtimes do not ship a separate
+        # ffprobe executable. The production image still uses ffprobe, while
+        # this metadata-only fallback keeps the renderer portable and testable.
+        try:
+            result = subprocess.run([settings.ffmpeg_bin,"-hide_banner","-i",str(path),"-t","0","-f","null","-"],check=False,capture_output=True,text=True,timeout=30)
+            detail=(result.stderr or '')+(result.stdout or '')
+            size=re.search(r"Video:.*?\b(\d{2,5})x(\d{2,5})\b",detail)
+            duration=re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)",detail)
+            if not size or not duration:raise ValueError('metadata not present in ffmpeg output')
+            seconds=int(duration.group(1))*3600+int(duration.group(2))*60+float(duration.group(3))
+            return int(size.group(1)),int(size.group(2)),seconds
+        except Exception as exc:
+            raise CartoonBuildError(f"Не удалось прочитать параметры базового MP4: {path.name}") from (exc or probe_exc)
+
+
+def _resolve_normalized_timeline(timeline: list[dict], frame_width: int, frame_height: int) -> list[dict]:
+    """Convert authored 0..1 placement into FFmpeg pixels at render time."""
+
+    resolved: list[dict] = []
+    for source in timeline:
+        segment = dict(source)
+        if "height_norm" in segment:
+            segment["height"] = max(1, round(float(segment["height_norm"]) * frame_height))
+        height = int(segment.get("height", 225))
+        if "floor_y_norm" in segment:
+            segment["y"] = round(float(segment["floor_y_norm"]) * frame_height - height)
+        if "x_norm" in segment:
+            segment["x"] = round(float(segment["x_norm"]) * frame_width)
+        if "x_start_norm" in segment:
+            segment["x_start"] = round(float(segment["x_start_norm"]) * frame_width)
+        if "x_end_norm" in segment:
+            segment["x_end"] = round(float(segment["x_end_norm"]) * frame_width)
+        resolved.append(segment)
+    return resolved
 
 
 def ensure_telegram_safe_mp4(source_mp4: Path, output_mp4: Path | None = None) -> Path:
@@ -111,7 +160,7 @@ def _y_expression(segment: dict) -> str:
     return f"{y}+1.5*sin(2.2*(t-{start}))"
 
 
-def build_timeline_cartoon(base_video: Path, character_png: Path, audio_by_phrase: dict[str, Path], timeline: list[dict], output_mp4: Path) -> Path:
+def build_timeline_cartoon(base_video: Path, character_png: Path, audio_by_phrase: dict[str, Path], timeline: list[dict], output_mp4: Path, base_video_filters: list[str] | None = None) -> Path:
     """Render one cartoon with bounded CPU/RAM and actionable Railway logs."""
     if not base_video.exists():
         raise CartoonBuildError(f"Не найдена основа мультфильма: {base_video}")
@@ -119,7 +168,8 @@ def build_timeline_cartoon(base_video: Path, character_png: Path, audio_by_phras
         raise CartoonBuildError(f"Не найден герой: {character_png}")
     if not timeline:
         raise CartoonBuildError("Timeline пуст.")
-    timeline=[dict(x) for x in timeline]
+    frame_width, frame_height, base_duration = _probe_video(base_video)
+    timeline = _resolve_normalized_timeline([dict(x) for x in timeline], frame_width, frame_height)
     minimum=float(_cartoon_config().get("first_child_scene_seconds",8))
     first=timeline[0]
     first["end"]=max(float(first.get("end",0)),float(first.get("visible_start",0))+minimum)
@@ -139,6 +189,7 @@ def build_timeline_cartoon(base_video: Path, character_png: Path, audio_by_phras
     # but never start slow external animation generation while the child waits.
     # Missing cached motion falls back immediately to the stable PNG animation.
     allow_generate_during_render=bool(_cartoon_config().get("generate_missing_animation_during_render",False))
+    render_threads=max(1,min(4,int(_cartoon_config().get("render_threads",2))))
     ai_clips: list[Path | None] = []
     for idx, segment in enumerate(timeline):
         try:
@@ -149,7 +200,7 @@ def build_timeline_cartoon(base_video: Path, character_png: Path, audio_by_phras
 
     cmd = [
         settings.ffmpeg_bin, "-y", "-hide_banner", "-loglevel", "warning",
-        "-threads", "1", "-filter_threads", "1", "-filter_complex_threads", "1",
+        "-threads", str(render_threads), "-filter_threads", str(render_threads), "-filter_complex_threads", str(render_threads),
         "-i", str(base_video), "-loop", "1", "-framerate", "30", "-i", str(character_png),
     ]
     clip_inputs: dict[int, int] = {}
@@ -169,12 +220,22 @@ def build_timeline_cartoon(base_video: Path, character_png: Path, audio_by_phras
             next_input += 1
 
     filters: list[str] = []
+    timeline_end = max(float(item["end"]) for item in timeline)
+    pad_seconds = max(0.0, timeline_end - base_duration)
     # Split the PNG only for fallback scenes. AI clips are green-screen keyed individually.
     fallback_indices=[i for i,c in enumerate(ai_clips) if not c]
     if fallback_indices:
         split_labels = "".join(f"[hero{i}]" for i in fallback_indices)
         filters.append(f"[1:v]format=rgba,split={len(fallback_indices)}{split_labels}")
-    previous = "[0:v]"
+    base_source="[0:v]"
+    if base_video_filters:
+        filters.append(f"[0:v]{','.join(base_video_filters)}[localizedv]")
+        base_source="[localizedv]"
+    if pad_seconds > 0.001:
+        filters.append(f"{base_source}tpad=stop_mode=clone:stop_duration={pad_seconds:.3f}[basev]")
+        previous = "[basev]"
+    else:
+        previous = base_source
     for idx, segment in enumerate(timeline):
         height = int(segment.get("height", 225))
         start = float(segment["visible_start"])
@@ -222,7 +283,11 @@ def build_timeline_cartoon(base_video: Path, character_png: Path, audio_by_phras
         filters.append(f"{''.join(labels)}amix=inputs={len(labels)}:normalize=0:dropout_transition=0[voice]")
         # Mix voices with the original soundtrack. Avoid sidechaincompress here: it was fragile
         # across FFmpeg builds and could abort the entire render.
-        filters.append("[0:a][voice]amix=inputs=2:normalize=0:dropout_transition=0,alimiter=limit=0.891[aout]")
+        if pad_seconds > 0.001:
+            filters.append(f"[0:a]apad=pad_dur={pad_seconds:.3f}[basea]")
+            filters.append("[basea][voice]amix=inputs=2:normalize=0:dropout_transition=0,alimiter=limit=0.891[aout]")
+        else:
+            filters.append("[0:a][voice]amix=inputs=2:normalize=0:dropout_transition=0,alimiter=limit=0.891[aout]")
 
     cmd += ["-filter_complex", ";".join(filters), "-map", "[vout]"]
     cmd += ["-map", "[aout]"] if audio_segments else ["-map", "0:a?"]
@@ -230,7 +295,7 @@ def build_timeline_cartoon(base_video: Path, character_png: Path, audio_by_phras
         "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
         "-maxrate", "2600k", "-bufsize", "5200k",
         "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart",
-        "-shortest", str(output_mp4),
+        "-t", f"{max(base_duration, timeline_end):.3f}", str(output_mp4),
     ]
     command_file.write_text(" ".join(cmd), encoding="utf-8")
     log.info("Rendering cartoon: base=%s character=%s voices=%s output=%s", base_video, character_png, len(audio_segments), output_mp4)

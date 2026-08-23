@@ -1,0 +1,14 @@
+{
+  "schema_version": "1.0",
+  "animals": {
+    "parrot": {
+      "canonical_asset": "lesson-images/parrot-clean.png",
+      "pair_asset": "lesson-images/animal-pair-penguin-parrot.png",
+      "primary_color": "red",
+      "secondary_colors": ["yellow", "blue"],
+      "beak_color": "dark gray",
+      "verified": true,
+      "instruction": "Describe only visible properties from this metadata and the canonical asset."
+    }
+  }
+}

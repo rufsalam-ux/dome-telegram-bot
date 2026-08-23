@@ -104,6 +104,22 @@ class VoiceAttempt(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class LessonMovie(Base):
+    """One durable personalized-movie job for one completed lesson session."""
+
+    __tablename__ = "lesson_movies"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    lesson_session_id: Mapped[int] = mapped_column(ForeignKey("lesson_sessions.id"), unique=True, index=True)
+    child_id: Mapped[int] = mapped_column(ForeignKey("children.id"), index=True)
+    lesson_id: Mapped[str] = mapped_column(String(100), index=True)
+    run_number: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(30), default="PROCESSING", index=True)
+    output_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class InteractiveResult(Base):
     __tablename__ = "interactive_results"
     id: Mapped[int] = mapped_column(primary_key=True)

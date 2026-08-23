@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass
@@ -67,27 +68,21 @@ async def transcribe_audio(wav_path: Path, target_language: str = "", native_lan
         return "", "", 0.0
     preferred = settings.openai_transcription_model or "gpt-4o-mini-transcribe"
     models = [preferred] + ([] if preferred == "whisper-1" else ["whisper-1"])
-    candidates: list[tuple[str, str, float, int]] = []
     prompt = f"A child is answering this lesson prompt: {goal}. Transcribe exactly; do not invent missing words."
     for model in models:
-        # Automatic language detection is the primary path.
+        # Automatic detection is the only normal request. Forced-language
+        # requests are concurrent fallbacks, so one voice take is not sent to
+        # the transcription provider three times in sequence.
         text, detected, confidence = await _transcribe_with_model(wav_path, model, "", prompt)
         if text:
-            candidates.append((text, detected, confidence, 3))
-        # Language hints are fallback candidates, not immediate winners.
-        for lang, priority in ((target_language, 2), (native_language, 1)):
-            if not lang:
-                continue
-            text, detected, confidence = await _transcribe_with_model(wav_path, model, lang, prompt)
-            if text:
-                candidates.append((text, detected or lang, confidence, priority))
+            return text.strip(), detected.strip().lower(), confidence
+        languages=list(dict.fromkeys(lang for lang in (target_language,native_language) if lang))
+        fallbacks=await asyncio.gather(*[_transcribe_with_model(wav_path,model,lang,prompt) for lang in languages])
+        candidates=[(value,lang) for value,lang in zip(fallbacks,languages) if value[0]]
         if candidates:
-            break
-    if not candidates:
-        return "", "", 0.0
-    # Prefer automatic detection, then a reasonably informative transcript.
-    text, detected, confidence, _ = max(candidates, key=lambda x: (x[3], min(len(x[0]), 120)))
-    return text.strip(), detected.strip().lower(), confidence
+            (text,detected,confidence),hint=max(candidates,key=lambda item:min(len(item[0][0]),120))
+            return text.strip(),(detected or hint).strip().lower(),confidence
+    return "", "", 0.0
 
 
 
@@ -179,6 +174,7 @@ async def assess_speech(
     attempt_number: int,
     child_name: str = "",
     working_difficulty: float = 0.15,
+    language_level: str = "PRE_A1",
 ) -> SpeechAssessment:
     transcript, detected, confidence = await transcribe_audio(wav_path, target_language, native_language, goal)
     if not transcript or confidence < 0.35:
@@ -206,6 +202,7 @@ async def assess_speech(
         "attempt_number": attempt_number,
         "child_name": child_name,
         "working_difficulty_0_to_1": max(0.0, min(1.0, float(working_difficulty or 0.15))),
+        "profile_language_level": language_level or "PRE_A1",
         "dialogue_policy": {
             "use_name_sparingly": True,
             "avoid_echo_if_answer_is_understandable": True,
