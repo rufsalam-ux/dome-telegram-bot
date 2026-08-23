@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -12,6 +13,26 @@ from app.core.config import settings
 from app.core.i18n import language_name
 
 log = logging.getLogger("dome.speech")
+
+_NON_SPEECH_TRANSCRIPTS = {
+    "music", "applause", "silence", "background noise", "noise",
+    "музыка", "тишина", "шум", "аплодисменты",
+}
+
+
+def is_non_speech_transcript(value: str) -> bool:
+    """Identify ASR placeholders/garbage without rejecting valid one-word answers."""
+    text = str(value or "").strip().lower()
+    if not text:
+        return True
+    normalized = re.sub(r"[\[\](){}<>♪♫.,!?…:;\-—_]+", " ", text)
+    normalized = " ".join(normalized.split())
+    if not normalized or normalized in _NON_SPEECH_TRANSCRIPTS:
+        return True
+    if any(marker in normalized for marker in ("subtitles by", "thanks for watching", "продолжение следует")):
+        return True
+    compact = re.sub(r"\W+", "", normalized, flags=re.UNICODE)
+    return bool(compact) and len(set(compact)) == 1 and len(compact) >= 3
 
 
 @dataclass
@@ -177,8 +198,13 @@ async def assess_speech(
     language_level: str = "PRE_A1",
 ) -> SpeechAssessment:
     transcript, detected, confidence = await transcribe_audio(wav_path, target_language, native_language, goal)
-    if not transcript or confidence < 0.35:
-        return SpeechAssessment(transcript=transcript, detected_language=detected, confidence=confidence)
+    if is_non_speech_transcript(transcript) or confidence < 0.35:
+        return SpeechAssessment(
+            transcript=transcript,
+            detected_language=detected,
+            confidence=confidence,
+            status="NO_SPEECH",
+        )
 
     if not settings.openai_api_key:
         return SpeechAssessment(

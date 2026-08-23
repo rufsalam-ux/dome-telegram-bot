@@ -3,7 +3,7 @@
     "name": "DOME",
     "slug": "dome-mobile",
     "version": "3.0.3",
-    "orientation": "portrait",
+    "orientation": "default",
     "userInterfaceStyle": "automatic",
     "ios": {
       "supportsTablet": true,

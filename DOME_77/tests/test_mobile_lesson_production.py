@@ -95,16 +95,20 @@ def test_mobile_interactions_cover_selection_suitcase_animals_audio_level_and_mo
     lesson = load_lesson()
     by_id = {slide["slide_id"]: slide for slide in lesson["slides"]}
 
-    assert interactions.count("rect:{left:") >= 14
-    assert "selectedCardBranch" in player and "branch_slide_id" in player
+    # Reusable hotspots now live in the backend-authored lesson definition;
+    # only compatibility/animal rectangles remain in the mobile module.
+    assert interactions.count("rect:{left:") >= 10
+    assert len(by_id["slide_09"]["selection_options"]) == 6
+    assert len(by_id["slide_20"]["selection_options"]) == 4
+    assert "selectedCardBranch" in player and "selected_card_id" in player and "card_question_index" in player
     assert "suitcase-drop-zone" in player and "toggleSuitcase" in player and "persistInteraction" in player
     assert "penguin_parrot" in interactions and "lion_turtle" in interactions
     assert "lesson-target-${slide.slide_id}-${option.id}" in player
-    assert "useAudioPlayerStatus" in player and "disabled={busy||audioBusy}" in player
-    assert "adaptivePrompt(slide,child?.languageLevel)" in player
-    assert "correction_target" in player and "Не больше трёх попыток" in player
-    assert "MOOD_EMOJIS.map" in player and "setAccepted(true)" in player
-    assert "VOICE_EXAMPLES_RU" in player and "!isGift||Boolean(choice)" in player
+    assert "useAudioPlayerStatus" in player and "stage==='AI_SPEAKING'" in player
+    assert "runtimePrompt(slide,languageLevel,workingDifficulty,'initial')" in player
+    assert "correction_target" in player and "advance_allowed" in (ROOT / "app/webapp/mobile_api.py").read_text(encoding="utf-8")
+    assert "MOOD_EMOJIS.map" in player and "completed:true" in player
+    assert "VOICE_EXAMPLES_RU" in player and "isGift" in player and "WAITING_INTERACTION" in player
     assert any(str(value).lower().startswith("спокой") for value in by_id["slide_49"]["mood_options"])
     assert by_id["slide_45"]["image"].endswith("slide-45-clean.png") and "!isGiraffe||riddleRevealed" in player
     assert by_id["slide_20"]["image"].endswith("slide-20-repaired.png")

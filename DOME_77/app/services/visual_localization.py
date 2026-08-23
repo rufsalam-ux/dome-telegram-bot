@@ -1,51 +1,147 @@
 from __future__ import annotations
-import hashlib, json
+
+import asyncio
+import base64
+import hashlib
+import secrets
 from pathlib import Path
+
 import httpx
+
 from app.core.config import settings
 from app.core.i18n import language_name
 
-class VisualLocalizationError(RuntimeError): pass
 
-def _cache_key(source:Path,target_language:str)->str:
-    return hashlib.sha256(f"{source.resolve()}:{source.stat().st_mtime_ns}:{target_language}:{settings.openai_image_model}".encode()).hexdigest()[:28]
+class VisualLocalizationError(RuntimeError):
+    pass
 
-async def localize_embedded_russian_image(source:Path, output_root:Path, target_language:str)->Path:
-    """One-time AI edit for PNG/JPG slides with Russian text baked into pixels.
-    Russian target returns the original untouched. Other languages use an image edit and cache the result.
-    If the provider/key is unavailable, returns the source so the lesson never crashes.
-    """
-    if not source.exists() or not target_language or target_language=='ru' or not settings.openai_api_key:
-        return source
-    # v61: pre-cleaned animal/Mila assets contain no baked Russian labels.
-    # Never send them to image AI, which previously invented the name Lyosha.
-    if source.stem.endswith("-clean") or source.stem.startswith("animal-pair-"):
-        return source
-    out=output_root/'localized-visuals'/target_language/f"{source.stem}_{_cache_key(source,target_language)}.png"
-    if out.exists() and out.stat().st_size>1000: return out
-    out.parent.mkdir(parents=True,exist_ok=True)
-    prompt=(
-        f"Edit this educational children's slide. Remove EVERY visible Russian/Cyrillic text element completely, reconstruct the original background cleanly underneath, "
-        f"then replace each removed text with a natural child-friendly translation in {language_name(target_language)}. Preserve all illustrations, objects, characters, layout, colors, sizes and composition. "
-        "Do not leave any Russian letters visible or ghosted. Do not add new objects, logos or extra captions. Keep translated text inside the original text areas and do not cover illustrations. "
-        "Preserve character identity exactly. If the source says Лёша, use Lyosha (never Alex). If the source says Мила, use Mila (never Lyosha). "
-        "Never assign a human name to an animal and never invent a name that is not present in the source."
+
+_locks: dict[str, asyncio.Lock] = {}
+
+
+def asset_has_embedded_text(source: Path) -> bool:
+    stem = source.stem.lower()
+    return not (stem.endswith("-clean") or stem.startswith("animal-pair-"))
+
+
+def _cache_key(source: Path, target_language: str, asset_version: str) -> str:
+    source_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+    material = f"{source_hash}:{target_language}:{asset_version}:{settings.openai_image_model}"
+    return hashlib.sha256(material.encode()).hexdigest()[:32]
+
+
+async def _request_localized_image(source: Path, target_language: str) -> bytes:
+    if not settings.openai_api_key:
+        raise VisualLocalizationError("Image localization provider is not configured")
+    prompt = (
+        "Edit this educational children's slide. Remove EVERY visible Russian/Cyrillic text element completely, "
+        f"reconstruct the original background, then replace each text with a natural child-friendly translation in {language_name(target_language)}. "
+        "Preserve every illustration, object, character, position, color, size and the overall composition exactly. "
+        "Do not leave Russian letters or ghost text. Do not add objects, logos or captions. Keep translated text inside the original text areas. "
+        "Preserve character identity exactly: Лёша is Lyosha (never Alex) and Мила is Mila. Never invent a human or animal name."
     )
-    headers={'Authorization':f'Bearer {settings.openai_api_key}'}
+    headers = {"Authorization": f"Bearer {settings.openai_api_key}"}
+    async with httpx.AsyncClient(timeout=180) as client:
+        with source.open("rb") as handle:
+            files = {"image": (source.name, handle, "image/png" if source.suffix.lower() == ".png" else "image/jpeg")}
+            data = {"model": settings.openai_image_model, "prompt": prompt, "size": "auto", "quality": "medium", "output_format": "png"}
+            response = await client.post("https://api.openai.com/v1/images/edits", headers=headers, data=data, files=files)
+        if response.status_code >= 400:
+            raise VisualLocalizationError(f"Image localization failed with HTTP {response.status_code}")
+        item = (response.json().get("data") or [{}])[0]
+        content = b""
+        if item.get("b64_json"):
+            content = base64.b64decode(item["b64_json"])
+        if item.get("url"):
+            downloaded = await client.get(item["url"], timeout=120)
+            if downloaded.status_code < 400:
+                content = downloaded.content
+        if content:
+            await _verify_localized_image(content, target_language, client)
+            return content
+    raise VisualLocalizationError("Image localization provider returned no image")
+
+
+async def _verify_localized_image(content: bytes, target_language: str, client: httpx.AsyncClient) -> None:
+    """Fail closed if the generated asset still contains Cyrillic/wrong-language text."""
+    encoded = base64.b64encode(content).decode("ascii")
+    payload = {
+        "model": settings.openai_text_model or "gpt-4o-mini",
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {"role": "system", "content": "Inspect visible text in an educational image. Return JSON only."},
+            {"role": "user", "content": [
+                {"type": "text", "text": f"Target language: {language_name(target_language)} ({target_language}). Return has_cyrillic and text_matches_target_language booleans. Text-free images match every target. Any Russian/Cyrillic character means has_cyrillic=true."},
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{encoded}", "detail": "high"}},
+            ]},
+        ],
+    }
+    headers = {"Authorization": f"Bearer {settings.openai_api_key}", "Content-Type": "application/json"}
+    response = await client.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload, timeout=120)
+    if response.status_code >= 400:
+        raise VisualLocalizationError(f"Localized image verification failed with HTTP {response.status_code}")
     try:
-        async with httpx.AsyncClient(timeout=180) as client:
-            with source.open('rb') as f:
-                files={'image':(source.name,f,'image/png' if source.suffix.lower()=='.png' else 'image/jpeg')}
-                data={'model':settings.openai_image_model,'prompt':prompt,'size':'auto','quality':'medium','output_format':'png'}
-                r=await client.post('https://api.openai.com/v1/images/edits',headers=headers,data=data,files=files)
-        if r.status_code>=400: return source
-        payload=r.json(); item=(payload.get('data') or [{}])[0]
-        import base64
-        if item.get('b64_json'):
-            out.write_bytes(base64.b64decode(item['b64_json'])); return out
-        if item.get('url'):
-            async with httpx.AsyncClient(timeout=120) as c: rr=await c.get(item['url'])
-            if rr.status_code<400: out.write_bytes(rr.content); return out
-    except Exception:
+        import json
+        verdict = json.loads(response.json()["choices"][0]["message"]["content"])
+    except Exception as exc:
+        raise VisualLocalizationError("Localized image verification returned invalid data") from exc
+    if bool(verdict.get("has_cyrillic")) or not bool(verdict.get("text_matches_target_language")):
+        raise VisualLocalizationError("Localized image failed the no-Cyrillic/target-language verification")
+
+
+async def localize_embedded_text_image(
+    source: Path,
+    output_root: Path,
+    target_language: str,
+    *,
+    asset_version: str = "1",
+    strict: bool = True,
+) -> Path:
+    """Return an immutable cached visual for one asset/language/version.
+
+    The source is never modified. Concurrent requests for the same cache key
+    share one provider edit. Strict consumers never receive a Russian-text
+    source as fallback for a non-Russian lesson.
+    """
+    if not source.exists():
+        raise VisualLocalizationError("Source lesson image does not exist")
+    target_language = str(target_language or "ru").lower()
+    if target_language == "ru" or not asset_has_embedded_text(source):
         return source
-    return source
+    key = _cache_key(source, target_language, str(asset_version or "1"))
+    output = output_root / "localized-visuals" / target_language / f"{source.stem}_{key}.png"
+    if output.exists() and output.stat().st_size > 1000:
+        return output
+    lock = _locks.setdefault(key, asyncio.Lock())
+    async with lock:
+        if output.exists() and output.stat().st_size > 1000:
+            return output
+        try:
+            content = b""
+            for generation_attempt in range(2):
+                try:
+                    content = await _request_localized_image(source, target_language)
+                    break
+                except VisualLocalizationError as exc:
+                    verification_failure = "verification" in str(exc).lower() or "no-cyrillic" in str(exc).lower()
+                    if generation_attempt == 0 and verification_failure:
+                        continue
+                    raise
+            if len(content) <= 1000:
+                raise VisualLocalizationError("Localized image is unexpectedly empty")
+            output.parent.mkdir(parents=True, exist_ok=True)
+            temporary = output.with_suffix(f".{secrets.token_hex(5)}.tmp")
+            temporary.write_bytes(content)
+            temporary.replace(output)
+            return output
+        except Exception as exc:
+            if not strict:
+                return source
+            if isinstance(exc, VisualLocalizationError):
+                raise
+            raise VisualLocalizationError(str(exc)) from exc
+
+
+async def localize_embedded_russian_image(source: Path, output_root: Path, target_language: str) -> Path:
+    """Compatibility entry point for Telegram rendering; mobile uses strict mode."""
+    return await localize_embedded_text_image(source, output_root, target_language, asset_version="telegram-v1", strict=False)

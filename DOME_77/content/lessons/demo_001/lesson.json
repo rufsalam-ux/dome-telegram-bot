@@ -3,6 +3,7 @@
   "title": "Путешествие: Мадагаскар и Исландия",
   "target_language": "ru",
   "max_voice_seconds": 5.0,
+  "default_hero_placement": "hidden",
   "cartoon_base": "M-1.mp4",
   "required_phrases": [
     {
@@ -382,6 +383,48 @@
         "Д",
         "Е"
       ],
+      "interaction_kind": "card_question_sequence",
+      "selection_options": [
+        {"id":"A","label":"Kite","rect":[0.115,0.18,0.24,0.31]},
+        {"id":"Б","label":"Friends","rect":[0.38,0.18,0.24,0.31]},
+        {"id":"В","label":"Lake","rect":[0.645,0.18,0.24,0.31]},
+        {"id":"Г","label":"Dog","rect":[0.115,0.58,0.24,0.31]},
+        {"id":"Д","label":"Rabbits","rect":[0.38,0.58,0.24,0.31]},
+        {"id":"Е","label":"Lion","rect":[0.645,0.58,0.24,0.31]}
+      ],
+      "card_question_sets": {
+        "A": [
+          {"id": "A1", "text": "На завтрак я люблю..."},
+          {"id": "A2", "text": "Не люблю, когда на улице..."},
+          {"id": "A3", "text": "Что бы ты больше хотел уметь: летать, как птица, или плавать, как рыба?"}
+        ],
+        "Б": [
+          {"id": "Б1", "text": "Если бы ты был супергероем, то твоя суперспособность была бы..."},
+          {"id": "Б2", "text": "Иногда я боюсь..."},
+          {"id": "Б3", "text": "Животное, которое мне очень нравится..."}
+        ],
+        "В": [
+          {"id": "В1", "text": "Самая любимая игрушка..."},
+          {"id": "В2", "text": "Мне не нравится, когда..."},
+          {"id": "В3", "text": "Если бы с неба шёл дождь из еды, то что бы ты хотел, чтобы это было?"}
+        ],
+        "Г": [
+          {"id": "Г1", "text": "Каким должен быть твой настоящий друг?"},
+          {"id": "Г2", "text": "Что может заставить тебя грустить?"},
+          {"id": "Г3", "text": "Три слова, которые лучше всего тебя описывают..."}
+        ],
+        "Д": [
+          {"id": "Д1", "text": "Если бы ты открыл собственный магазин, что бы там продавалось?"},
+          {"id": "Д2", "text": "Самая вкусная еда для тебя..."},
+          {"id": "Д3", "text": "Представь, что твой домашний питомец может ответить на 1 вопрос. Что бы ты спросил?"}
+        ],
+        "Е": [
+          {"id": "Е1", "text": "Если бы у тебя была волшебная палочка, какие три желания ты бы загадал?"},
+          {"id": "Е2", "text": "На чём необычном бы ты хотел отправиться в путешествие?"},
+          {"id": "Е3", "text": "А куда бы ты хотел отправиться?"}
+        ]
+      },
+      "card_question_source": "lesson-images/slide-10.png..slide-15.png",
       "max_voice_seconds": 60,
       "allow_help": false,
       "allow_skip": false,
@@ -687,6 +730,13 @@
       "bot_explains_native": "Выбери один подарок: мишку, книгу, букет или рюкзак. Скажи полным предложением на изучаемом языке.",
       "question": "Что Мила привезла тебе?",
       "answer_mode": "required_voice",
+      "interaction_kind": "gift_selector",
+      "selection_options": [
+        {"id":"teddy","label":"Teddy bear","answer_value_ru":"мишку","rect":[0.19,0.045,0.14,0.23]},
+        {"id":"book","label":"Book","answer_value_ru":"книгу","rect":[0.35,0.045,0.14,0.23]},
+        {"id":"flowers","label":"Flowers","answer_value_ru":"букет","rect":[0.51,0.045,0.14,0.23]},
+        {"id":"backpack","label":"Backpack","answer_value_ru":"рюкзак","rect":[0.67,0.045,0.14,0.23]}
+      ],
       "required_phrase_id": "mila_gift",
       "max_attempts": 3,
       "simplified_after_attempts": 3,
@@ -699,6 +749,13 @@
         0.34,
         0.22,
         0.6
+      ],
+      "hero_placement": "left_of_mila",
+      "hero_box": [
+        0.04,
+        0.35,
+        0.24,
+        0.61
       ],
       "strict_target_language": true,
       "must_wait_for_answer": true,
@@ -1206,7 +1263,7 @@
     }
   },
   "animation_library": "storage/animation-library/manifest.json",
-  "revision": 57,
+  "revision": 58,
   "localization_policy": {
     "interface_language": "child.native_language",
     "study_visual_language": "child.target_language",

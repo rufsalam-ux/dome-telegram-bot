@@ -130,6 +130,15 @@ export function createChild(name:string,ageYears:number,targetLanguage:string,na
 
 export function getLesson(id='demo_001'){return request(`/api/mobile/lesson/${encodeURIComponent(id)}`)}
 
+export async function lessonVisualSource(lessonId:string,imagePath:string,childId:string|number,version:string|number='1'){
+  const filename=String(imagePath||'').split('/').pop()||'';
+  const query=new URLSearchParams({child_id:String(childId),version:String(version)});
+  return {
+    uri:`${API_BASE}/api/mobile/lesson/${encodeURIComponent(lessonId)}/visual/${encodeURIComponent(filename)}?${query.toString()}`,
+    headers:{Authorization:`Bearer ${await requiredToken()}`},
+  };
+}
+
 export function startSession(childId:string|number,lessonId='demo_001'){
   return request('/api/mobile/session/start',jsonInit('POST',{child_id:Number(childId),lesson_id:lessonId}));
 }
