@@ -86,10 +86,9 @@ async def payment_success(_: web.Request) -> web.Response:
 async def payment_cancel(_: web.Request) -> web.Response:
     return web.Response(text='Оплата отменена. Можно вернуться в Telegram и выбрать тариф позже.',content_type='text/plain')
 
-# v70 audit compatibility notes: Stripe-specific code used
-# CourseEnrollment.access_source=='STRIPE' and a local current_release_baseline helper.
-# In v71 both are provider-neutral in payment_lifecycle.apply_normalized_event.
-# Equivalent plan-change guard there is: new_freq!=int(sub.lessons_per_week or 1).
+# Payment webhooks are provider-neutral in payment_lifecycle.apply_normalized_event.
+# Plan updates only mark the provider schedule; business access switches in
+# subscription_plan_changes after a successful next-period payment.
 
 async def _reserve_payment_event(db, *, provider:str, event_id:str, event_type:str, raw_payload:str) -> bool:
     """Reserve provider event atomically. Prefixing prevents cross-provider ID collisions."""
@@ -110,6 +109,7 @@ async def _reserve_payment_event(db, *, provider:str, event_id:str, event_type:s
 
 def _stripe_normalized(event:dict, obj:dict, meta:dict, provider_sub_id:str):
     from app.services.payment_lifecycle import NormalizedPaymentEvent
+    from datetime import datetime
     typ=str(event.get('type') or '')
     mapping={
         'checkout.session.completed':'CHECKOUT_COMPLETED',
@@ -129,11 +129,23 @@ def _stripe_normalized(event:dict, obj:dict, meta:dict, provider_sub_id:str):
     except Exception: monthly=0.0
     try: freq=max(1,min(4,int(meta.get('lessons_per_week') or 1)))
     except Exception: freq=1
+    period={}
+    lines=((obj.get('lines') or {}).get('data') or []) if isinstance(obj.get('lines'),dict) else []
+    if lines and isinstance(lines[0],dict):period=lines[0].get('period') or {}
+    if not period and isinstance(obj.get('current_period_start'),(int,float)):
+        period={'start':obj.get('current_period_start'),'end':obj.get('current_period_end')}
+    def dt(value):
+        try:return datetime.utcfromtimestamp(float(value)) if value else None
+        except (TypeError,ValueError,OSError):return None
+    try:charged=float(obj.get('amount_paid') or 0)/100.0
+    except (TypeError,ValueError):charged=0.0
     return NormalizedPaymentEvent(
         provider='stripe',event_id=str(event.get('id') or ''),event_type=mapping.get(typ,'SUBSCRIPTION_UPDATED'),status=status,
         child_id=child_id,course_id=str(meta.get('course_id') or ''),plan_id=str(meta.get('plan_id') or ''),
         lessons_per_week=freq,monthly_price=monthly,currency=str(obj.get('currency') or 'EUR'),
-        provider_subscription_id=provider_sub_id,raw=dict(event))
+        provider_subscription_id=provider_sub_id,occurred_at=dt(event.get('created')),
+        period_start=dt(period.get('start')),period_end=dt(period.get('end')),
+        charged_amount=charged,raw=dict(event))
 
 
 async def stripe_webhook(request:web.Request)->web.Response:

@@ -33,10 +33,11 @@ def test_course_specific_prices_are_admin_editable():
     assert 'course_prices' in p
 
 def test_price_change_does_not_create_second_subscription_on_course_switch():
-    h=text('app/bot/handlers.py')
+    h=text('app/bot/handlers.py');k=text('app/bot/keyboards.py')
     assert "switch_from=str(data.get('course_switch_from') or '')" in h
     assert 'Subscription.course_id==(switch_from or course_id)' in h
-    assert 'Новый режим выдачи уроков применится только после подтверждения платёжным webhook.' in h
+    assert 'Новый тариф начнёт действовать со следующего оплачиваемого периода.' in h
+    assert 'Подтвердить изменение тарифа' in k
 
 def test_provider_event_can_move_existing_subscription_course():
     p=text('app/services/payment_lifecycle.py')

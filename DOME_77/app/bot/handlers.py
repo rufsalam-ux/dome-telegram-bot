@@ -39,6 +39,8 @@ from app.bot.keyboards import (
     payment_plans_keyboard,
     consent_agreement_keyboard,
     payment_checkout_keyboard,
+    plan_change_confirmation_keyboard,
+    plan_change_cancel_keyboard,
     homework_keyboard,
     free_topic_payment_keyboard,
     free_topic_step_keyboard,
@@ -366,7 +368,7 @@ async def admin_test_plan(message: Message):
             sub=Subscription(child_id=child_id,course_id=course_id,started_at=datetime.utcnow(),release_baseline_count=baseline); db.add(sub)
         elif restart:
             sub.started_at=datetime.utcnow(); sub.release_baseline_count=baseline
-        sub.plan_id=str(spec.get('id') or f'weekly{freq}'); sub.lessons_per_week=freq; sub.monthly_price=float(spec.get('monthly_price') or 0); sub.currency=str(pricing.get('currency') or 'EUR'); sub.status='ACTIVE'; sub.test_mode=True; sub.cancelled_at=None; sub.provider_subscription_id=None
+        sub.plan_id=str(spec.get('id') or f'weekly{freq}'); sub.current_plan_id=sub.plan_id; sub.lessons_per_week=freq; sub.monthly_price=float(spec.get('monthly_price') or 0); sub.currency=str(pricing.get('currency') or 'EUR'); sub.status='ACTIVE'; sub.test_mode=True; sub.cancelled_at=None; sub.provider_subscription_id=None
         enroll=await db.scalar(select(CourseEnrollment).where(CourseEnrollment.child_id==child_id,CourseEnrollment.course_id==course_id).order_by(CourseEnrollment.id.desc()))
         if enroll is None: db.add(CourseEnrollment(child_id=child_id,course_id=course_id,status='ACTIVE',access_source='ADMIN_TEST',payment_reference='ADMIN_TEST'))
         else: enroll.status='ACTIVE'; enroll.access_source='ADMIN_TEST'
@@ -2468,7 +2470,8 @@ async def course_payment_test_bypass(cb: CallbackQuery, state: FSMContext):
         if sub is None:
             pricing=load_settings('pricing'); plans=((pricing.get('regular_course') or {}).get('subscription_plans') or [])
             spec=next((x for x in plans if int(x.get('lessons_per_week',1))==1),{'id':'weekly1','lessons_per_week':1,'monthly_price':39})
-            db.add(Subscription(child_id=child.id,course_id=course_id,plan_id=str(spec.get('id') or 'weekly1'),lessons_per_week=int(spec.get('lessons_per_week') or 1),monthly_price=float(spec.get('monthly_price') or 39),currency=str(pricing.get('currency') or 'EUR'),status='ACTIVE',test_mode=True))
+            plan_id=str(spec.get('id') or 'weekly1')
+            db.add(Subscription(child_id=child.id,course_id=course_id,plan_id=plan_id,current_plan_id=plan_id,lessons_per_week=int(spec.get('lessons_per_week') or 1),monthly_price=float(spec.get('monthly_price') or 39),currency=str(pricing.get('currency') or 'EUR'),status='ACTIVE',test_mode=True))
         await db.commit()
     await state.update_data(selected_lesson_id=lesson_id, current_lesson_id=lesson_id)
     await cb.message.answer("🧪 Тестовый режим: оплата пропущена. Открываю урок.")
@@ -2512,34 +2515,29 @@ async def _show_checkout(message: Message, state: FSMContext, child: Child, plan
         q=q.where(Subscription.course_id==(switch_from or course_id))
         active_paid=await db.scalar(q.order_by(Subscription.id.desc()))
     if active_paid is not None:
-        current_provider=str(getattr(active_paid,'payment_provider','') or provider).lower()
         if str(active_paid.plan_id)==str(plan) and int(active_paid.lessons_per_week or 1)==freq:
             await message.answer(f"✅ У {child.display_name} уже активен этот тариф: {names.get(plan,plan)}.")
             return
-        if current_provider!=provider:
-            await message.answer("Сначала отмените действующую подписку у текущего платёжного провайдера. DOME не создаёт вторую подписку поверх активной.")
-            return
         try:
-            if provider=='stripe':
-                from app.services.payment_adapter import change_stripe_subscription_plan
-                result=change_stripe_subscription_plan(subscription_id=str(active_paid.provider_subscription_id or ''),child_id=child.id,course_id=course_id,plan_id=plan,lessons_per_week=freq,monthly_price=effective_price,currency=currency,idempotency_key='change:'+idem)
-            elif provider=='unipay':
-                from app.services.unipay_adapter import change_unipay_subscription_plan
-                result=await change_unipay_subscription_plan(subscription_id=str(active_paid.provider_subscription_id or ''),child_id=child.id,course_id=course_id,plan_id=plan,lessons_per_week=freq,monthly_price=effective_price,currency=currency,webhook_url=base+'/webhooks/unipay',idempotency_key='change:'+idem)
-            elif provider=='unlimit':
-                from app.services.unlimit_adapter import change_unlimit_subscription_plan
-                result=await change_unlimit_subscription_plan(subscription_id=str(active_paid.provider_subscription_id or ''),child_id=child.id,course_id=course_id,plan_id=plan,lessons_per_week=freq,monthly_price=effective_price,currency=currency,webhook_url=base+'/webhooks/unlimit',idempotency_key='change:'+idem)
-            elif provider=='paypal':
-                from app.services.paypal_adapter import change_paypal_subscription_plan
-                result=await change_paypal_subscription_plan(subscription_id=str(active_paid.provider_subscription_id or ''),child_id=child.id,course_id=course_id,plan_id=plan,lessons_per_week=freq,monthly_price=effective_price,currency=currency,success_url=base+'/payment/success',cancel_url=base+'/payment/cancel',idempotency_key='change:'+idem)
-                if result.get('approval_url'):
-                    await message.answer('Для смены тарифа PayPal нужно подтвердить изменение:',reply_markup=payment_checkout_keyboard('Подтвердить новый тариф в PayPal',result['approval_url'],child.native_language or 'ru')); return
-            else:
-                await message.answer("Смена активного тарифа через provider=custom запрещена: это может создать двойную подписку."); return
-            await message.answer(f"✅ Запрос на смену тарифа отправлен: {names.get(plan,plan)}. Новый режим выдачи уроков применится только после подтверждения платёжным webhook.")
+            from app.services.subscription_plan_changes import preview_plan_change
+            async with SessionLocal() as db:
+                stored=await db.get(Subscription,active_paid.id)
+                preview=await preview_plan_change(db,stored,parent_id=child.parent_id,requested_plan_id=plan)
+            date=preview.effective_at.strftime('%d.%m.%Y')
+            await state.update_data(pending_payment_plan_confirmation=plan,pending_course_id=course_id)
+            await message.answer(
+                "Новый тариф начнёт действовать со следующего оплачиваемого периода.\n"
+                "До этой даты действует ваш текущий тариф.\n\n"
+                f"Текущий тариф: {preview.current.title}\n"
+                f"Действует до: {date}\n\n"
+                f"Новый тариф: {preview.requested.title}\n"
+                f"Стоимость следующего периода: {preview.requested.price:.2f} {preview.requested.currency}\n"
+                f"Начнет действовать: {date}",
+                reply_markup=plan_change_confirmation_keyboard(plan,child.native_language or 'ru'),
+            )
             return
         except Exception as exc:
-            await message.answer(f"Не удалось безопасно изменить действующую подписку: {exc}")
+            await message.answer(f"Не удалось подготовить изменение тарифа: {exc}")
             return
     if provider=='stripe' and settings.stripe_secret_key:
         try:
@@ -2572,6 +2570,80 @@ async def _show_checkout(message: Message, state: FSMContext, child: Child, plan
         f"Выбран тариф: {names.get(plan, plan)}. Оплата поступит в аккаунт платёжного провайдера, который создал эту ссылку.",
         reply_markup=payment_checkout_keyboard("Перейти к безопасной оплате", url, child.native_language or "ru"),
     )
+
+
+@router.callback_query(F.data.startswith("payment:confirm_plan:"))
+async def payment_confirm_plan_change(cb: CallbackQuery, state: FSMContext):
+    child=await get_child_from_state_or_user(state,cb.from_user.id)
+    if child is None:await cb.answer('/start',show_alert=True);return
+    plan=cb.data.rsplit(':',1)[1];data=await state.get_data()
+    if str(data.get('pending_payment_plan_confirmation') or '')!=plan:
+        await cb.answer('Сначала заново выберите тариф.',show_alert=True);return
+    course_id=str(data.get('pending_course_id') or first_active_course_id() or 'conversation')
+    try:
+        from app.services.subscription_plan_changes import preview_plan_change,schedule_plan_change
+        from app.services.subscription_provider import schedule_provider_plan_change
+        async with SessionLocal() as db:
+            sub=await db.scalar(select(Subscription).where(
+                Subscription.child_id==child.id,Subscription.course_id==course_id,
+                Subscription.status=='ACTIVE',Subscription.test_mode==False,
+            ).order_by(Subscription.id.desc()))
+            if sub is None:raise RuntimeError('Активная оплаченная подписка не найдена')
+            preview=await preview_plan_change(db,sub,parent_id=child.parent_id,requested_plan_id=plan)
+            base=settings.effective_webapp_base_url or 'https://t.me'
+            provider=await schedule_provider_plan_change(
+                sub,preview.requested,effective_at=preview.effective_at,base_url=base,
+                idempotency_key=f'plan-change:{sub.id}:{plan}:{int(preview.effective_at.timestamp())}',
+            )
+            schedule_plan_change(db,sub,parent_id=child.parent_id,preview=preview,provider_status=provider.status,provider_reference=provider.reference)
+            await db.commit()
+        await state.update_data(pending_payment_plan_confirmation=None)
+        date=preview.effective_at.strftime('%d.%m.%Y')
+        if provider.approval_url:
+            await cb.message.answer('Войдите в PayPal и подтвердите смену. Без этого текущий тариф останется без изменений.',reply_markup=payment_checkout_keyboard('Подтвердить новый тариф в PayPal',provider.approval_url,child.native_language or 'ru'))
+            await cb.message.answer('Запланированную смену можно отменить до следующего периода.',reply_markup=plan_change_cancel_keyboard(child.native_language or 'ru'))
+        else:
+            await cb.message.answer(
+                f'Готово. До {date} действует текущий тариф.\n'
+                f'С {date} начнёт действовать {preview.requested.title}, и автоматически будет списываться '
+                f'{preview.requested.price:.2f} {preview.requested.currency} за каждый следующий период, пока тариф не будет изменён или подписка отменена.',
+                reply_markup=plan_change_cancel_keyboard(child.native_language or 'ru'),
+            )
+        await cb.answer()
+    except Exception as exc:
+        await cb.answer(str(exc)[:180],show_alert=True)
+
+
+@router.callback_query(F.data == "payment:cancel_plan_change")
+async def payment_cancel_plan_change(cb: CallbackQuery, state: FSMContext):
+    child=await get_child_from_state_or_user(state,cb.from_user.id)
+    if child is None:await cb.answer('/start',show_alert=True);return
+    data=await state.get_data();course_id=str(data.get('pending_course_id') or first_active_course_id() or 'conversation')
+    try:
+        from app.services.subscription_plan_changes import cancel_plan_change,current_plan_snapshot
+        from app.services.subscription_provider import restore_provider_current_plan
+        async with SessionLocal() as db:
+            sub=await db.scalar(select(Subscription).where(
+                Subscription.child_id==child.id,Subscription.course_id==course_id,
+                Subscription.status=='ACTIVE',Subscription.test_mode==False,
+            ).order_by(Subscription.id.desc()))
+            if sub is None or not sub.pending_plan_id:raise RuntimeError('Запланированного изменения тарифа нет')
+            effective_at=sub.pending_plan_effective_at or datetime.utcnow()
+            provider=await restore_provider_current_plan(
+                sub,current_plan_snapshot(sub),effective_at=effective_at,
+                base_url=settings.effective_webapp_base_url or 'https://t.me',
+                idempotency_key=f'plan-change-cancel:{sub.id}:{int(effective_at.timestamp())}',
+            )
+            if provider.approval_url:
+                sub.pending_provider_status='CANCEL_PENDING_APPROVAL';sub.pending_provider_reference=provider.reference or None
+            else:cancel_plan_change(db,sub,parent_id=child.parent_id)
+            await db.commit()
+        if provider.approval_url:
+            await cb.message.answer('Подтвердите отмену смены тарифа в PayPal. До подтверждения запланированное изменение сохраняется.',reply_markup=payment_checkout_keyboard('Подтвердить отмену в PayPal',provider.approval_url,child.native_language or 'ru'))
+        else:await cb.message.answer('Запланированное изменение тарифа отменено. Текущий тариф остаётся без изменений.')
+        await cb.answer()
+    except Exception as exc:
+        await cb.answer(str(exc)[:180],show_alert=True)
 
 @router.callback_query(F.data == "payment:skip")
 async def payment_skip(cb: CallbackQuery, state: FSMContext):
@@ -4677,4 +4749,3 @@ async def mobile_pair_command(message: Message, state: FSMContext):
         "📱 DOME Mobile теперь работает как самостоятельное приложение.\n\n"
         "Установите приложение и войдите по email и паролю. Код привязки Telegram больше не нужен."
     )
-

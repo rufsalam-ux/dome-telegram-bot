@@ -48,11 +48,12 @@ def test_runtime_guards_are_wired_into_real_handlers():
 
 def test_payment_webhook_reserves_event_before_side_effects():
     s=Path('app/webapp/server.py').read_text('utf-8')
+    lifecycle=Path('app/services/payment_lifecycle.py').read_text('utf-8')
     reserve=s.index("db.add(PaymentWebhookEvent")
     checkout=s.index("if typ=='checkout.session.completed'")
     assert reserve < checkout
     assert 'except IntegrityError' in s
-    assert "CourseEnrollment.access_source=='STRIPE'" in s
+    assert 'access_source=ev.provider.upper()' in lifecycle
 
 
 def test_import_is_staged_and_conversation_cartoon_enabled():
@@ -113,12 +114,13 @@ def test_preview_validates_homework_and_extra_video_upload_supported():
 def test_release_schedule_has_plan_change_baseline():
     models=Path('app/db/models.py').read_text('utf-8')
     rel=Path('app/services/subscription_release.py').read_text('utf-8')
-    web=Path('app/webapp/server.py').read_text('utf-8')
+    lifecycle=Path('app/services/payment_lifecycle.py').read_text('utf-8')
+    changes=Path('app/services/subscription_plan_changes.py').read_text('utf-8')
     assert 'release_baseline_count' in models
     assert 'baseline + weeks_open * freq' in rel
     assert 'len(subscription_lesson_ids) - baseline' in rel
-    assert 'current_release_baseline' in web
-    assert 'new_freq!=int(sub.lessons_per_week or 1)' in web
+    assert 'activate_pending_after_successful_payment' in lifecycle
+    assert 'PLAN_CHANGE_ACTIVATED' in changes
 
 
 def test_chitayka_required_drag_drop_is_real_spatial_drag():

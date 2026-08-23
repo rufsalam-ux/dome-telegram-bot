@@ -1,3 +1,134 @@
-import React,{useState} from 'react';import { ScrollView } from 'react-native';import { Body,Button,Card,CheckRow,H1,H2 } from '../components/Ui';import { useAppStore } from '../store/AppStore';
-const plans=[{id:'p4',lessons:4,price:39},{id:'p8',lessons:8,price:69},{id:'p12',lessons:12,price:89},{id:'p16',lessons:16,price:109}];const rates:any={EUR:1,USD:1.17,GBP:.86,GEL:3.16};
-export function PurchaseScreen(){const s=useAppStore();const[p,setP]=useState(plans[0]!);const[cur,setCur]=useState('EUR');const[rec,setRec]=useState(false);const[digital,setDigital]=useState(false);const shown=(p.price*rates[cur]).toFixed(2);return <ScrollView contentContainerStyle={{padding:24}}><H1>Выберите доступ</H1>{plans.map(x=><Card key={x.id}><H2>{x.lessons} новых урока / месяц</H2><Body>€{x.price} / месяц</Body><Button title={p.id===x.id?'Выбрано':'Выбрать'} secondary={p.id!==x.id} onPress={()=>setP(x)}/></Card>)}<Card><H2>Валюта оплаты</H2><Body>Базовая цена: €{p.price}. Выберите валюту отображения:</Body>{Object.keys(rates).map(x=><Button key={x} title={(cur===x?'✓ ':'')+x} secondary={cur!==x} onPress={()=>setCur(x)}/>)}<Body>Ориентировочно: {cur} {shown}</Body><Body muted>Окончательная сумма рассчитывается платёжным провайдером непосредственно при оплате по его актуальному курсу. Курс банка карты может отличаться.</Body></Card><Card><Body>Оплачивается цифровой доступ к {p.lessons} новым урокам на расчётный месяц. Каждый открытый урок доступен 10 месяцев и может быть полностью пройден до 2 раз.</Body><Body>1-е прохождение → мультфильм + ДЗ один раз. 2-е прохождение → отдельный мультфильм.</Body><CheckRow checked={rec} title={`Я разрешаю регулярное списание €${p.price} в месяц до отмены подписки.`} onPress={()=>setRec(!rec)}/><CheckRow checked={digital} title='Я прошу предоставить цифровой доступ сразу после подтверждения оплаты и принимаю применимые условия цифрового контента.' onPress={()=>setDigital(!digital)}/></Card><Button disabled={!rec||!digital} title={`Перейти к оплате · €${p.price}`} onPress={()=>s.setScreen('home')}/><Button title='Назад' secondary onPress={()=>s.setScreen('home')}/></ScrollView>}
+import React,{useCallback,useEffect,useState} from 'react';
+import {Alert,Linking,ScrollView} from 'react-native';
+import {Body,Button,Card,H1,H2} from '../components/Ui';
+import {
+  cancelSubscriptionPlanChange,
+  confirmSubscriptionPlanChange,
+  getSubscription,
+  getSubscriptionPlanChangePreview,
+} from '../api/mobile';
+import {useAppStore} from '../store/AppStore';
+
+type Plan={
+  plan_id:string;
+  title:string;
+  lessons_per_week:number;
+  price:number;
+  currency:string;
+  billing_period:string;
+};
+
+type Preview={
+  current_plan:Plan;
+  new_plan:Plan;
+  effective_at:string;
+  notice:string;
+};
+
+const date=(value?:string|null)=>value?new Date(value).toLocaleDateString('ru-RU'):'—';
+const money=(value:number|undefined,currency:string|undefined)=>`${Number(value||0).toFixed(2)} ${currency||'EUR'}`;
+
+export function PurchaseScreen(){
+  const store=useAppStore();
+  const child=store.selectedChild;
+  const[data,setData]=useState<any>(null);
+  const[preview,setPreview]=useState<Preview|null>(null);
+  const[busy,setBusy]=useState(false);
+
+  const load=useCallback(async()=>{
+    if(!child)return;
+    try{setBusy(true);setData(await getSubscription(child.id,child.courseId||'conversation'))}
+    catch(error:any){Alert.alert('Не удалось загрузить тариф',error.message)}
+    finally{setBusy(false)}
+  },[child?.id,child?.courseId]);
+
+  useEffect(()=>{void load()},[load]);
+  if(!child)return null;
+
+  const choose=async(planId:string)=>{
+    try{
+      setBusy(true);
+      setPreview(await getSubscriptionPlanChangePreview(child.id,planId,child.courseId||'conversation'));
+    }catch(error:any){Alert.alert('Не удалось выбрать тариф',error.message)}
+    finally{setBusy(false)}
+  };
+
+  const confirm=async()=>{
+    if(!preview)return;
+    try{
+      setBusy(true);
+      const result=await confirmSubscriptionPlanChange(child.id,preview.new_plan.plan_id,child.courseId||'conversation');
+      setPreview(null);setData((current:any)=>({...current,subscription:result.subscription}));
+      if(result.approval_url){
+        Alert.alert('Нужно подтверждение PayPal','Войдите в PayPal и подтвердите смену. Без этого текущий тариф останется без изменений.');
+        await Linking.openURL(result.approval_url);
+      }else Alert.alert('Готово',result.message);
+    }catch(error:any){Alert.alert('Не удалось изменить тариф',error.message)}
+    finally{setBusy(false)}
+  };
+
+  const cancel=async()=>{
+    try{
+      setBusy(true);
+      const result=await cancelSubscriptionPlanChange(child.id,child.courseId||'conversation');
+      setPreview(null);setData((current:any)=>({...current,subscription:result.subscription}));
+      if(result.approval_url){
+        Alert.alert('Нужно подтверждение PayPal',result.message);
+        await Linking.openURL(result.approval_url);
+      }else Alert.alert('Готово',result.message);
+    }catch(error:any){Alert.alert('Не удалось отменить изменение',error.message)}
+    finally{setBusy(false)}
+  };
+
+  const subscription=data?.subscription;
+  const current=subscription?.current_plan as Plan|undefined;
+  const pending=subscription?.pending_plan;
+  const plans=(data?.plans||[]) as Plan[];
+
+  return <ScrollView contentContainerStyle={{padding:24}}>
+    <H1>Мой тариф</H1>
+    {busy&&!data?<Card><Body>Загружаем данные с backend…</Body></Card>:null}
+    {!busy&&!subscription?<Card><H2>Платная подписка не активна</H2><Body>Бесплатный демонстрационный урок остаётся доступен. Подключение первой оплачиваемой недели выполняется только через подтверждённый payment flow.</Body></Card>:null}
+    {subscription&&current?<Card>
+      <H2>Текущий тариф: {current.title}</H2>
+      <Body>Уроков в неделю: {current.lessons_per_week}</Body>
+      <Body>Текущая цена: {money(current.price,current.currency)} за месяц</Body>
+      <Body>Следующая дата списания: {date(subscription.next_charge_at)}</Body>
+      <Body>Статус подписки: {subscription.status}</Body>
+    </Card>:null}
+
+    {pending?<Card>
+      <H2>Запланировано изменение</H2>
+      <Body>Новый тариф: {pending.lessons_per_week} урок(а) в неделю</Body>
+      <Body>Стоимость следующего периода: {money(pending.price,pending.currency)}</Body>
+      <Body>Начнёт действовать: {date(pending.effective_at)}</Body>
+      {pending.provider_status==='PENDING_APPROVAL'?<Body>Ожидается подтверждение изменения в PayPal.</Body>:null}
+      {pending.provider_status==='CANCEL_PENDING_APPROVAL'?<Body>Ожидается подтверждение отмены в PayPal.</Body>:null}
+      <Button disabled={busy} secondary title='Отменить изменение тарифа' onPress={cancel}/>
+    </Card>:null}
+
+    {subscription&&!preview?<>
+      <H2>Изменить тариф</H2>
+      <Body>Новый тариф начнёт действовать со следующего оплачиваемого периода. До этой даты действует ваш текущий тариф.</Body>
+      {plans.map(plan=><Card key={plan.plan_id}>
+        <H2>{plan.title}</H2>
+        <Body>{money(plan.price,plan.currency)} за месяц</Body>
+        <Button disabled={busy||plan.plan_id===current?.plan_id} secondary={plan.plan_id!==pending?.plan_id} title={plan.plan_id===current?.plan_id?'Текущий тариф':plan.plan_id===pending?.plan_id?'Запланирован':'Выбрать'} onPress={()=>choose(plan.plan_id)}/>
+      </Card>)}
+    </>:null}
+
+    {preview?<Card>
+      <H2>Подтверждение изменения</H2>
+      <Body>Новый тариф начнёт действовать со следующего оплачиваемого периода. До этой даты действует ваш текущий тариф.</Body>
+      <Body>Текущий тариф: {preview.current_plan.title}</Body>
+      <Body>Действует до: {date(preview.effective_at)}</Body>
+      <Body>Новый тариф: {preview.new_plan.title}</Body>
+      <Body>Стоимость следующего периода: {money(preview.new_plan.price,preview.new_plan.currency)}</Body>
+      <Body>Начнет действовать: {date(preview.effective_at)}</Body>
+      <Button disabled={busy} title='Подтвердить изменение тарифа' onPress={confirm}/>
+      <Button disabled={busy} secondary title='Назад к тарифам' onPress={()=>setPreview(null)}/>
+    </Card>:null}
+
+    <Button disabled={busy} title='Назад' secondary onPress={()=>store.setScreen('home')}/>
+  </ScrollView>;
+}

@@ -4,7 +4,19 @@ from datetime import datetime
 from sqlalchemy import select, update
 
 from app.db.session import SessionLocal
-from app.db.models import LessonEntitlement, LessonSession
+from app.db.models import LessonEntitlement, LessonSession, Subscription
+
+
+async def _consume_subscription_allocation(db, entitlement: LessonEntitlement) -> None:
+    if str(entitlement.source or "") != "SUBSCRIPTION" or int(entitlement.completed_runs or 0) != 1:
+        return
+    sub=await db.scalar(select(Subscription).where(
+        Subscription.child_id==entitlement.child_id,
+        Subscription.course_id==entitlement.course_id,
+        Subscription.status=='ACTIVE',
+    ).order_by(Subscription.id.desc()))
+    if sub is not None:
+        sub.lessons_used=min(max(0,int(sub.lessons_allocated or 0)),max(0,int(sub.lessons_used or 0))+1)
 
 
 async def get_entitlement(child_id: int, lesson_id: str, course_id: str) -> LessonEntitlement | None:
@@ -39,6 +51,7 @@ async def mark_completed(child_id: int, lesson_id: str, course_id: str) -> Lesso
         if row is None:
             raise RuntimeError("Lesson entitlement is missing; lesson must be unlocked before completion")
         row.completed_runs = min(row.max_completed_runs, row.completed_runs + 1)
+        await _consume_subscription_allocation(db,row)
         if row.completed_runs >= row.max_completed_runs:
             row.status = "COMPLETED"
         await db.commit()
@@ -71,6 +84,7 @@ async def complete_session_once(
         newly_completed = bool(result.rowcount)
         if newly_completed:
             entitlement.completed_runs = min(entitlement.max_completed_runs, entitlement.completed_runs + 1)
+            await _consume_subscription_allocation(db,entitlement)
             if entitlement.completed_runs >= entitlement.max_completed_runs:
                 entitlement.status = "COMPLETED"
         await db.commit()

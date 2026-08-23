@@ -1,5 +1,6 @@
 from __future__ import annotations
 import base64, json
+from datetime import datetime
 from typing import Any
 import aiohttp
 from app.core.config import settings
@@ -7,6 +8,12 @@ from app.services.payment_lifecycle import NormalizedPaymentEvent
 from app.services.platform_settings import load_settings, save_settings
 
 class PayPalError(RuntimeError): pass
+
+def _paypal_datetime(value:object)->datetime|None:
+    raw=str(value or '').strip()
+    if not raw:return None
+    try:return datetime.fromisoformat(raw.replace('Z','+00:00')).replace(tzinfo=None)
+    except (TypeError,ValueError):return None
 
 def _base() -> str:
     return 'https://api-m.paypal.com' if str(settings.paypal_mode).lower()=='live' else 'https://api-m.sandbox.paypal.com'
@@ -138,4 +145,8 @@ def normalize_paypal_event(data:dict,subscription:dict|None=None)->NormalizedPay
     elif typ in {'BILLING.SUBSCRIPTION.PAYMENT.FAILED','PAYMENT.SALE.REVERSED'}:status='PAST_DUE'
     elif typ in {'BILLING.SUBSCRIPTION.CANCELLED','BILLING.SUBSCRIPTION.EXPIRED','BILLING.SUBSCRIPTION.SUSPENDED'}:status='CANCELLED'
     amount=resource.get('amount') if isinstance(resource.get('amount'),dict) else {}
-    return NormalizedPaymentEvent(provider='paypal',event_id=str(data.get('id') or ''),event_type=event_type,status=status,child_id=int(meta.get('child_id') or 0),course_id=str(meta.get('course_id') or ''),plan_id=str(meta.get('plan_id') or ''),lessons_per_week=int(meta.get('lessons_per_week') or 1),monthly_price=float(meta.get('monthly_price') or 0),currency=str(meta.get('currency') or amount.get('currency') or amount.get('currency_code') or 'EUR'),provider_subscription_id=provider_sub_id,raw=data)
+    try:charged=float(amount.get('value') or amount.get('total') or 0)
+    except (TypeError,ValueError):charged=0.0
+    billing=(sub.get('billing_info') if isinstance(sub.get('billing_info'),dict) else {}) or (resource.get('billing_info') if isinstance(resource.get('billing_info'),dict) else {})
+    last=billing.get('last_payment') if isinstance(billing.get('last_payment'),dict) else {}
+    return NormalizedPaymentEvent(provider='paypal',event_id=str(data.get('id') or ''),event_type=event_type,status=status,child_id=int(meta.get('child_id') or 0),course_id=str(meta.get('course_id') or ''),plan_id=str(meta.get('plan_id') or ''),lessons_per_week=int(meta.get('lessons_per_week') or 1),monthly_price=float(meta.get('monthly_price') or 0),currency=str(meta.get('currency') or amount.get('currency') or amount.get('currency_code') or 'EUR'),provider_subscription_id=provider_sub_id,occurred_at=_paypal_datetime(data.get('create_time')),period_start=_paypal_datetime(last.get('time')) or _paypal_datetime(data.get('create_time')),period_end=_paypal_datetime(billing.get('next_billing_time')),charged_amount=charged,raw=data)

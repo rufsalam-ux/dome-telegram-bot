@@ -102,6 +102,31 @@ async def init_db() -> None:
             "AND email IS NOT NULL AND email <> '' AND password_hash IS NOT NULL "
             "AND email_verification_code_hash IS NULL AND created_at < '2026-08-22 00:00:00'"
         ))
+        await _add_columns(conn, "subscriptions", {
+            "payment_provider": "VARCHAR(30) NOT NULL DEFAULT 'manual'",
+            "provider_subscription_id": "VARCHAR(255)",
+            "release_baseline_count": "INTEGER NOT NULL DEFAULT 0",
+            "current_plan_id": "VARCHAR(40)",
+            "pending_plan_id": "VARCHAR(40)",
+            "pending_plan_created_at": "TIMESTAMP",
+            "pending_plan_effective_at": "TIMESTAMP",
+            "pending_plan_price": "FLOAT",
+            "pending_lessons_per_week": "INTEGER",
+            "pending_plan_currency": "VARCHAR(10)",
+            "pending_provider_status": "VARCHAR(30)",
+            "pending_provider_reference": "TEXT",
+            "current_period_start": "TIMESTAMP",
+            "current_period_end": "TIMESTAMP",
+            "next_charge_at": "TIMESTAMP",
+            "lessons_allocated": "INTEGER NOT NULL DEFAULT 0",
+            "lessons_used": "INTEGER NOT NULL DEFAULT 0",
+        })
+        await conn.execute(text("UPDATE subscriptions SET current_plan_id=plan_id WHERE current_plan_id IS NULL OR current_plan_id=''"))
+        await conn.execute(text("UPDATE subscriptions SET current_period_start=started_at WHERE current_period_start IS NULL"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_subscriptions_provider_subscription_id ON subscriptions(provider_subscription_id)"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_subscriptions_payment_provider ON subscriptions(payment_provider)"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_subscriptions_pending_plan_effective_at ON subscriptions(pending_plan_effective_at)"))
+        await conn.execute(text("UPDATE subscriptions SET payment_provider='stripe' WHERE (payment_provider IS NULL OR payment_provider='manual') AND provider_subscription_id LIKE 'sub_%'"))
         if settings.database_url.startswith("sqlite"):
             await _add_columns(conn, "characters", {
                 "source": "VARCHAR(40) NOT NULL DEFAULT 'CHILD_DRAWING'", "catalog_id": "VARCHAR(80)"})
@@ -124,13 +149,6 @@ async def init_db() -> None:
                 "recommended_difficulty": "FLOAT"})
             await _add_columns(conn, "homework_assignments", {
                 "current_step": "INTEGER NOT NULL DEFAULT 0"})
-            await _add_columns(conn, "subscriptions", {
-                "payment_provider": "VARCHAR(30) NOT NULL DEFAULT 'manual'",
-                "provider_subscription_id": "VARCHAR(255)",
-                "release_baseline_count": "INTEGER NOT NULL DEFAULT 0"})
-            await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_subscriptions_provider_subscription_id ON subscriptions(provider_subscription_id)"))
-            await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_subscriptions_payment_provider ON subscriptions(payment_provider)"))
-            await conn.execute(text("UPDATE subscriptions SET payment_provider='stripe' WHERE (payment_provider IS NULL OR payment_provider='manual') AND provider_subscription_id LIKE 'sub_%'"))
             await _dedupe_lesson_entitlements(conn)
             await conn.execute(text(
                 "CREATE UNIQUE INDEX IF NOT EXISTS uq_lesson_entitlement_child_lesson_course "

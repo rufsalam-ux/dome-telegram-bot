@@ -221,12 +221,29 @@ class Subscription(Base):
     child_id: Mapped[int] = mapped_column(ForeignKey("children.id"), index=True)
     course_id: Mapped[str] = mapped_column(String(100), index=True)
     plan_id: Mapped[str] = mapped_column(String(40), default="weekly1")
+    # `plan_id` is retained as a compatibility mirror for the Telegram/runtime
+    # code. The fields below are the billing source of truth for period-boundary
+    # plan changes.
+    current_plan_id: Mapped[str] = mapped_column(String(40), default="weekly1")
+    pending_plan_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    pending_plan_created_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    pending_plan_effective_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    pending_plan_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pending_lessons_per_week: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    pending_plan_currency: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    pending_provider_status: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    pending_provider_reference: Mapped[str | None] = mapped_column(Text, nullable=True)
     lessons_per_week: Mapped[int] = mapped_column(Integer, default=1)
     monthly_price: Mapped[float] = mapped_column(Float, default=39.0)
     currency: Mapped[str] = mapped_column(String(10), default="EUR")
     status: Mapped[str] = mapped_column(String(30), default="ACTIVE")
     test_mode: Mapped[bool] = mapped_column(Boolean, default=True)
     started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    current_period_start: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    current_period_end: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    next_charge_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    lessons_allocated: Mapped[int] = mapped_column(Integer, default=0)
+    lessons_used: Mapped[int] = mapped_column(Integer, default=0)
     cancelled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     payment_provider: Mapped[str] = mapped_column(String(30), default="manual", index=True)
     provider_subscription_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
@@ -234,6 +251,27 @@ class Subscription(Base):
     # release schedule segment started. Prevents plan changes/re-subscribe from
     # retroactively granting or withholding weeks from an older segment.
     release_baseline_count: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class SubscriptionAuditEvent(Base):
+    """Append-only evidence for subscription plan transitions."""
+
+    __tablename__ = "subscription_audit_events"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    subscription_id: Mapped[int] = mapped_column(ForeignKey("subscriptions.id"), index=True)
+    parent_id: Mapped[int] = mapped_column(ForeignKey("parents.id"), index=True)
+    child_id: Mapped[int] = mapped_column(ForeignKey("children.id"), index=True)
+    event_type: Mapped[str] = mapped_column(String(60), index=True)
+    old_plan_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    new_plan_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    requested_at: Mapped[datetime] = mapped_column(DateTime)
+    effective_at: Mapped[datetime] = mapped_column(DateTime)
+    old_price: Mapped[float] = mapped_column(Float, default=0.0)
+    new_price: Mapped[float] = mapped_column(Float, default=0.0)
+    currency: Mapped[str] = mapped_column(String(10), default="EUR")
+    billing_period: Mapped[str] = mapped_column(String(20), default="MONTH")
+    metadata_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
 class LessonEntitlement(Base):

@@ -209,6 +209,20 @@ def payment_checkout_keyboard(label: str, url: str, language: str = "ru") -> Inl
     ])
 
 
+def plan_change_confirmation_keyboard(plan_id: str, language: str = "ru") -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Подтвердить изменение тарифа", callback_data=f"payment:confirm_plan:{plan_id}")],
+        [InlineKeyboardButton(text=tr(language, "back_menu"), callback_data="menu:open")],
+    ])
+
+
+def plan_change_cancel_keyboard(language: str = "ru") -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Отменить изменение тарифа", callback_data="payment:cancel_plan_change")],
+        [InlineKeyboardButton(text=tr(language, "back_menu"), callback_data="menu:open")],
+    ])
+
+
 
 def menu_hub_keyboard(language: str = "ru") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[

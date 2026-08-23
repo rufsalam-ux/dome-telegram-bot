@@ -7,7 +7,7 @@ from sqlalchemy import select, func
 from sqlalchemy.exc import IntegrityError
 from app.core.config import settings
 from app.db.session import SessionLocal
-from app.db.models import Parent,Child,Character,LessonSession,VoiceAttempt,InteractiveResult,HomeworkAssignment,LessonMovie
+from app.db.models import Parent,Child,Character,LessonSession,VoiceAttempt,InteractiveResult,HomeworkAssignment,LessonMovie,Subscription
 from app.services.mobile_tokens import issue_session_token,verify_session_token,signed_media_token,verify_media_token
 from app.services.lesson_loader import load_lesson
 from app.services.lesson_access import can_start,complete_session_once,mark_cartoon_generated
@@ -20,6 +20,20 @@ from app.services.email_reports import send_homework_email,_send_with_attachment
 from app.services.ai_speech import synthesize_speech, translate_text
 from app.services.password_auth import hash_password, hash_verification_code, verify_password, verify_verification_code
 from app.services.standalone_demo_access import ensure_free_demo_entitlement
+from app.services.subscription_plan_changes import (
+    PlanChangeError,
+    cancel_plan_change,
+    current_plan_snapshot,
+    next_billing_period_start,
+    plan_catalog_for_child,
+    preview_plan_change,
+    schedule_plan_change,
+)
+from app.services.subscription_provider import (
+    SubscriptionProviderError,
+    restore_provider_current_plan,
+    schedule_provider_plan_change,
+)
 
 log=logging.getLogger('dome.mobile_api')
 MOBILE_LANGUAGES={'ru','en','es','de','fr','it','pt','tr','ar','zh'}
@@ -104,6 +118,121 @@ async def create_child(request:web.Request)->web.Response:
         await ensure_free_demo_entitlement(db,parent_id=p.id,child_id=child.id)
         await db.commit();await db.refresh(child)
     return web.json_response(_child_json(request,child),status=201)
+
+
+def _date_json(value:datetime|None)->str|None:
+    return value.isoformat() if value else None
+
+
+def _plan_json(plan)->dict:
+    return {
+        'plan_id':plan.plan_id,'title':plan.title,'lessons_per_week':plan.lessons_per_week,
+        'price':plan.price,'currency':plan.currency,'billing_period':plan.billing_period,
+    }
+
+
+async def _subscription_for_child(db,child_id:int,course_id:str)->Subscription|None:
+    return await db.scalar(select(Subscription).where(
+        Subscription.child_id==child_id,Subscription.course_id==course_id,
+    ).order_by(Subscription.id.desc()))
+
+
+def _subscription_json(sub:Subscription|None)->dict|None:
+    if sub is None:return None
+    current=current_plan_snapshot(sub)
+    pending=None
+    if sub.pending_plan_id:
+        pending={
+            'plan_id':sub.pending_plan_id,'lessons_per_week':sub.pending_lessons_per_week,
+            'price':sub.pending_plan_price,'currency':sub.pending_plan_currency or sub.currency,
+            'created_at':_date_json(sub.pending_plan_created_at),
+            'effective_at':_date_json(sub.pending_plan_effective_at),
+            'provider_status':sub.pending_provider_status,
+        }
+    return {
+        'id':sub.id,'course_id':sub.course_id,'status':sub.status,'current_plan':_plan_json(current),
+        'current_period_start':_date_json(sub.current_period_start or sub.started_at),
+        'current_period_end':_date_json(sub.current_period_end),
+        'next_charge_at':_date_json(sub.next_charge_at or sub.current_period_end or next_billing_period_start(sub)),
+        'lessons_allocated':int(sub.lessons_allocated or 0),'lessons_used':int(sub.lessons_used or 0),
+        'pending_plan':pending,'payment_provider':sub.payment_provider,
+    }
+
+
+async def subscription_overview(request:web.Request)->web.Response:
+    p=await _parent(request);cid=int(request.match_info['child_id']);course_id=str(request.query.get('course_id') or 'conversation')
+    await _owned_child(p.id,cid)
+    async with SessionLocal() as db:
+        sub=await _subscription_for_child(db,cid,course_id)
+        plans=await plan_catalog_for_child(db,parent_id=p.id,child_id=cid,course_id=course_id)
+        return web.json_response({'subscription':_subscription_json(sub),'plans':[_plan_json(x) for x in plans]})
+
+
+async def subscription_plan_change_preview(request:web.Request)->web.Response:
+    p=await _parent(request);cid=int(request.match_info['child_id']);data=await request.json();course_id=str(data.get('course_id') or 'conversation');plan_id=str(data.get('plan_id') or '')
+    await _owned_child(p.id,cid)
+    async with SessionLocal() as db:
+        sub=await _subscription_for_child(db,cid,course_id)
+        if sub is None:raise web.HTTPConflict(text=json.dumps({'error':'Активная подписка не найдена'}),content_type='application/json')
+        try:preview=await preview_plan_change(db,sub,parent_id=p.id,requested_plan_id=plan_id)
+        except PlanChangeError as exc:raise web.HTTPConflict(text=json.dumps({'error':str(exc)}),content_type='application/json')
+        return web.json_response({
+            'subscription_id':preview.subscription_id,'current_plan':_plan_json(preview.current),
+            'new_plan':_plan_json(preview.requested),'effective_at':_date_json(preview.effective_at),
+            'replaces_pending_plan_id':preview.replaces_pending_plan_id,
+            'notice':'Новый тариф начнёт действовать со следующего оплачиваемого периода.\nДо этой даты действует ваш текущий тариф.',
+        })
+
+
+async def subscription_plan_change_confirm(request:web.Request)->web.Response:
+    p=await _parent(request);cid=int(request.match_info['child_id']);data=await request.json();course_id=str(data.get('course_id') or 'conversation');plan_id=str(data.get('plan_id') or '')
+    await _owned_child(p.id,cid)
+    async with SessionLocal() as db:
+        sub=await _subscription_for_child(db,cid,course_id)
+        if sub is None:raise web.HTTPConflict(text=json.dumps({'error':'Активная подписка не найдена'}),content_type='application/json')
+        try:
+            preview=await preview_plan_change(db,sub,parent_id=p.id,requested_plan_id=plan_id)
+            provider=await schedule_provider_plan_change(
+                sub,preview.requested,effective_at=preview.effective_at,
+                base_url=settings.effective_webapp_base_url or _base(request),
+                idempotency_key=f'plan-change:{sub.id}:{plan_id}:{int(preview.effective_at.timestamp())}',
+            )
+            event=schedule_plan_change(
+                db,sub,parent_id=p.id,preview=preview,provider_status=provider.status,
+                provider_reference=provider.reference,
+            )
+            await db.commit();await db.refresh(sub)
+        except (PlanChangeError,SubscriptionProviderError,RuntimeError) as exc:
+            await db.rollback();raise web.HTTPConflict(text=json.dumps({'error':str(exc)}),content_type='application/json')
+        date=preview.effective_at.strftime('%d.%m.%Y')
+        amount=f'{preview.requested.price:.2f} {preview.requested.currency}'
+        message=f'Готово. До {date} действует текущий тариф.\nС {date} начнёт действовать {preview.requested.title}, и автоматически будет списываться {amount} за каждый следующий период, пока тариф не будет изменён или подписка отменена.'
+        return web.json_response({'event':event,'subscription':_subscription_json(sub),'approval_url':provider.approval_url or None,'message':message})
+
+
+async def subscription_plan_change_cancel(request:web.Request)->web.Response:
+    p=await _parent(request);cid=int(request.match_info['child_id']);data=await request.json() if request.can_read_body else {};course_id=str(data.get('course_id') or 'conversation')
+    await _owned_child(p.id,cid)
+    async with SessionLocal() as db:
+        sub=await _subscription_for_child(db,cid,course_id)
+        if sub is None:raise web.HTTPConflict(text=json.dumps({'error':'Активная подписка не найдена'}),content_type='application/json')
+        try:
+            if not sub.pending_plan_id:raise PlanChangeError('Запланированного изменения тарифа нет')
+            effective_at=sub.pending_plan_effective_at or datetime.utcnow()
+            provider=await restore_provider_current_plan(
+                sub,current_plan_snapshot(sub),effective_at=effective_at,
+                base_url=settings.effective_webapp_base_url or _base(request),
+                idempotency_key=f'plan-change-cancel:{sub.id}:{int(effective_at.timestamp())}',
+            )
+            if provider.approval_url:
+                sub.pending_provider_status='CANCEL_PENDING_APPROVAL';sub.pending_provider_reference=provider.reference or None
+            else:cancel_plan_change(db,sub,parent_id=p.id)
+            await db.commit();await db.refresh(sub)
+        except (PlanChangeError,SubscriptionProviderError,RuntimeError) as exc:
+            await db.rollback();raise web.HTTPConflict(text=json.dumps({'error':str(exc)}),content_type='application/json')
+        if provider.approval_url:
+            return web.json_response({'subscription':_subscription_json(sub),'approval_url':provider.approval_url,'message':'Подтвердите отмену смены тарифа в PayPal. До подтверждения запланированное изменение сохраняется.'})
+        return web.json_response({'subscription':_subscription_json(sub),'approval_url':None,'message':'Запланированное изменение тарифа отменено. Текущий тариф остаётся без изменений.'})
 
 async def lesson(request:web.Request)->web.Response:
     await _parent(request); lid=request.match_info['lesson_id']; data=load_lesson(lid)
@@ -484,5 +613,6 @@ async def confirm_password_reset(request:web.Request)->web.Response:
 def register_mobile_routes(app:web.Application):
     app.router.add_post('/api/mobile/register',register);app.router.add_post('/api/mobile/verify-email',verify_email);app.router.add_post('/api/mobile/resend-verification',resend_verification);app.router.add_post('/api/mobile/login',login);app.router.add_post('/api/mobile/password-reset/request',request_password_reset);app.router.add_post('/api/mobile/password-reset/confirm',confirm_password_reset);app.router.add_get('/api/mobile/bootstrap',bootstrap);app.router.add_post('/api/mobile/children',create_child);app.router.add_get('/api/mobile/lesson/{lesson_id}',lesson)
     app.router.add_get('/api/mobile/hero/file/{child_id}/{character_id}',hero_file);app.router.add_post('/api/mobile/child/{child_id}/hero/preset',hero_preset);app.router.add_post('/api/mobile/child/{child_id}/hero/upload',hero_upload)
+    app.router.add_get('/api/mobile/child/{child_id}/subscription',subscription_overview);app.router.add_post('/api/mobile/child/{child_id}/subscription/plan-change/preview',subscription_plan_change_preview);app.router.add_post('/api/mobile/child/{child_id}/subscription/plan-change',subscription_plan_change_confirm);app.router.add_delete('/api/mobile/child/{child_id}/subscription/plan-change',subscription_plan_change_cancel)
     app.router.add_post('/api/mobile/session/start',session_start);app.router.add_post('/api/mobile/session/{session_id}/progress',session_progress);app.router.add_post('/api/mobile/session/{session_id}/voice',voice);app.router.add_post('/api/mobile/session/{session_id}/interactive',interactive);app.router.add_post('/api/mobile/session/{session_id}/complete',complete)
     app.router.add_get('/api/mobile/tts',tts);app.router.add_post('/api/mobile/translate',translate);app.router.add_patch('/api/mobile/child/{child_id}/language',update_child_language);app.router.add_get('/api/mobile/child/{child_id}/movies',movies);app.router.add_get('/api/mobile/movie/{child_id}/{filename}',movie_file)

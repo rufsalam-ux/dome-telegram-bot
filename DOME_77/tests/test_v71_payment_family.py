@@ -25,7 +25,7 @@ def test_family_prices_discount_is_per_lesson_not_per_month():
     assert calculate_family_price(139,5,4).effective_price==131
 
 def test_pricing_config_family_policy():
-    cfg=json.loads((ROOT/'config/pricing.json').read_text())
+    cfg=json.loads((ROOT/'config/pricing.json').read_text('utf-8'))
     assert cfg['family']['max_children_per_parent']==5
     assert cfg['family']['additional_child_discount_per_lesson_eur']==0.5
     assert cfg['family']['billing_weeks_per_month']==4
@@ -79,29 +79,36 @@ def test_stripe_checkout_has_idempotency_and_plan_change(monkeypatch):
         def retrieve(sub_id): return {'items':{'data':[{'id':'si1'}]}}
         @staticmethod
         def modify(sub_id,**kwargs): calls['modify']=(sub_id,kwargs); return {'id':sub_id,'status':'active'}
-    fake=types.SimpleNamespace(api_key='',checkout=Checkout,Subscription=Subscription)
+    class Price:
+        @staticmethod
+        def create(**kwargs): calls['price']=kwargs; return {'id':'price_next'}
+    fake=types.SimpleNamespace(api_key='',checkout=Checkout,Subscription=Subscription,Price=Price)
     monkeypatch.setitem(sys.modules,'stripe',fake)
     monkeypatch.setattr(settings,'stripe_secret_key','sk_test')
+    monkeypatch.setattr(pa,'load_settings',lambda _: {})
+    monkeypatch.setattr(pa,'save_settings',lambda *_: None)
     url=pa.create_stripe_subscription_checkout(child_id=2,course_id='reading',plan_id='weekly2',lessons_per_week=2,monthly_price=75,currency='EUR',success_url='https://x/s',cancel_url='https://x/c',idempotency_key='idem1')
     assert url=='https://checkout.test' and calls['checkout']['idempotency_key']=='idem1'
     pa.change_stripe_subscription_plan(subscription_id='sub1',child_id=2,course_id='reading',plan_id='weekly4',lessons_per_week=4,monthly_price=131,currency='EUR',idempotency_key='change1')
     kw=calls['modify'][1]
     assert kw['idempotency_key']=='change1'
-    assert kw['proration_behavior']=='always_invoice'
-    assert kw['payment_behavior']=='pending_if_incomplete'
-    assert kw['items'][0]['price_data']['unit_amount']==13100
+    assert calls['price']['unit_amount']==13100
+    assert kw['proration_behavior']=='none'
+    assert 'payment_behavior' not in kw
+    assert kw['items'][0]['price']=='price_next'
 
 def test_production_guardrails_and_no_second_subscription():
-    h=(ROOT/'app/bot/handlers.py').read_text()
+    h=(ROOT/'app/bot/handlers.py').read_text('utf-8'); provider=(ROOT/'app/services/subscription_provider.py').read_text('utf-8')
     assert "Production billing нельзя включить с provider=custom" in h
     assert "allow_test_course_payment_bypass']=False if mode=='on'" in h
     assert "provider not in {'custom','stripe','unipay','unlimit','paypal'}" in h
     assert 'active_paid is not None' in h
-    for name in ('change_stripe_subscription_plan','change_unipay_subscription_plan','change_unlimit_subscription_plan','change_paypal_subscription_plan'):
-        assert name in h
+    assert 'schedule_provider_plan_change' in h
+    assert 'proration' in provider and 'stripe' in provider and 'paypal' in provider
+    assert 'не настроен для гарантированной смены' in provider
 
 def test_all_payment_webhooks_and_checkout_are_wired():
-    web=(ROOT/'app/webapp/server.py').read_text(); handlers=(ROOT/'app/bot/handlers.py').read_text()
+    web=(ROOT/'app/webapp/server.py').read_text('utf-8'); handlers=(ROOT/'app/bot/handlers.py').read_text('utf-8')
     for provider in ('stripe','unipay','unlimit','paypal'):
         assert f'/webhooks/{provider}' in web
     assert 'verify_paypal_webhook' in web and 'verify_unlimit_webhook' in web
@@ -110,7 +117,7 @@ def test_all_payment_webhooks_and_checkout_are_wired():
     assert "stored_id=f'{provider}:{event_id}'" in web
 
 def test_multi_child_ui_limit_and_persistent_selection():
-    h=(ROOT/'app/bot/handlers.py').read_text(); k=(ROOT/'app/bot/keyboards.py').read_text(); m=(ROOT/'app/db/models.py').read_text()
+    h=(ROOT/'app/bot/handlers.py').read_text('utf-8'); k=(ROOT/'app/bot/keyboards.py').read_text('utf-8'); m=(ROOT/'app/db/models.py').read_text('utf-8')
     assert 'family:add' in h and 'family:select:' in h
     assert 'MAX_CHILDREN_PER_PARENT' in h
     assert 'family_children_keyboard' in k
@@ -121,7 +128,7 @@ import pytest
 @pytest.mark.asyncio
 async def test_subscription_created_without_active_does_not_unlock(tmp_path, monkeypatch):
     # Source-level invariant is intentional here because the project DB session is globally configured.
-    life=(ROOT/'app/services/payment_lifecycle.py').read_text()
+    life=(ROOT/'app/services/payment_lifecycle.py').read_text('utf-8')
     assert "sub.status='PENDING'" in life
     assert "ev.event_type in {'PAYMENT_SUCCEEDED','SUBSCRIPTION_ACTIVE'} or status=='ACTIVE'" in life
     assert "Creation/checkout/update alone must never unlock paid content" in life
