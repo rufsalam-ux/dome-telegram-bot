@@ -1,7 +1,7 @@
 {
   "enabled": true,
   "coordinate_space": {"width": 1920, "height": 1080},
-  "source": "M-1.mp4",
+  "source": "M1-canonical-20260810.mov",
   "overlays": [
     {"start": 21.0, "end": 31.0, "x": 930, "y": 892, "w": 360, "h": 112, "font_size": 62, "text_by_language": {"en": "Lyosha"}},
     {"start": 39.0, "end": 44.0, "x": 1180, "y": 365, "w": 360, "h": 105, "font_size": 62, "text_by_language": {"en": "Mila"}},

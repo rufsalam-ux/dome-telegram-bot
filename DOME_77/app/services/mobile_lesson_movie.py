@@ -1,18 +1,18 @@
 from __future__ import annotations
 
-import asyncio
+import hashlib
 import json
 import logging
-import re
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Iterable
 
 from sqlalchemy import select
 
+from app.core.config import settings
 from app.db.models import LessonMovie, MovieVoiceSlot
 from app.db.session import SessionLocal
-from app.services.ai_speech import synthesize_speech, translate_text
 from app.services.cartoon_builder import _probe_video, build_timeline_cartoon
 from app.services.cartoon_text_overlay import cartoon_text_filters
 from app.services.lesson_loader import load_lesson
@@ -30,6 +30,106 @@ class MovieRenderInputs:
     output: Path
     lesson_dir: Path
     target_language: str
+    approved_phrase_ids: tuple[str, ...] = ()
+    expected_base_sha256: str = ""
+    require_all_phrase_audio: bool = True
+
+
+@dataclass(frozen=True)
+class MovieContract:
+    lesson_id: str
+    lesson_dir: Path
+    base_video: Path
+    timeline: list[dict]
+    approved_phrase_ids: tuple[str, ...]
+    expected_base_sha256: str
+    audio_policy: dict
+
+
+class MovieContractError(RuntimeError):
+    """A release/content contract failure safe to translate at the API edge."""
+
+
+SAFE_MOVIE_CONTRACT_ERROR = "Мультфильм пока не удалось подготовить. Все записи сохранены — попробуйте ещё раз позже."
+
+
+@lru_cache(maxsize=32)
+def _sha256_for_version(path_value: str, size: int, mtime_ns: int) -> str:
+    del size, mtime_ns
+    digest = hashlib.sha256()
+    with Path(path_value).open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _checked_relative(root: Path, value: object) -> Path:
+    candidate = (root / str(value or "")).resolve()
+    if root.resolve() not in candidate.parents:
+        raise MovieContractError(SAFE_MOVIE_CONTRACT_ERROR)
+    return candidate
+
+
+def load_movie_contract(lesson_id: str, lesson: dict | None = None) -> MovieContract:
+    """Load the immutable per-lesson movie source and audio whitelist.
+
+    A bundled movie_manifest.json is release-authoritative. This deliberately
+    prevents an older persistent lesson draft from silently selecting an old
+    base movie after a deploy.
+    """
+
+    lesson = lesson or load_lesson(lesson_id)
+    bundled_dir = settings.content_root / "lessons" / lesson_id
+    source_dir = (
+        settings.storage_root / "authored-content" / "lessons" / lesson_id
+        if lesson.get("content_source") == "persistent"
+        else bundled_dir
+    )
+    manifest_name = str(lesson.get("cartoon_base_manifest") or "movie_manifest.json")
+    bundled_manifest = bundled_dir / manifest_name
+    manifest_path = bundled_manifest if bundled_manifest.exists() else source_dir / manifest_name
+    if not manifest_path.exists():
+        raise MovieContractError(SAFE_MOVIE_CONTRACT_ERROR)
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise MovieContractError(SAFE_MOVIE_CONTRACT_ERROR) from exc
+    if str(manifest.get("lesson_id") or "") != str(lesson_id):
+        raise MovieContractError(SAFE_MOVIE_CONTRACT_ERROR)
+
+    contract_dir = manifest_path.parent
+    base_video = _checked_relative(contract_dir, manifest.get("canonical_source"))
+    timeline_path = _checked_relative(contract_dir, manifest.get("timeline_file") or "timeline.json")
+    if not base_video.is_file() or not timeline_path.is_file():
+        raise MovieContractError(SAFE_MOVIE_CONTRACT_ERROR)
+    stat = base_video.stat()
+    expected_size = int(manifest.get("canonical_source_bytes") or 0)
+    expected_hash = str(manifest.get("canonical_source_sha256") or "").lower()
+    if expected_size <= 0 or stat.st_size != expected_size or len(expected_hash) != 64:
+        raise MovieContractError(SAFE_MOVIE_CONTRACT_ERROR)
+    if _sha256_for_version(str(base_video), stat.st_size, stat.st_mtime_ns) != expected_hash:
+        raise MovieContractError(SAFE_MOVIE_CONTRACT_ERROR)
+    try:
+        timeline = json.loads(timeline_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise MovieContractError(SAFE_MOVIE_CONTRACT_ERROR) from exc
+    if not isinstance(timeline, list) or not timeline:
+        raise MovieContractError(SAFE_MOVIE_CONTRACT_ERROR)
+    approved = tuple(str(row.get("phrase_id") or "") for row in timeline if str(row.get("phrase_id") or ""))
+    if not approved or len(set(approved)) != len(approved):
+        raise MovieContractError(SAFE_MOVIE_CONTRACT_ERROR)
+    audio_policy = dict(manifest.get("audio_policy") or lesson.get("movie_audio_policy") or {})
+    if audio_policy.get("allow_tutor_tts") is not False or audio_policy.get("allow_silence_fallback") is not False:
+        raise MovieContractError(SAFE_MOVIE_CONTRACT_ERROR)
+    return MovieContract(
+        lesson_id=str(lesson_id),
+        lesson_dir=contract_dir,
+        base_video=base_video,
+        timeline=[dict(row) for row in timeline],
+        approved_phrase_ids=approved,
+        expected_base_sha256=expected_hash,
+        audio_policy=audio_policy,
+    )
 
 
 async def recover_interrupted_mobile_movie_jobs() -> int:
@@ -87,9 +187,14 @@ def select_movie_voice_takes(voice_attempts: Iterable[object], lesson: dict) -> 
         phrase_id = str(getattr(attempt, "phrase_id", "") or "")
         status = str(getattr(attempt, "status", "") or "")
         path = Path(str(getattr(attempt, "audio_path", "") or ""))
-        if phrase_id in wanted and status.startswith("ACCEPTED") and path.exists() and path.stat().st_size > 0:
+        if phrase_id in wanted and movie_take_status(status) and path.exists() and path.stat().st_size > 0:
             selected[phrase_id] = path
     return selected, [phrase_id for phrase_id in required if phrase_id not in selected]
+
+
+def movie_take_status(status: object) -> bool:
+    value = str(status or "").upper()
+    return value.startswith("ACCEPTED") or value == "MOVIE_USABLE_WITH_SUPPORT"
 
 
 async def ensure_movie_voice_slots(db, session_id: int, lesson: dict) -> list[MovieVoiceSlot]:
@@ -115,7 +220,7 @@ async def ensure_movie_voice_slots(db, session_id: int, lesson: dict) -> list[Mo
 async def record_movie_voice_slot(db, session_id: int, phrase_id: str, attempt: object, lesson: dict) -> bool:
     """Save an accepted exact take immediately, never only at completion."""
 
-    if phrase_id not in set(required_movie_phrase_ids(lesson)) or not str(getattr(attempt, "status", "")).startswith("ACCEPTED"):
+    if phrase_id not in set(required_movie_phrase_ids(lesson)) or not movie_take_status(getattr(attempt, "status", "")):
         return False
     await ensure_movie_voice_slots(db, session_id, lesson)
     slot = await db.scalar(select(MovieVoiceSlot).where(
@@ -125,66 +230,32 @@ async def record_movie_voice_slot(db, session_id: int, phrase_id: str, attempt: 
     if not slot:
         return False
     slot.status="RECORDED";slot.source_attempt_id=getattr(attempt,"id",None);slot.audio_path=str(getattr(attempt,"audio_path","") or "") or None
-    slot.diagnostics_json=json.dumps({"expected":True,"recorded":True,"strategy":"exact_child_recording"})
+    slot.diagnostics_json=json.dumps({"expected":True,"recorded":True,"strategy":"exact_child_recording","track_role":"child_recording"})
     return True
 
 
-def _tokens(value: object) -> set[str]:
-    return {word for word in re.findall(r"[\w'-]+", str(value or "").casefold(), flags=re.UNICODE) if len(word) > 1}
-
-
-def _compatible_attempt(required: dict, attempts: list[object], used_attempt_ids: set[int]) -> tuple[object | None, float]:
-    target = _tokens(required.get("target_text"))
-    for meaning in required.get("accepted_meaning") or []:target |= _tokens(meaning)
-    best: object | None=None;best_score=0.0
-    for attempt in attempts:
-        attempt_id=int(getattr(attempt,"id",0) or 0)
-        if attempt_id in used_attempt_ids or not str(getattr(attempt,"status","")).startswith("ACCEPTED"):continue
-        path=Path(str(getattr(attempt,"audio_path","") or ""));transcript=_tokens(getattr(attempt,"transcript",""))
-        if not target or not transcript or not path.exists() or path.stat().st_size<=0:continue
-        score=len(target&transcript)/max(1,min(len(target),len(transcript)))
-        if score>best_score:best,best_score=attempt,score
-    return (best,best_score) if best_score>=.45 else (None,best_score)
-
-
 async def resolve_movie_voice_slots(db, session_id: int, voice_attempts: Iterable[object], lesson: dict, target_language: str, cache_root: Path) -> tuple[dict[str, Path], list[dict]]:
-    """Resolve exact → compatible → neutral TTS → silence without blocking movie creation."""
+    """Resolve only explicitly whitelisted child takes for movie phrase IDs.
 
-    attempts=list(voice_attempts);required_rows={str(row.get("phrase_id")):row for row in lesson.get("required_phrases") or []}
-    slots=await ensure_movie_voice_slots(db,session_id,lesson);audio_by_phrase:dict[str,Path]={};used:set[int]=set()
+    target_language/cache_root remain in the signature for backward-compatible
+    callers; neither tutor TTS nor unrelated conversation audio is permitted.
+    """
+
+    del target_language, cache_root
+    attempts=list(voice_attempts);required=set(required_movie_phrase_ids(lesson))
+    slots=await ensure_movie_voice_slots(db,session_id,lesson);audio_by_phrase:dict[str,Path]={}
     exact:dict[str,object]={}
     for attempt in attempts:
         phrase_id=str(getattr(attempt,"phrase_id","") or "");path=Path(str(getattr(attempt,"audio_path","") or ""))
-        if phrase_id in required_rows and str(getattr(attempt,"status","")).startswith("ACCEPTED") and path.exists() and path.stat().st_size>0:exact[phrase_id]=attempt
-    pending_tts:list[tuple[MovieVoiceSlot,str,str]]=[]
+        if phrase_id in required and movie_take_status(getattr(attempt,"status","")) and path.exists() and path.stat().st_size>0:exact[phrase_id]=attempt
     for slot in slots:
         phrase_id=slot.required_voice_id;attempt=exact.get(phrase_id)
         if attempt:
-            path=Path(str(getattr(attempt,"audio_path")));attempt_id=int(getattr(attempt,"id",0) or 0);used.add(attempt_id);audio_by_phrase[phrase_id]=path
-            slot.status="RECORDED";slot.source_attempt_id=attempt_id or None;slot.audio_path=str(path);slot.diagnostics_json=json.dumps({"expected":True,"recorded":True,"strategy":"exact_child_recording"})
+            path=Path(str(getattr(attempt,"audio_path")));attempt_id=int(getattr(attempt,"id",0) or 0);audio_by_phrase[phrase_id]=path
+            slot.status="RECORDED";slot.source_attempt_id=attempt_id or None;slot.audio_path=str(path);slot.diagnostics_json=json.dumps({"expected":True,"recorded":True,"strategy":"exact_child_recording","track_role":"child_recording"})
             continue
-        compatible,score=_compatible_attempt(required_rows.get(phrase_id,{}),attempts,used)
-        if compatible:
-            path=Path(str(getattr(compatible,"audio_path")));attempt_id=int(getattr(compatible,"id",0) or 0);used.add(attempt_id);audio_by_phrase[phrase_id]=path
-            slot.status="FALLBACK_COMPATIBLE";slot.source_attempt_id=attempt_id or None;slot.audio_path=str(path);slot.diagnostics_json=json.dumps({"expected":True,"recorded":False,"strategy":"compatible_child_recording","compatibility":round(score,3)})
-            continue
-        source_text=str(required_rows.get(phrase_id,{}).get("target_text") or phrase_id);source_language=str(lesson.get("target_language") or "ru")
-        pending_tts.append((slot,source_text,source_language))
-
-    async def make_tts(slot:MovieVoiceSlot,text:str,source_language:str):
-        try:
-            localized=await translate_text(text,source_language,target_language) if source_language!=target_language else text
-            return slot,await synthesize_speech(localized,target_language,cache_root/"movie-voice-fallback",f"session{session_id}_{slot.required_voice_id}","warm")
-        except Exception as exc:
-            log.warning("Movie voice TTS fallback failed session=%s phrase=%s: %s",session_id,slot.required_voice_id,exc);return slot,None
-
-    if pending_tts:
-        for slot,path in await asyncio.gather(*(make_tts(*item) for item in pending_tts)):
-            if path and path.exists() and path.stat().st_size>0:
-                audio_by_phrase[slot.required_voice_id]=path;slot.status="FALLBACK_TTS";slot.audio_path=str(path);slot.source_attempt_id=None;strategy="neutral_tts"
-            else:
-                slot.status="FALLBACK_SILENCE";slot.audio_path=None;slot.source_attempt_id=None;strategy="silence"
-            slot.diagnostics_json=json.dumps({"expected":True,"recorded":False,"strategy":strategy})
+        slot.status="MISSING_REQUIRED";slot.audio_path=None;slot.source_attempt_id=None
+        slot.diagnostics_json=json.dumps({"expected":True,"recorded":False,"strategy":"missing_required_child_recording","track_role":None})
     await db.flush()
     diagnostics=[]
     for slot in slots:
@@ -198,9 +269,27 @@ def build_mobile_lesson_movie(inputs: MovieRenderInputs) -> Path:
     """Render the authored lesson movie from its mandatory base video."""
 
     if not inputs.base_video.exists():
-        raise FileNotFoundError(f"Missing authored movie base: {inputs.base_video}")
+        log.error("Canonical movie base is missing: %s", inputs.base_video)
+        raise MovieContractError(SAFE_MOVIE_CONTRACT_ERROR)
     if not inputs.character.exists():
-        raise FileNotFoundError(f"Missing selected child hero: {inputs.character}")
+        log.error("Selected child hero is missing: %s", inputs.character)
+        raise MovieContractError(SAFE_MOVIE_CONTRACT_ERROR)
+    if inputs.expected_base_sha256:
+        stat = inputs.base_video.stat()
+        actual_hash = _sha256_for_version(str(inputs.base_video), stat.st_size, stat.st_mtime_ns)
+        if actual_hash != inputs.expected_base_sha256.lower():
+            log.error("Canonical movie base checksum mismatch: %s", inputs.base_video)
+            raise MovieContractError(SAFE_MOVIE_CONTRACT_ERROR)
+    approved = tuple(inputs.approved_phrase_ids) or tuple(str(row.get("phrase_id") or "") for row in inputs.timeline)
+    approved_set = set(approved)
+    injected = set(inputs.audio_by_phrase)
+    if not injected <= approved_set:
+        log.error("Rejected non-whitelisted movie audio roles: %s", sorted(injected - approved_set))
+        raise MovieContractError(SAFE_MOVIE_CONTRACT_ERROR)
+    missing = [phrase_id for phrase_id in approved if phrase_id not in injected]
+    if inputs.require_all_phrase_audio and missing:
+        log.error("Required child movie recordings are missing: %s", missing)
+        raise MovieContractError(SAFE_MOVIE_CONTRACT_ERROR)
 
     log.info(
         "MOBILE_MOVIE_RENDER base=%s hero=%s phrases=%s language=%s output=%s",

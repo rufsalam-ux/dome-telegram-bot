@@ -17,7 +17,9 @@
       "description_ru": "Герой выходит слева, естественно идёт вправо, останавливается возле Лёши, поворачивается к нему и удивлённо разводит руками во время реплики.",
       "reuse": true,
       "speaking": true,
-      "view": "front",
+      "view": "side_right",
+      "movement_direction": "left_to_right",
+      "turn_to": "front_at_talk",
       "placement_ru": "Справа от Лёши после подхода; ноги героя на уровне земли; не перекрывать лицо Лёши.",
       "position_hint": {
         "x": 0.3,
@@ -96,7 +98,8 @@
       "description_ru": "Герой идёт справа налево уверенным шагом и говорит, слегка поворачивая голову к камере.",
       "reuse": true,
       "speaking": true,
-      "view": "front"
+      "view": "side_left",
+      "movement_direction": "right_to_left"
     }
   },
   {
@@ -187,7 +190,9 @@
       "description_ru": "Герой идёт справа налево, затем поворачивается к камере, машет рукой и приглашает друзей в гости.",
       "reuse": true,
       "speaking": true,
-      "view": "front"
+      "view": "side_left",
+      "movement_direction": "right_to_left",
+      "turn_to": "front_at_talk"
     }
   }
 ]

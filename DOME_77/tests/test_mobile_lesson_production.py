@@ -36,6 +36,7 @@ from app.services.cartoon_builder import _probe_video, _render_windows, _resolve
 from app.services.mobile_lesson_movie import (
     MovieRenderInputs,
     build_mobile_lesson_movie,
+    load_movie_contract,
     required_movie_phrase_ids,
     select_movie_voice_takes,
 )
@@ -65,10 +66,14 @@ def sha256_file(path: Path) -> str:
 def test_m1_is_the_verified_production_base_and_timeline_is_normalized():
     lesson = load_lesson()
     base = LESSON_PATH.parent / lesson["cartoon_base"]
-    assert lesson["cartoon_base"] == "M-1.mp4"
-    assert base.stat().st_size == 86_876_453
+    assert lesson["cartoon_base"] == "M1-canonical-20260810.mov"
+    assert base.stat().st_size == 90_830_739
     assert sha256_file(base) == lesson["video_reference"]["base"]["sha256"]
-    assert {key:lesson["video_reference"]["base"][key] for key in ("width","height","duration")} == {"width": 1920, "height": 1080, "duration": 99.73}
+    assert {key:lesson["video_reference"]["base"][key] for key in ("width","height","duration")} == {"width": 1920, "height": 1080, "duration": 99.71}
+    contract = load_movie_contract("demo_001", lesson)
+    assert contract.base_video == base.resolve()
+    assert contract.expected_base_sha256 == "6659ae0f495b658cab4ef3048b0f58095c0252f786f4c0b8c25ecfafc88b7210"
+    assert contract.audio_policy == lesson["movie_audio_policy"]
 
     expected = [
         ("lesha_clothes", 21, 24, 31), ("mila_gift", 39, 39, 44),
@@ -295,7 +300,9 @@ async def test_scripted_mobile_demo_traverses_real_endpoints_and_reaches_ready_m
         while cursor and cursor in by_id and cursor not in seen:seen.add(cursor);runtime.append(cursor);cursor=by_id[cursor].get("next_slide")
         for index,_slide_id in enumerate(runtime):
             progress=await client.post(f"/api/mobile/session/{session_id}/progress",headers=headers,json={"current_step":index});assert progress.status==200
-        completed=await client.post(f"/api/mobile/session/{session_id}/complete",headers=headers,json={});assert completed.status==200;completion=await completed.json();assert completion["missing_voice_phrases"]==[] and "invite" in completion["missing_exact_voice_phrases"] and completion["movie_status"] in {"PROCESSING","READY"}
+        blocked=await client.post(f"/api/mobile/session/{session_id}/complete",headers=headers,json={});assert blocked.status==409;blocked_payload=await blocked.json();assert blocked_payload["code"]=="REQUIRED_MOVIE_RECORDINGS_MISSING" and blocked_payload["missing_phrase_ids"]==["invite"]
+        await post_voice(session_id,"slide_16","invite","Come and visit me!")
+        completed=await client.post(f"/api/mobile/session/{session_id}/complete",headers=headers,json={});assert completed.status==200;completion=await completed.json();assert completion["missing_voice_phrases"]==[] and completion["missing_exact_voice_phrases"]==[] and completion["movie_status"] in {"PROCESSING","READY"}
         pending=[task for task in mobile_api._movie_tasks if not task.done()]
         if pending:await asyncio.wait_for(asyncio.gather(*pending),timeout=10)
         status=await client.get(f"/api/mobile/session/{session_id}/movie",headers=headers);movie=await status.json();assert movie["status"]=="READY" and movie["url"]
@@ -303,8 +310,8 @@ async def test_scripted_mobile_demo_traverses_real_endpoints_and_reaches_ready_m
     async with sessions() as db:
         assert await db.scalar(select(func.count(InteractiveResult.id)))>=10
         accepted=(await db.scalars(select(VoiceAttempt).where(VoiceAttempt.lesson_session_id==session_id,VoiceAttempt.status=="ACCEPTED_CORRECT"))).all()
-        assert set(required_movie_phrase_ids(lesson))-{'invite'}<=({attempt.phrase_id for attempt in accepted})
-        invite_slot=await db.scalar(select(MovieVoiceSlot).where(MovieVoiceSlot.lesson_session_id==session_id,MovieVoiceSlot.required_voice_id=='invite'));assert invite_slot.status=='FALLBACK_SILENCE'
+        assert set(required_movie_phrase_ids(lesson))<=({attempt.phrase_id for attempt in accepted})
+        invite_slot=await db.scalar(select(MovieVoiceSlot).where(MovieVoiceSlot.lesson_session_id==session_id,MovieVoiceSlot.required_voice_id=='invite'));assert invite_slot.status=='RECORDED'
         assert (await db.get(LessonSession,session_id)).status=="COMPLETED"
     await engine.dispose()
 
@@ -347,23 +354,21 @@ async def test_interrupted_movie_job_becomes_idempotently_retryable(monkeypatch,
 
 
 @pytest.mark.skipif(os.getenv("DOME_RUN_MOVIE_E2E") != "1", reason="set DOME_RUN_MOVIE_E2E=1 for the real 100-second FFmpeg render")
-def test_real_missing_voice_path_still_renders_m1_to_mp4(tmp_path, monkeypatch):
+def test_real_all_exact_child_voices_render_canonical_m1_to_mp4(tmp_path, monkeypatch):
     ffmpeg = os.getenv("DOME_FFMPEG_BIN") or shutil.which("ffmpeg")
     if not ffmpeg:
         pytest.fail("DOME_FFMPEG_BIN/ffmpeg is required for the movie E2E test")
     monkeypatch.setattr(settings, "ffmpeg_bin", ffmpeg)
     monkeypatch.setattr(settings, "storage_root", tmp_path / "storage")
     hero = tmp_path / "hero.png";image = Image.new("RGBA", (300, 520), (0, 0, 0, 0));draw = ImageDraw.Draw(image);draw.ellipse((70, 10, 230, 170), fill=(255, 180, 90, 255));draw.rectangle((105, 165, 195, 450), fill=(30, 120, 235, 255));image.save(hero)
-    voices = {}
-    # Only one exact child line is present. The renderer must keep the M-1
-    # timeline and use silence for all unresolved slots instead of blocking.
-    for phrase in required_movie_phrase_ids(load_lesson())[:1]:
+    voices = {};lesson = load_lesson();contract = load_movie_contract("demo_001", lesson)
+    for phrase in required_movie_phrase_ids(lesson):
         path = tmp_path / f"{phrase}.wav"
         with wave.open(str(path), "wb") as stream:
             stream.setnchannels(1);stream.setsampwidth(2);stream.setframerate(16_000);stream.writeframes(b"\x00\x00" * 16_000)
         voices[phrase] = path
-    output = tmp_path / "happy-path.mp4";lesson = load_lesson()
-    result = build_mobile_lesson_movie(MovieRenderInputs(base_video=LESSON_PATH.parent / "M-1.mp4", character=hero, audio_by_phrase=voices, timeline=lesson["timeline"], output=output, lesson_dir=LESSON_PATH.parent, target_language="en"))
+    output = tmp_path / "happy-path.mp4"
+    result = build_mobile_lesson_movie(MovieRenderInputs(base_video=contract.base_video, character=hero, audio_by_phrase=voices, timeline=contract.timeline, output=output, lesson_dir=contract.lesson_dir, target_language="en", approved_phrase_ids=contract.approved_phrase_ids, expected_base_sha256=contract.expected_base_sha256, require_all_phrase_audio=True))
     assert result == output and output.stat().st_size > 100_000
     width,height,duration=_probe_video(output)
     assert (width,height)==(1920,1080) and duration>=99.9

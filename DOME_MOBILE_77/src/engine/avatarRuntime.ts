@@ -28,8 +28,8 @@ const DEMO_001_LAYOUT:{lesson:any;slides:Record<string,AvatarSlideLayout>}={
   },
   slides:{
     slide_01:{hero_anchor:'bottom_right',hero_box:[0.70,0.44,0.28,0.54],hero_fallback_anchors:['bottom_left'],hero_facing:'left',hero_target_visual_height_ratio:.54,hero_min_visual_height_ratio:.5},
-    slide_19:{hero_anchor:'right',hero_box:[0.43,0.25,0.25,0.66],hero_fallback_anchors:['right'],hero_facing:'left',hero_target_visual_height_ratio:.66,hero_min_visual_height_ratio:.62},
-    slide_20:{hero_anchor:'left_of_mila',hero_box:[0.30,0.34,0.23,0.61],hero_fallback_anchors:['left'],hero_facing:'right',hero_target_visual_height_ratio:.61,hero_min_visual_height_ratio:.58},
+    slide_19:{hero_anchor:'right',hero_box:[0.42,0.25,0.28,0.68],hero_fallback_anchors:['right'],hero_facing:'left',hero_target_visual_height_ratio:.68,hero_min_visual_height_ratio:.64},
+    slide_20:{hero_anchor:'left_of_mila',hero_box:[0.25,0.25,0.29,0.70],hero_fallback_anchors:['left'],hero_facing:'right',hero_target_visual_height_ratio:.70,hero_min_visual_height_ratio:.66},
   },
 };
 

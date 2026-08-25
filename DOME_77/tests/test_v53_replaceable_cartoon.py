@@ -10,8 +10,9 @@ def test_cartoon_base_is_content_configured_and_exists():
     assert lesson.get("cartoon_base_replaceable") is True
     base = LESSON.parent / lesson["cartoon_base"]
     assert base.exists()
-    assert base.suffix.lower() == ".mp4"
+    assert base.suffix.lower() in {".mov", ".mp4"}
     assert base.stat().st_size > 1_000_000
+    assert lesson["cartoon_base_manifest"] == "movie_manifest.json"
 
 
 def test_timeline_is_separate_editable_file():

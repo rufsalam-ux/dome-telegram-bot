@@ -16,7 +16,15 @@
     "target_visual_height_ratio": 0.72,
     "min_visual_height_ratio": 0.56
   },
-  "cartoon_base": "M-1.mp4",
+  "cartoon_base": "M1-canonical-20260810.mov",
+  "cartoon_base_manifest": "movie_manifest.json",
+  "movie_audio_policy": {
+    "allowed_track_roles": ["canonical_base_audio", "child_recording"],
+    "require_exact_child_recording": true,
+    "allow_compatible_recording": false,
+    "allow_tutor_tts": false,
+    "allow_silence_fallback": false
+  },
   "required_phrases": [
     {
       "phrase_id": "lesha_clothes",
@@ -139,7 +147,9 @@
         "description_ru": "Герой выходит слева, естественно идёт вправо, останавливается возле Лёши, поворачивается к нему и удивлённо разводит руками во время реплики.",
         "reuse": true,
         "speaking": true,
-        "view": "front",
+        "view": "side_right",
+        "movement_direction": "left_to_right",
+        "turn_to": "front_at_talk",
         "placement_ru": "Справа от Лёши после подхода; ноги героя на уровне земли; не перекрывать лицо Лёши.",
         "position_hint": {
           "x": 0.3,
@@ -218,7 +228,8 @@
         "description_ru": "Герой идёт справа налево уверенным шагом и говорит, слегка поворачивая голову к камере.",
         "reuse": true,
         "speaking": true,
-        "view": "front"
+        "view": "side_left",
+        "movement_direction": "right_to_left"
       }
     },
     {
@@ -309,17 +320,26 @@
         "description_ru": "Герой идёт справа налево, затем поворачивается к камере, машет рукой и приглашает друзей в гости.",
         "reuse": true,
         "speaking": true,
-        "view": "front"
+        "view": "side_left",
+        "movement_direction": "right_to_left",
+        "turn_to": "front_at_talk"
       }
     }
   ],
   "video_reference": {
     "base": {
-      "file": "M-1.mp4",
+      "file": "M1-canonical-20260810.mov",
       "width": 1920,
       "height": 1080,
-      "duration": 99.73,
-      "sha256": "87a391f48186eef25732d80e9ae895e178118428431659ba2a8abdf0d68be20d"
+      "duration": 99.71,
+      "fps": 30.0,
+      "container": "mov",
+      "video_codec": "hevc",
+      "audio_codec": "aac",
+      "audio_sample_rate": 44100,
+      "audio_channels": 2,
+      "bytes": 90830739,
+      "sha256": "6659ae0f495b658cab4ef3048b0f58095c0252f786f4c0b8c25ecfafc88b7210"
     },
     "coordinate_reference": {
       "file": "-7253733521940144668(1).mp4",

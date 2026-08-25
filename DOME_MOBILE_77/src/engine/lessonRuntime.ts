@@ -54,12 +54,22 @@ export function tutorAudioWatchdogStage(stage:RuntimeStage,status:TutorAudioStat
   return stage==='AI_SPEAKING'&&(hardDeadline||(!status.playing&&!status.isBuffering))?after:stage;
 }
 
-export function isRequiredForMovie(slide:any):boolean{return slide?.requiredForMovie===true||slide?.required_for_movie===true}
+export function isRequiredForMovie(slide:any):boolean{return slide?.requiredForMovie===true||slide?.required_for_movie===true||Boolean(slide?.required_phrase_id&&slide?.allow_skip===false)}
 
 export function nextEnabled(stage:RuntimeStage,visualReady=true,policy:NextPolicy={requiredForMovie:true}):boolean{
   if(!visualReady)return false;
   if(policy.requiredForMovie!==true)return true;
-  return stage==='COMPLETE'||policy.recoveryAvailable===true;
+  return stage==='COMPLETE';
+}
+
+export type ChildSafeOperation='lesson'|'recording'|'answer'|'interaction'|'progress'|'completion';
+export function childSafeRuntimeMessage(operation:ChildSafeOperation):string{
+  if(operation==='recording')return 'Не получилось сохранить запись. Нажми на микрофон и попробуй ещё раз.';
+  if(operation==='answer')return 'Ответ пока не обработался. Попробуй ещё раз — твой прогресс сохранён.';
+  if(operation==='interaction')return 'Не получилось сохранить выбор. Попробуй ещё раз.';
+  if(operation==='progress')return 'Прогресс сохранится при следующем действии. Можно продолжать.';
+  if(operation==='completion')return 'Не получилось завершить урок. Проверь интернет и попробуй ещё раз.';
+  return 'Урок пока не открылся. Проверь интернет и попробуй ещё раз.';
 }
 
 export function recoveryStageAfterFailure(slide:any,hasSelection=false):RuntimeStage{

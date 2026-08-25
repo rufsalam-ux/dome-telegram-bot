@@ -8,6 +8,7 @@ import {
   cardQuestions,
   cardSelectionAllowed,
   cardVoiceKey,
+  childSafeRuntimeMessage,
   computeHeroScale,
   droppedObjectTutorPrompt,
   dropInsideTarget,
@@ -210,7 +211,7 @@ test('DOME cat is an independent companion and reward star stays in its own laye
   assert.equal(catStateForStage('AI_SPEAKING'),'listening');assert.equal(catStateForStage('WAITING_VOICE'),'waiting');
   assert.equal(catProcessingState(1499),'thinking');assert.equal(catProcessingState(1500),'idle');assert.equal(catProcessingState(4000),'waiting');
   const cat=readFileSync(new URL('../src/components/CatActivityLayer.tsx',import.meta.url),'utf8');const reward=readFileSync(new URL('../src/components/RewardEffectLayer.tsx',import.meta.url),'utf8');const player=readFileSync(new URL('../src/screens/LessonPlayer.tsx',import.meta.url),'utf8');
-  assert.doesNotMatch(cat,/star\.png|gameActive|cat-mini-game-star/);assert.match(cat,/stage==='AI_SPEAKING'/);assert.match(reward,/star\.png/);assert.match(player,/<CatActivityLayer/);
+  assert.doesNotMatch(cat,/star\.png|gameActive|cat-mini-game-star|assets\/heroes\/cat\.png/);assert.match(cat,/dome-splash-v2\.png/);assert.match(cat,/stage!=='AI_SPEAKING'&&stage!=='PROCESSING'/);assert.match(reward,/star\.png/);assert.match(player,/<CatActivityLayer/);
   assert.match(player,/droppedObjectTutorPrompt\(labelTarget,targetText\)/);
 });
 
@@ -259,18 +260,21 @@ test('regression: optional tasks expose Next during speech, processing, and voic
   for(const stage of ['AI_SPEAKING','PROCESSING','WAITING_VOICE'] as const)assert.equal(nextEnabled(stage,true,{requiredForMovie:isRequiredForMovie(optional)}),true);
 });
 
-test('regression: requiredForMovie is strict and recoverable without weakening required behavior',()=>{
+test('regression: requiredForMovie cannot be skipped by exhausting retries',()=>{
   const required={answer_mode:'required_voice',requiredForMovie:true};assert.equal(isRequiredForMovie(required),true);
   assert.equal(nextEnabled('WAITING_VOICE',true,{requiredForMovie:true}),false);
   assert.equal(nextEnabled('COMPLETE',true,{requiredForMovie:true}),true);
-  assert.equal(nextEnabled('RETRY',true,{requiredForMovie:true,recoveryAvailable:true}),true);
+  assert.equal(nextEnabled('RETRY',true,{requiredForMovie:true,recoveryAvailable:true}),false);
   assert.equal(isRequiredForMovie({requiredForMovie:'true'}),false);
+  const player=readFileSync(new URL('../src/screens/LessonPlayer.tsx',import.meta.url),'utf8');
+  assert.doesNotMatch(player,/Продолжить с примером|required_recovery/);
 });
 
 test('regression: failed AI/backend work has a bounded timeout and a deterministic recovery stage',async()=>{
   await assert.rejects(withLessonTimeout(new Promise(()=>{}),'voice assessment',5),error=>error instanceof LessonRuntimeTimeoutError&&error.operation==='voice assessment');
   assert.equal(recoveryStageAfterFailure(greeting,true),'WAITING_VOICE');
   assert.equal(tutorAudioWatchdogStage('AI_SPEAKING',{playing:true,isBuffering:true},'WAITING_VOICE',true),'WAITING_VOICE');
+  for(const operation of ['recording','answer','completion'] as const){const message=childSafeRuntimeMessage(operation);assert.doesNotMatch(message,/timeout|HTTP|FFmpeg|Railway|exit code/i)}
 });
 
 test('regression: Mila selection, voice, feedback, and Next all have an exit',()=>{
@@ -284,8 +288,8 @@ test('regression: Mila selection, voice, feedback, and Next all have an exit',()
 test('regression: avatar sizing and orientation are scene-relative for Lyosha and Mila',()=>{
   const lesson=lessonAvatarConfig(bundledLesson);const lyosha=slideAvatarConfig((bundledLesson.slides as any[]).find(slide=>slide.slide_id==='slide_19'),bundledLesson.lesson_id);const milaSlide=slideAvatarConfig((bundledLesson.slides as any[]).find(slide=>slide.slide_id==='slide_20'),bundledLesson.lesson_id);
   const lyoshaBox=heroBox(lyosha,lesson) as number[];const milaBox=heroBox(milaSlide,lesson) as number[];
-  assert.ok(lyoshaBox[3]>=.62);assert.ok(Math.abs((lyoshaBox[1]+lyoshaBox[3])-(lyosha.character_box[1]+lyosha.character_box[3]))<.03);assert.equal(avatarFacing(lyosha,lesson),'left');assert.equal(avatarScaleX(avatarFacing(lyosha,lesson)),-1);
-  assert.ok(milaBox[3]>=.58);assert.equal(avatarFacing(milaSlide,lesson),'right');assert.equal(avatarScaleX(avatarFacing(milaSlide,lesson)),1);
+  assert.ok(lyoshaBox[3]>=.64);assert.ok(Math.abs((lyoshaBox[1]+lyoshaBox[3])-(lyosha.character_box[1]+lyosha.character_box[3]))<.03);assert.equal(avatarFacing(lyosha,lesson),'left');assert.equal(avatarScaleX(avatarFacing(lyosha,lesson)),-1);
+  assert.ok(milaBox[3]>=.66);assert.equal(avatarFacing(milaSlide,lesson),'right');assert.equal(avatarScaleX(avatarFacing(milaSlide,lesson)),1);
 });
 
 test('regression: cat state remains independent from child avatar identity',()=>{

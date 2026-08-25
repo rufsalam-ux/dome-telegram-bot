@@ -11,10 +11,11 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from PIL import Image
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.config import settings
-from app.db.models import Base, Child, InteractiveResult, LessonSession, Parent, VoiceAttempt
+from app.db.models import Base, Child, InteractiveResult, LessonSession, MovieVoiceSlot, Parent, VoiceAttempt
 from app.services.audio_processing import VoiceActivity, analyze_voice_activity
 from app.services.conversational_tutor import build_assessed_turn, no_speech_turn
 from app.services.lesson_loader import load_lesson
@@ -251,10 +252,23 @@ async def test_mobile_silence_gate_three_attempts_and_resume_selection(monkeypat
         assert responses[0]["tutor_turn"]["native_hint"] == "ru:How do you feel?"
         assert ("How do you feel?","en","ru") in translations
         assert "засчитана" in responses[2]["feedback"] and "отлич" not in responses[2]["feedback"].lower()
+        required_payload={"audio_base64":base64.b64encode(b"0"*1200).decode(),"slide_id":"slide_19","phrase_id":"lesha_clothes","prompt":"Why are you dressed so warmly?"}
+        required_responses=[]
+        for _ in range(3):
+            response=await client.post(f"/api/mobile/session/{session_id}/voice",headers=headers,json=required_payload)
+            assert response.status==200;required_responses.append(await response.json())
+        assert all(item["status"]=="NO_SPEECH" and item["advance_allowed"] is False and item["movie_take_accepted"] is False for item in required_responses)
+
+        def speech_activity(_wav):return VoiceActivity(2.0,1.3,.65,-24.0,-8.0,True,"SPEECH_DETECTED")
+        async def rejected_assessment(*_args,**_kwargs):return SpeechAssessment(transcript="real child words",detected_language="en",confidence=.9,semantic_match=.1,status="REJECTED_MEANING")
+        monkeypatch.setattr(mobile_api,"analyze_voice_activity",speech_activity);monkeypatch.setattr(mobile_api,"assess_speech",rejected_assessment)
+        supported=await client.post(f"/api/mobile/session/{session_id}/voice",headers=headers,json=required_payload);assert supported.status==200;supported_payload=await supported.json()
+        assert supported_payload["status"]=="MOVIE_USABLE_WITH_SUPPORT" and supported_payload["advance_allowed"] is True and supported_payload["accepted"] is False and supported_payload["movie_take_accepted"] is True
         async with sessions() as db:
             state,phrases=await mobile_api._mobile_resume_state(db,session_id)
             assert state["slide_09"]["selected_card_id"]=="A" and state["slide_09"]["card_question_index"]==1
-            assert phrases==[]
+            assert phrases==["lesha_clothes"]
+            slot=await db.scalar(select(MovieVoiceSlot).where(MovieVoiceSlot.lesson_session_id==session_id,MovieVoiceSlot.required_voice_id=="lesha_clothes"));assert slot.status=="RECORDED"
     finally:
         await client.close();await engine.dispose()
 

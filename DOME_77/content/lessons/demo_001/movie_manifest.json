@@ -1,0 +1,41 @@
+{
+  "schema_version": "1.0",
+  "lesson_id": "demo_001",
+  "canonical_source": "M1-canonical-20260810.mov",
+  "canonical_source_sha256": "6659ae0f495b658cab4ef3048b0f58095c0252f786f4c0b8c25ecfafc88b7210",
+  "canonical_source_bytes": 90830739,
+  "timeline_file": "timeline.json",
+  "duration_seconds": 99.71,
+  "video": {
+    "width": 1920,
+    "height": 1080,
+    "fps": 30.0,
+    "codec": "hevc",
+    "pixel_format": "yuv420p",
+    "display_aspect_ratio": "16:9"
+  },
+  "audio": {
+    "codec": "aac",
+    "sample_rate": 44100,
+    "channels": 2
+  },
+  "audio_policy": {
+    "allowed_track_roles": ["canonical_base_audio", "child_recording"],
+    "require_exact_child_recording": true,
+    "allow_compatible_recording": false,
+    "allow_tutor_tts": false,
+    "allow_silence_fallback": false
+  },
+  "semantic_scene_anchors": [
+    {"scene": "lyosha", "start": 21.0, "talk_start": 24.0, "end": 31.0, "phrase_id": "lesha_clothes"},
+    {"scene": "mila_gift", "start": 39.0, "talk_start": 39.0, "end": 44.0, "phrase_id": "mila_gift"},
+    {"scene": "suitcase", "start": 54.0, "talk_start": 54.0, "end": 59.0, "phrase_id": "take_trip"},
+    {"scene": "polar_bear", "start": 64.0, "talk_start": 64.0, "end": 69.0, "phrase_id": "polar_bear"},
+    {"scene": "lion", "start": 70.0, "talk_start": 70.0, "end": 75.0, "phrase_id": "lion"},
+    {"scene": "parrot", "start": 75.0, "talk_start": 75.0, "end": 80.0, "phrase_id": "parrot"},
+    {"scene": "giraffe", "start": 80.0, "talk_start": 80.0, "end": 85.0, "phrase_id": "giraffe"},
+    {"scene": "penguin", "start": 85.0, "talk_start": 85.0, "end": 90.0, "phrase_id": "penguin"},
+    {"scene": "zebra", "start": 90.0, "talk_start": 90.0, "end": 95.0, "phrase_id": "zebra"},
+    {"scene": "invite", "start": 95.0, "talk_start": 95.0, "end": 99.71, "phrase_id": "invite"}
+  ]
+}

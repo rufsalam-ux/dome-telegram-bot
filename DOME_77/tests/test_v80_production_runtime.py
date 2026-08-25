@@ -52,7 +52,7 @@ def test_adaptive_followups_require_a_strong_independent_answer():
 
 
 @pytest.mark.asyncio
-async def test_movie_voice_slots_persist_exact_compatible_and_silence_fallbacks(monkeypatch,tmp_path):
+async def test_movie_voice_slots_allow_only_exact_whitelisted_child_recordings(monkeypatch,tmp_path):
     monkeypatch.setattr(settings,'openai_api_key','');engine=create_async_engine('sqlite+aiosqlite:///:memory:');sessions=async_sessionmaker(engine,expire_on_commit=False)
     async with engine.begin() as connection:await connection.run_sync(Base.metadata.create_all)
     lesson=load_lesson('demo_001');required=required_movie_phrase_ids(lesson);by_id={row['phrase_id']:row for row in lesson['required_phrases']}
@@ -65,14 +65,15 @@ async def test_movie_voice_slots_persist_exact_compatible_and_silence_fallbacks(
         assert await record_movie_voice_slot(db,session.id,required[0],exact,lesson) is True;await db.commit()
         immediate=await db.scalar(select(MovieVoiceSlot).where(MovieVoiceSlot.lesson_session_id==session.id,MovieVoiceSlot.required_voice_id==required[0]));assert immediate.status=='RECORDED' and immediate.source_attempt_id==exact.id
         resolved,diagnostics=await resolve_movie_voice_slots(db,session.id,[exact,compatible],lesson,'ru',tmp_path/'cache');await db.commit()
-        assert resolved[required[0]]==exact_audio and resolved[required[1]]==compatible_audio
-        assert diagnostics[0]['strategy']=='exact_child_recording' and diagnostics[1]['strategy']=='compatible_child_recording'
-        assert all(item['strategy']=='silence' for item in diagnostics[2:])
+        assert resolved=={required[0]:exact_audio}
+        assert diagnostics[0]['strategy']=='exact_child_recording'
+        assert all(item['strategy']=='missing_required_child_recording' for item in diagnostics[1:])
+        assert all(item['required_voice_id']!=required[1] or item['status']=='MISSING_REQUIRED' for item in diagnostics)
     await engine.dispose()
 
 
-def test_mobile_completion_has_no_missing_voice_blocker():
+def test_mobile_completion_blocks_only_until_required_child_movie_takes_exist():
     source=(ROOT/'app/webapp/mobile_api.py').read_text('utf-8');player=(ROOT.parent/'DOME_MOBILE_77/src/screens/LessonPlayer.tsx').read_text('utf-8')
-    assert "if char and not missing_voice" not in source
-    assert "'missing_voice_phrases':[]" in source
-    assert 'Для мультфильма не хватает обязательных голосовых реплик' not in player
+    assert 'REQUIRED_MOVIE_RECORDINGS_MISSING' in source
+    assert 'allow_tutor_tts' in (ROOT/'content/lessons/demo_001/movie_manifest.json').read_text('utf-8')
+    assert 'Продолжить с примером' not in player
