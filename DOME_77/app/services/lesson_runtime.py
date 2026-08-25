@@ -81,3 +81,12 @@ def complexity_support(difficulty: float) -> str:
     if value < 0.72:
         return "Ответь предложением и добавь одну деталь."
     return "Расскажи подробнее и добавь пример или объяснение."
+
+
+def correction_for_assessment(*, accepted: bool, semantic_match: float, attempt_number: int, ai_correction: str, authored_example: str, goal: str) -> str:
+    """Prefer the short authored model when an answer is weak or repeated."""
+
+    weak = not accepted and (float(semantic_match or 0.0) < 0.65 or int(attempt_number) > 1)
+    if weak and str(authored_example or "").strip():
+        return str(authored_example).strip()
+    return str(ai_correction or authored_example or goal or "").strip()

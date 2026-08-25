@@ -1,6 +1,14 @@
 import json
 from copy import deepcopy
+from pathlib import Path
 from app.core.config import settings
+from app.services.authored_content import (
+    bundled_lessons_root,
+    normalized_media_sequence,
+    persistent_lessons_root,
+    publication_status,
+    validate_content_lesson,
+)
 
 REMOVED_SLIDE_IDS = {"slide_02", *{f"slide_{n:02d}" for n in range(25, 40)}}
 REMOVED_ORDERS = {2, *range(25, 40)}
@@ -37,13 +45,65 @@ def _enrich_runtime_layout(slide: dict) -> dict:
         "ENTER", "AI_SPEAKING", "WAITING_ACTION", "WAITING_VOICE",
         "PROCESSING", "FEEDBACK", "FOLLOW_UP", "RETRY", "COMPLETE",
     ]
+    slide["media_sequence"] = normalized_media_sequence(slide)
     return slide
 
 
-def load_lesson(lesson_id: str) -> dict:
-    path = settings.content_root / "lessons" / lesson_id / "lesson.json"
-    with path.open("r", encoding="utf-8") as f:
-        lesson = json.load(f)
+class LessonConfigurationError(RuntimeError):
+    pass
+
+
+def _candidate_paths(lesson_id: str, preview: bool) -> list[Path]:
+    candidates = [persistent_lessons_root() / lesson_id / "lesson.json"]
+    bundled = bundled_lessons_root() / lesson_id / "lesson.json"
+    if bundled not in candidates:
+        candidates.append(bundled)
+    return candidates if not preview else candidates[:1] + [p for p in candidates[1:] if p.exists()]
+
+
+def _read_valid_candidate(path: Path, lesson_id: str, preview: bool) -> tuple[dict, list[str]] | None:
+    if not path.exists():
+        return None
+    try:
+        lesson = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return ({}, [f"invalid JSON: {exc}"])
+    if str(lesson.get("engine") or "").lower() == "content_v1":
+        errors = validate_content_lesson(lesson)
+        if not preview and publication_status(lesson) != "PUBLISHED":
+            errors.append("lesson is not published")
+        if errors:
+            return lesson, errors
+    lesson.setdefault("lesson_id", lesson_id)
+    lesson.setdefault("status", publication_status(lesson).lower())
+    return lesson, []
+
+
+def load_lesson(lesson_id: str, *, preview: bool = False) -> dict:
+    """Load a valid published lesson, falling back from a broken live draft.
+
+    A malformed persistent edit must never take down the production runtime.
+    Admin preview may inspect a valid draft, while normal clients only receive
+    published content. Bundled DOME 77 remains the last-known-good fallback.
+    """
+
+    diagnostics: list[str] = []
+    selected: tuple[dict, Path] | None = None
+    for path in _candidate_paths(lesson_id, preview):
+        result = _read_valid_candidate(path, lesson_id, preview)
+        if result is None:
+            continue
+        lesson, errors = result
+        if not errors:
+            selected = lesson, path
+            break
+        diagnostics.extend(f"{path}: {error}" for error in errors)
+        if preview and path.parent.parent == persistent_lessons_root():
+            break
+    if selected is None:
+        detail = "; ".join(diagnostics[:8]) or "lesson.json not found"
+        raise LessonConfigurationError(f"Lesson {lesson_id} is unavailable: {detail}")
+    lesson, path = selected
     lesson = deepcopy(lesson)
     # v51: timeline.json is the human-editable animation script for the lesson.
     # If present, it overrides the embedded legacy timeline in lesson.json.
@@ -60,6 +120,8 @@ def load_lesson(lesson_id: str) -> dict:
     if bad:
         raise RuntimeError(f"Removed slides leaked into runtime: {[s.get('slide_id') for s in bad]}")
     lesson["runtime_revision"] = 79
+    lesson["content_source"] = "persistent" if persistent_lessons_root() in path.parents else "bundled"
+    lesson["publication_status"] = publication_status(lesson)
     return lesson
 
 

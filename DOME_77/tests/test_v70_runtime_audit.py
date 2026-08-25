@@ -7,7 +7,7 @@ from app.services.lesson_importer import _slide_number_for_extra, infer_type
 
 def base(slide):
     return {
-        'engine':'content_v1','lesson_id':'x','course_id':'reading','title':'X','order':1,
+        'engine':'content_v1','schema_version':'1.4','lesson_id':'x','course_id':'reading','title':'X','order':1,
         'max_completed_runs':2,'expires_after_months':10,'slides':[{'slide_id':'s1','order':1,**slide}],
     }
 

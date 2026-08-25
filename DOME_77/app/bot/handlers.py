@@ -559,7 +559,7 @@ async def admin_publish_lesson(message:Message):
         text='❌ Публикация заблокирована. Исправь ошибки:\n'+'\n'.join('• '+x for x in errors[:40])
         await message.answer(text[:3900]); return
     backup_lesson_version(parts[1],'before_publish')
-    d['active']=True; d['import_status']='PUBLISHED'; path.write_text(json.dumps(d,ensure_ascii=False,indent=2),'utf-8'); await message.answer('✅ Урок опубликован. Новый ZIP и redeploy не нужны.')
+    d['active']=True; d['status']='published'; d['import_status']='PUBLISHED'; path.write_text(json.dumps(d,ensure_ascii=False,indent=2),'utf-8'); await message.answer('✅ Урок опубликован. Новый ZIP и redeploy не нужны.')
 
 
 @router.message(Command('unpublishlesson'))
@@ -568,7 +568,7 @@ async def admin_unpublish_lesson(message:Message):
     parts=(message.text or '').split(); lid=parts[1] if len(parts)==2 else ''
     path=ensure_persistent_lesson(lid)/'lesson.json' if lid else None
     if not path or not path.exists(): await message.answer('Формат: /unpublishlesson lesson_id'); return
-    backup_lesson_version(lid,'before_unpublish'); d=json.loads(path.read_text('utf-8')); d['active']=False; d['import_status']='DRAFT'; path.write_text(json.dumps(d,ensure_ascii=False,indent=2),'utf-8')
+    backup_lesson_version(lid,'before_unpublish'); d=json.loads(path.read_text('utf-8')); d['active']=False; d['status']='draft'; d['import_status']='DRAFT'; path.write_text(json.dumps(d,ensure_ascii=False,indent=2),'utf-8')
     await message.answer('✅ Урок скрыт. Уже существующие данные прогресса не удалены.')
 
 

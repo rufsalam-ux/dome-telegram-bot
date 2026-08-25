@@ -139,6 +139,17 @@ export async function lessonVisualSource(lessonId:string,imagePath:string,childI
   };
 }
 
+export async function lessonMediaSource(lessonId:string,mediaPath:string){
+  const value=String(mediaPath||'').trim();
+  if(/^https?:\/\//i.test(value))return {uri:value};
+  const filename=value.split('/').pop()||'';
+  return {
+    uri:`${API_BASE}/api/mobile/lesson/${encodeURIComponent(lessonId)}/media/${encodeURIComponent(filename)}`,
+    headers:{Authorization:`Bearer ${await requiredToken()}`},
+    useCaching:true,
+  };
+}
+
 export function startSession(childId:string|number,lessonId='demo_001'){
   return request('/api/mobile/session/start',jsonInit('POST',{child_id:Number(childId),lesson_id:lessonId}));
 }

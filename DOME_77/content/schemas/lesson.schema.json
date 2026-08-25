@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dome.school/schemas/lesson.schema.json",
+  "title": "DOME content_v1 lesson",
+  "type": "object",
+  "required": ["engine", "schema_version", "lesson_id", "course_id", "title", "order", "status", "slides"],
+  "properties": {
+    "engine": {"const": "content_v1"},
+    "schema_version": {"type": "string", "minLength": 1},
+    "lesson_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]+$"},
+    "course_id": {"type": "string", "minLength": 1},
+    "title": {"type": "string", "minLength": 1},
+    "order": {"type": "integer", "minimum": 1},
+    "status": {"enum": ["draft", "published"]},
+    "active": {"type": "boolean"},
+    "max_completed_runs": {"const": 2},
+    "expires_after_months": {"const": 10},
+    "slides": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/slide"}
+    }
+  },
+  "$defs": {
+    "media": {
+      "type": "object",
+      "required": ["id", "type"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "type": {"enum": ["image", "video", "animation", "youtube", "audio"]},
+        "src": {"type": "string"},
+        "url": {"type": "string"},
+        "animation_id": {"type": "string"},
+        "autoplay": {"type": "boolean"},
+        "advance_on_end": {"type": "boolean"},
+        "poster": {"type": "string"}
+      },
+      "additionalProperties": true
+    },
+    "slide": {
+      "type": "object",
+      "required": ["slide_id", "order", "type"],
+      "properties": {
+        "slide_id": {"type": "string", "minLength": 1},
+        "order": {"type": "integer", "minimum": 1},
+        "type": {"type": "string", "minLength": 1},
+        "media_sequence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/media"}
+        },
+        "protected_zones": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "prefixItems": [
+              {"type": "number", "minimum": 0, "maximum": 1},
+              {"type": "number", "minimum": 0, "maximum": 1},
+              {"type": "number", "minimum": 0, "maximum": 1},
+              {"type": "number", "minimum": 0, "maximum": 1}
+            ],
+            "minItems": 4,
+            "maxItems": 4
+          }
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

@@ -33,10 +33,86 @@ SUPPORTED_CONTENT_TYPES = {
     "video_pause_question", "interactive_scene", "real_world_find", "photo_task", "physical_action", "mood_choice",
 } | set(CONTENT_TYPE_ALIASES)
 
+SUPPORTED_MEDIA_TYPES = {"image", "video", "animation", "youtube", "audio"}
+PUBLICATION_STATUSES = {"DRAFT", "PUBLISHED"}
+
 
 def canonical_content_type(kind: str | None) -> str:
     raw=str(kind or "passive").strip().lower()
     return CONTENT_TYPE_ALIASES.get(raw,raw)
+
+
+def publication_status(data: dict[str, Any]) -> str:
+    """Return one lifecycle value while preserving older authored lessons."""
+
+    explicit = str(data.get("status") or data.get("import_status") or "").strip().upper()
+    if explicit in PUBLICATION_STATUSES:
+        return explicit
+    return "PUBLISHED" if bool(data.get("active", True)) else "DRAFT"
+
+
+def normalized_media_sequence(slide: dict[str, Any]) -> list[dict[str, Any]]:
+    """Normalize legacy single-media fields into the universal media contract.
+
+    Content remains data-only. Mobile, Telegram and future renderers consume the
+    same ordered descriptors instead of teaching each new lesson to the client.
+    """
+
+    configured = slide.get("media_sequence")
+    if isinstance(configured, list) and configured:
+        return [dict(item) for item in configured if isinstance(item, dict)]
+    if slide.get("image") or slide.get("image_file"):
+        return [{
+            "id": "visual",
+            "type": "image",
+            "src": str(slide.get("image") or slide.get("image_file")),
+        }]
+    if slide.get("video_file") or slide.get("video_url"):
+        value = str(slide.get("video_file") or slide.get("video_url"))
+        return [{
+            "id": "video",
+            "type": "youtube" if "youtu" in value.lower() else "video",
+            "src": value,
+        }]
+    if slide.get("audio_file") or slide.get("audio_url"):
+        return [{
+            "id": "audio",
+            "type": "audio",
+            "src": str(slide.get("audio_file") or slide.get("audio_url")),
+        }]
+    return []
+
+
+def _validate_media_sequence(slide: dict[str, Any], label: str) -> list[str]:
+    raw = slide.get("media_sequence")
+    if raw is None:
+        return []
+    if not isinstance(raw, list) or not raw:
+        return [f"{label}: media_sequence must be a non-empty list"]
+    errors: list[str] = []
+    seen: set[str] = set()
+    for index, item in enumerate(raw, 1):
+        media_label = f"{label} media {index}"
+        if not isinstance(item, dict):
+            errors.append(f"{media_label}: descriptor must be an object")
+            continue
+        media_id = str(item.get("id") or "").strip()
+        kind = str(item.get("type") or "").strip().lower()
+        source = str(item.get("src") or item.get("url") or "").strip()
+        if not media_id:
+            errors.append(f"{media_label}: missing id")
+        elif media_id in seen:
+            errors.append(f"{media_label}: duplicate id {media_id}")
+        seen.add(media_id)
+        if kind not in SUPPORTED_MEDIA_TYPES:
+            errors.append(f"{media_label}: unsupported media type {kind or '<empty>'}")
+        if kind in {"image", "video", "youtube", "audio"} and not source:
+            errors.append(f"{media_label}: {kind} needs src/url")
+        if kind == "animation" and not (source or str(item.get("animation_id") or "").strip()):
+            errors.append(f"{media_label}: animation needs src or animation_id")
+        if kind == "youtube" and source and not any(host in source.lower() for host in ("youtube.com", "youtu.be")):
+            errors.append(f"{media_label}: youtube src must be a YouTube URL")
+    return errors
 
 
 def bundled_lessons_root() -> Path:
@@ -74,6 +150,7 @@ def load_authored_lesson(lesson_id: str) -> dict[str, Any] | None:
     data = dict(data)
     data.setdefault("lesson_id", lesson_id)
     data.setdefault("active", True)
+    data.setdefault("status", publication_status(data).lower())
     data.setdefault("order", 9999)
     data.setdefault("slides", [])
     return data
@@ -106,7 +183,7 @@ def discover_course_lessons(course_id: str) -> list[str]:
                 raw = json.loads(path.read_text("utf-8"))
             except Exception:
                 continue
-            if raw.get("course_id") == course_id and raw.get("active", True):
+            if raw.get("course_id") == course_id and raw.get("active", True) and publication_status(raw) == "PUBLISHED":
                 found[str(raw.get("lesson_id") or folder.name)] = (int(raw.get("order", 9999) or 9999), priority)
     return [lid for lid, _ in sorted(found.items(), key=lambda kv: (kv[1][0], kv[1][1], kv[0]))]
 
@@ -159,6 +236,7 @@ def _validate_slide(slide: dict[str, Any], i: int, prefix: str = "slide") -> lis
     label = f"{prefix} {i}"
     if kind not in SUPPORTED_CONTENT_TYPES:
         return [f"{label}: unsupported type {kind}"]
+    errors.extend(_validate_media_sequence(slide, label))
 
     options = list(slide.get("options") or slide.get("items") or [])
     correct = _indices(slide)
@@ -295,6 +373,11 @@ def _validate_slide(slide: dict[str, Any], i: int, prefix: str = "slide") -> lis
 
 def validate_content_lesson(data: dict[str, Any]) -> list[str]:
     errors: list[str] = []
+    explicit_status = str(data.get("status") or "").strip().upper()
+    if explicit_status and explicit_status not in PUBLICATION_STATUSES:
+        errors.append("status must be draft or published")
+    if str(data.get("engine") or "").lower() == "content_v1" and not str(data.get("schema_version") or "").strip():
+        errors.append("missing schema_version")
     for key in ["lesson_id", "course_id", "title", "order"]:
         if data.get(key) in (None, ""):
             errors.append(f"missing {key}")

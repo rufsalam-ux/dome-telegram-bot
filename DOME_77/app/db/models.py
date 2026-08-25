@@ -123,6 +123,22 @@ class LessonMovie(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class MovieVoiceSlot(Base):
+    """Durable provenance for every authored voice line used by a movie."""
+
+    __tablename__ = "movie_voice_slots"
+    __table_args__ = (UniqueConstraint("lesson_session_id", "required_voice_id", name="uq_movie_voice_slot_session_phrase"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    lesson_session_id: Mapped[int] = mapped_column(ForeignKey("lesson_sessions.id"), index=True)
+    required_voice_id: Mapped[str] = mapped_column(String(100), index=True)
+    status: Mapped[str] = mapped_column(String(40), default="EXPECTED", index=True)
+    source_attempt_id: Mapped[int | None] = mapped_column(ForeignKey("voice_attempts.id"), nullable=True)
+    audio_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    diagnostics_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class InteractiveResult(Base):
     __tablename__ = "interactive_results"
     id: Mapped[int] = mapped_column(primary_key=True)

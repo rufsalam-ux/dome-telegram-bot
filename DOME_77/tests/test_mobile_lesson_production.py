@@ -25,6 +25,7 @@ from app.db.models import (
     InteractiveResult,
     LessonMovie,
     LessonSession,
+    MovieVoiceSlot,
     Parent,
     VoiceAttempt,
 )
@@ -245,7 +246,7 @@ async def test_scripted_mobile_demo_traverses_real_endpoints_and_reaches_ready_m
 
     monkeypatch.setattr(mobile_api,"SessionLocal",sessions);monkeypatch.setattr(lesson_access,"SessionLocal",sessions)
     monkeypatch.setattr(mobile_api,"analyze_voice_activity",fake_activity);monkeypatch.setattr(mobile_api,"prepare_child_voice",fake_prepare);monkeypatch.setattr(mobile_api,"assess_speech",fake_assess);monkeypatch.setattr(mobile_api,"build_mobile_lesson_movie",fake_render)
-    monkeypatch.setattr(settings,"storage_root",tmp_path/"storage");monkeypatch.setattr(settings,"mobile_auth_secret","scripted-e2e-secret-that-is-long-enough")
+    monkeypatch.setattr(settings,"storage_root",tmp_path/"storage");monkeypatch.setattr(settings,"mobile_auth_secret","scripted-e2e-secret-that-is-long-enough");monkeypatch.setattr(settings,"openai_api_key","")
     token=issue_session_token(parent_id);headers={"Authorization":f"Bearer {token}"};app=web.Application();mobile_api.register_mobile_routes(app);client=TestClient(TestServer(app));await client.start_server()
     lesson=load_lesson();by_id={slide["slide_id"]:slide for slide in lesson["slides"]};audio=base64.b64encode(b"real-recording"*200).decode()
     async def post_interactive(session_id,slide_id,task,result):
@@ -271,13 +272,13 @@ async def test_scripted_mobile_demo_traverses_real_endpoints_and_reaches_ready_m
         for phrase,prompt in (("lion","What can a lion do?"),("slide_51:turtle","What can a turtle do?")):
             await post_interactive(session_id,"slide_51","animal_compare",{"selected_animal_id":phrase});await post_voice(session_id,"slide_51",phrase,prompt)
         await post_interactive(session_id,"slide_45","animal_riddle",{"selected_animal_id":"giraffe"});await post_voice(session_id,"slide_45","giraffe","Tell me about the giraffe.")
-        await post_voice(session_id,"slide_42","polar_bear","Tell me about the polar bear.");await post_voice(session_id,"slide_44","parrot","Tell me about the red parrot.");await post_voice(session_id,"slide_16","invite","Invite your friends.")
+        await post_voice(session_id,"slide_42","polar_bear","Tell me about the polar bear.");await post_voice(session_id,"slide_44","parrot","Tell me about the red parrot.")
         await post_interactive(session_id,"slide_49","mood_choice",{"selected_mood":"happy","completed":True})
         runtime=[];seen=set();cursor="slide_01"
         while cursor and cursor in by_id and cursor not in seen:seen.add(cursor);runtime.append(cursor);cursor=by_id[cursor].get("next_slide")
         for index,_slide_id in enumerate(runtime):
             progress=await client.post(f"/api/mobile/session/{session_id}/progress",headers=headers,json={"current_step":index});assert progress.status==200
-        completed=await client.post(f"/api/mobile/session/{session_id}/complete",headers=headers,json={});assert completed.status==200;completion=await completed.json();assert completion["missing_voice_phrases"]==[] and completion["movie_status"] in {"PROCESSING","READY"}
+        completed=await client.post(f"/api/mobile/session/{session_id}/complete",headers=headers,json={});assert completed.status==200;completion=await completed.json();assert completion["missing_voice_phrases"]==[] and "invite" in completion["missing_exact_voice_phrases"] and completion["movie_status"] in {"PROCESSING","READY"}
         pending=[task for task in mobile_api._movie_tasks if not task.done()]
         if pending:await asyncio.wait_for(asyncio.gather(*pending),timeout=10)
         status=await client.get(f"/api/mobile/session/{session_id}/movie",headers=headers);movie=await status.json();assert movie["status"]=="READY" and movie["url"]
@@ -285,7 +286,8 @@ async def test_scripted_mobile_demo_traverses_real_endpoints_and_reaches_ready_m
     async with sessions() as db:
         assert await db.scalar(select(func.count(InteractiveResult.id)))>=10
         accepted=(await db.scalars(select(VoiceAttempt).where(VoiceAttempt.lesson_session_id==session_id,VoiceAttempt.status=="ACCEPTED_CORRECT"))).all()
-        assert set(required_movie_phrase_ids(lesson)).issubset({attempt.phrase_id for attempt in accepted})
+        assert set(required_movie_phrase_ids(lesson))-{'invite'}<=({attempt.phrase_id for attempt in accepted})
+        invite_slot=await db.scalar(select(MovieVoiceSlot).where(MovieVoiceSlot.lesson_session_id==session_id,MovieVoiceSlot.required_voice_id=='invite'));assert invite_slot.status=='FALLBACK_SILENCE'
         assert (await db.get(LessonSession,session_id)).status=="COMPLETED"
     await engine.dispose()
 
@@ -314,7 +316,7 @@ async def test_interrupted_movie_job_becomes_idempotently_retryable(monkeypatch,
 
 
 @pytest.mark.skipif(os.getenv("DOME_RUN_MOVIE_E2E") != "1", reason="set DOME_RUN_MOVIE_E2E=1 for the real 100-second FFmpeg render")
-def test_real_happy_path_renders_m1_to_mp4(tmp_path, monkeypatch):
+def test_real_missing_voice_path_still_renders_m1_to_mp4(tmp_path, monkeypatch):
     ffmpeg = os.getenv("DOME_FFMPEG_BIN") or shutil.which("ffmpeg")
     if not ffmpeg:
         pytest.fail("DOME_FFMPEG_BIN/ffmpeg is required for the movie E2E test")
@@ -322,7 +324,9 @@ def test_real_happy_path_renders_m1_to_mp4(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "storage_root", tmp_path / "storage")
     hero = tmp_path / "hero.png";image = Image.new("RGBA", (300, 520), (0, 0, 0, 0));draw = ImageDraw.Draw(image);draw.ellipse((70, 10, 230, 170), fill=(255, 180, 90, 255));draw.rectangle((105, 165, 195, 450), fill=(30, 120, 235, 255));image.save(hero)
     voices = {}
-    for phrase in required_movie_phrase_ids(load_lesson()):
+    # Only one exact child line is present. The renderer must keep the M-1
+    # timeline and use silence for all unresolved slots instead of blocking.
+    for phrase in required_movie_phrase_ids(load_lesson())[:1]:
         path = tmp_path / f"{phrase}.wav"
         with wave.open(str(path), "wb") as stream:
             stream.setnchannels(1);stream.setsampwidth(2);stream.setframerate(16_000);stream.writeframes(b"\x00\x00" * 16_000)

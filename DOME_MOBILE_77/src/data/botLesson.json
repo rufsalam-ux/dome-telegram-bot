@@ -11,7 +11,9 @@
       "left": [0.02, 0.34, 0.22, 0.62],
       "right": [0.76, 0.34, 0.22, 0.62]
     },
-    "fallback_order": ["left", "right"]
+    "fallback_order": ["left", "right"],
+    "target_visual_height_ratio": 0.9,
+    "min_visual_height_ratio": 0.56
   },
   "slides": [
     {
@@ -448,10 +450,10 @@
       "allow_help": true,
       "allow_skip": false,
       "character_box": [
-        0.3,
+        0.56,
         0.34,
-        0.22,
-        0.6
+        0.23,
+        0.61
       ],
       "hero_placement": "left_of_mila",
       "hero_anchor": "left_of_mila",
@@ -557,6 +559,8 @@
       "next_slide": "slide_40",
       "adaptive": true,
       "interactive_task": "suitcase",
+      "voice_after_action_optional": true,
+      "speak_dropped_object": true,
       "allow_help": false,
       "allow_skip": false,
       "unskippable": true,

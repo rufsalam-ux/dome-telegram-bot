@@ -39,7 +39,7 @@ export function tutorAudioWatchdogStage(stage:RuntimeStage,status:TutorAudioStat
   return stage==='AI_SPEAKING'&&!status.playing&&!status.isBuffering?after:stage;
 }
 
-export function nextEnabled(stage:RuntimeStage,visualReady=true):boolean{return stage==='COMPLETE'&&visualReady}
+export function nextEnabled(stage:RuntimeStage,visualReady=true,voiceAfterActionOptional=false):boolean{return visualReady&&(stage==='COMPLETE'||(voiceAfterActionOptional&&stage==='WAITING_VOICE'))}
 
 export function advanceAfterAssessment(response:{accepted?:boolean;advance_allowed?:boolean;needs_retry?:boolean;tutor_turn?:{follow_up_target?:string}}):'FOLLOW_UP'|'COMPLETE'|'RETRY'{
   if(response.accepted&&String(response.tutor_turn?.follow_up_target||'').trim())return 'FOLLOW_UP';
@@ -85,7 +85,7 @@ export type LayoutPolicy={landscape:boolean;compact:boolean;visualFlex:number;co
 
 export function lessonLayoutPolicy(width:number,height:number,bottomInset=0):LayoutPolicy{
   const landscape=width>height;const compact=Math.min(width,height)<390||height<700;
-  const headerReserve=compact?50:66;const controlReserve=compact?198:238;
+  const headerReserve=compact?50:66;const controlReserve=compact?238:288;
   const visualMaxHeight=landscape?Math.max(220,height-headerReserve):Math.max(150,height-headerReserve-controlReserve-bottomInset);
   return {landscape,compact,visualFlex:landscape?1.35:0,controlFlex:landscape?1:0,contentPadding:compact?8:14,bottomPadding:Math.max(bottomInset,8),visualMinHeight:Math.min(visualMaxHeight,compact?188:216),visualMaxHeight,controlsPinned:true};
 }
@@ -101,7 +101,7 @@ export function rectanglesOverlap(a:RectTuple,b:RectTuple,margin=0.012):boolean{
 
 export function slideContentBoxes(slide:any):RectTuple[]{
   const boxes:RectTuple[]=[];
-  for(const value of slide?.content_boxes||[]){const box=tuple(value);if(box)boxes.push(box)}
+  for(const key of ['content_boxes','protected_zones','face_boxes','key_label_boxes','question_card_boxes'])for(const value of slide?.[key]||[]){const box=tuple(value);if(box)boxes.push(box)}
   for(const option of slide?.selection_options||[]){const box=tuple(option?.rect);if(box)boxes.push(box)}
   for(const key of ['character_box','question_card_box','prompt_box']){const box=tuple(slide?.[key]);if(box)boxes.push(box)}
   return boxes;
@@ -113,12 +113,31 @@ function anchorBox(anchor:string,slide:any,lesson:any):RectTuple|null{
   const authored=tuple(slide?.hero_anchor_boxes?.[anchor]||lesson?.hero_layout?.anchors?.[anchor]);return authored||DEFAULT_ANCHORS[anchor]||null;
 }
 
-export function heroBox(slide:any,lesson:any):number[]|null{
+export function computeHeroScale(containerWidth:number,containerHeight:number,authoredBox:number[],targetHeightRatio=.9,maxScale=3):number{
+  const box=tuple(authoredBox);if(!box||containerWidth<=0||containerHeight<=0)return 1;
+  const authoredPixelHeight=Math.max(1,box[3]*containerHeight);const targetPixelHeight=Math.min(containerHeight*.92,Math.max(containerHeight*targetHeightRatio,120));
+  return Math.max(1,Math.min(maxScale,targetPixelHeight/authoredPixelHeight));
+}
+
+function scaledAtAnchor(box:RectTuple,scale:number,placement:string):RectTuple{
+  const width=Math.min(.96,box[2]*scale);const height=Math.min(.92,box[3]*scale);const bottom=Math.min(.98,box[1]+box[3]);
+  const rightAligned=/(right)/.test(placement)||box[0]>.55;const leftEdge=placement==='left_of_mila'?.005:Math.max(.005,box[0]);const x=rightAligned?Math.min(.995-width,box[0]+box[2]-width):leftEdge;
+  return [Math.max(.005,x),Math.max(.005,bottom-height),width,height];
+}
+
+export function heroBox(slide:any,lesson:any,containerWidth=360,containerHeight=203):number[]|null{
   const placement=String(slide?.hero_anchor||slide?.hero_placement||lesson?.default_hero_placement||'hidden');if(placement==='hidden')return null;
   const preferred=tuple(slide?.hero_box)||anchorBox(placement,slide,lesson);
   const fallbacks=Array.from(new Set([...(slide?.hero_fallback_anchors||[]),...(lesson?.hero_layout?.fallback_order||[])]));
-  const candidates=[preferred,...fallbacks.map(value=>anchorBox(String(value),slide,lesson))].filter(Boolean) as RectTuple[];
-  const forbidden=slideContentBoxes(slide);return candidates.find(candidate=>!forbidden.some(box=>rectanglesOverlap(candidate,box)))||null;
+  const anchors=[{box:preferred,placement},...fallbacks.map(value=>({box:anchorBox(String(value),slide,lesson),placement:String(value)}))].filter(value=>value.box) as {box:RectTuple;placement:string}[];
+  const forbidden=slideContentBoxes(slide);const minimumRatio=Math.max(.44,Math.min(.72,Number(slide?.hero_min_visual_height_ratio||lesson?.hero_layout?.min_visual_height_ratio||.56)));
+  for(const anchor of anchors){
+    const preferredScale=computeHeroScale(containerWidth,containerHeight,anchor.box,Number(slide?.hero_target_visual_height_ratio||lesson?.hero_layout?.target_visual_height_ratio||.9));
+    const minimumScale=Math.min(preferredScale,Math.max(1,minimumRatio/anchor.box[3]));
+    for(let scale=preferredScale;scale>=1-.001;scale-=.04){const candidate=scaledAtAnchor(anchor.box,scale,anchor.placement);if(!forbidden.some(box=>rectanglesOverlap(candidate,box)))return candidate}
+    const original=scaledAtAnchor(anchor.box,1,anchor.placement);if(!forbidden.some(box=>rectanglesOverlap(original,box)))return original;
+  }
+  return null;
 }
 
 export type PixelRect={x:number;y:number;width:number;height:number};
@@ -169,6 +188,11 @@ export function initialBilingualHint(text:string,languageLevel='PRE_A1',difficul
   if(first.length<=maxLength)return first;
   const shortened=first.slice(0,Math.max(1,maxLength-1));const boundary=shortened.lastIndexOf(' ');
   return `${shortened.slice(0,boundary>maxLength*0.55?boundary:shortened.length).trim()}…`;
+}
+
+export function droppedObjectTutorPrompt(label:string,currentPrompt:string):string{
+  const name=String(label||'').trim();const prompt=String(currentPrompt||'').trim();
+  return [name?`${name}!`:'',prompt].filter(Boolean).join(' ');
 }
 
 export function visualRequiredForSlide(slide:any):boolean{

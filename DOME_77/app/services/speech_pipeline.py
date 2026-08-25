@@ -12,7 +12,7 @@ import httpx
 
 from app.core.config import settings
 from app.core.i18n import language_name
-from app.services.conversational_tutor import TutorTurn, build_assessed_turn
+from app.services.conversational_tutor import TutorTurn, adaptive_follow_up_policy, build_assessed_turn
 
 log = logging.getLogger("dome.speech")
 
@@ -271,6 +271,15 @@ async def assess_speech(
             tutor_turn=TutorTurn(reaction_target="Let's continue.", complete=True, reason="offline_fallback"),
         )
 
+    follow_up_candidate, bounded_follow_ups, follow_up_reason = adaptive_follow_up_policy(
+        authored_enabled=allow_follow_up,
+        authored_max=max_follow_ups,
+        language_level=language_level,
+        attempt_number=attempt_number,
+        transcript=transcript,
+        confidence=confidence,
+    )
+
     prompt = {
         "target_language": language_name(target_language),
         "target_language_code": target_language,
@@ -290,11 +299,12 @@ async def assess_speech(
             "avoid_echo_if_answer_is_understandable": True,
             "offer_real_examples_when_helping": True,
             "adapt_complexity_during_this_lesson": True,
-            "allow_follow_up": bool(allow_follow_up),
-            "max_follow_ups": max(0, int(max_follow_ups)),
+            "allow_follow_up": follow_up_candidate,
+            "max_follow_ups": bounded_follow_ups,
             "follow_up_count": max(0, int(follow_up_count)),
-            "remaining_follow_ups": max(0, int(max_follow_ups) - int(follow_up_count)),
+            "remaining_follow_ups": max(0, bounded_follow_ups - int(follow_up_count)),
             "pre_a1_max_questions_per_turn": 1,
+            "policy_reason": follow_up_reason,
         },
     }
     result = await _evaluate_with_chat(prompt)
@@ -309,12 +319,22 @@ async def assess_speech(
         "TECHNICAL_UNCERTAINTY": "TECHNICAL_UNCERTAINTY",
     }.get(decision, "TECHNICAL_UNCERTAINTY")
     accepted = status.startswith("ACCEPTED")
+    semantic_match = _coerce_score(result.get("semantic_match"), 0.0)
+    follow_up_allowed, bounded_follow_ups, _ = adaptive_follow_up_policy(
+        authored_enabled=allow_follow_up,
+        authored_max=max_follow_ups,
+        language_level=language_level,
+        attempt_number=attempt_number,
+        transcript=transcript,
+        confidence=confidence,
+        semantic_match=semantic_match,
+    )
     turn = build_assessed_turn(
         result,
         accepted=accepted,
-        allow_follow_up=allow_follow_up,
+        allow_follow_up=follow_up_allowed,
         follow_up_count=follow_up_count,
-        max_follow_ups=max_follow_ups,
+        max_follow_ups=bounded_follow_ups,
         answer_text=transcript,
     )
     return SpeechAssessment(
@@ -323,7 +343,7 @@ async def assess_speech(
         confidence=confidence,
         grammar_errors=list(result.get("grammar_errors") or []),
         pronunciation_errors=list(result.get("pronunciation_errors") or []),
-        semantic_match=_coerce_score(result.get("semantic_match"), 0.0),
+        semantic_match=semantic_match,
         status=status,
         feedback_native=str(result.get("feedback_native") or ""),
         corrected_target=str(result.get("corrected_target") or goal),

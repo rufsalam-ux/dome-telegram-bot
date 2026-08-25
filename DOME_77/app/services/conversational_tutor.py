@@ -71,6 +71,33 @@ def _is_generic_praise(text: str) -> bool:
     return normalized in _GENERIC_PRAISE
 
 
+def adaptive_follow_up_policy(
+    *,
+    authored_enabled: bool,
+    authored_max: int,
+    language_level: str,
+    attempt_number: int,
+    transcript: str,
+    confidence: float,
+    semantic_match: float | None = None,
+) -> tuple[bool, int, str]:
+    """Permit harder follow-ups only after an independent, confident answer."""
+
+    level = str(language_level or "PRE_A1").upper()
+    level_cap = 1 if level == "PRE_A1" else 2
+    maximum = min(level_cap, max(0, int(authored_max)))
+    words = re.findall(r"\w+", str(transcript or ""), flags=re.UNICODE)
+    strong = (
+        authored_enabled
+        and maximum > 0
+        and int(attempt_number) == 1
+        and float(confidence or 0.0) >= 0.78
+        and len(words) >= (2 if level == "PRE_A1" else 3)
+        and (semantic_match is None or float(semantic_match) >= 0.82)
+    )
+    return strong, maximum, "strong_independent_answer" if strong else "support_or_completion"
+
+
 def build_assessed_turn(
     result: dict,
     *,

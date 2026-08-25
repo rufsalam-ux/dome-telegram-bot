@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 import test from 'node:test';
 
 import {
@@ -7,6 +8,8 @@ import {
   cardQuestions,
   cardSelectionAllowed,
   cardVoiceKey,
+  computeHeroScale,
+  droppedObjectTutorPrompt,
   dropInsideTarget,
   heroBox,
   initialBilingualHint,
@@ -29,6 +32,8 @@ import {
   updatePackedItems,
   visualRequiredForSlide,
 } from '../src/engine/lessonRuntime.ts';
+import {CAT_ACTIVITY_STATES,catProcessingState,catStateForStage} from '../src/engine/catRuntime.ts';
+import {mediaPhaseAfterEnd,normalizeMediaSequence,usesGenericMediaRuntime} from '../src/engine/mediaRuntime.ts';
 import bundledLesson from '../src/data/botLesson.json' with {type:'json'};
 import {buildRuntimeOrder} from '../src/data/lessonInteractions.ts';
 import {beginVisualAssetLoad,failVisualAsset,loadVisualAssetWithRetry,useLocalizedVisualAsset,visualAssetSourceForKey} from '../src/engine/visualAsset.ts';
@@ -89,10 +94,12 @@ test('third unsupported take advances without being accepted',()=>{
 });
 
 test('Mila hero placement is declarative and left of Mila',()=>{
-  assert.deepEqual(heroBox(mila,{default_hero_placement:'hidden'}),[0.04,0.35,0.24,0.61]);
+  const standalone=heroBox(mila,{default_hero_placement:'hidden'})!;
+  assert.ok(standalone[3]>.61&&standalone[3]<=.92);
   assert.equal(heroBox({}, {default_hero_placement:'hidden'}),null);
   const authored=(bundledLesson.slides as any[]).find(slide=>slide.slide_id==='slide_20');
   const resolved=heroBox(authored,bundledLesson) as [number,number,number,number];
+  assert.ok(resolved[3]>.61,'Mila hero must be visibly larger than the old box');
   assert.ok(resolved[0]+resolved[2]<Number(authored.character_box[0]));
   for(const item of authored.selection_options)assert.equal(rectanglesOverlap(resolved,item.rect),false);
 });
@@ -143,6 +150,7 @@ test('opening slide has a safe declarative hero placement and bundled source',()
   const opening=(bundledLesson.slides as any[]).find(slide=>slide.slide_id==='slide_01');
   assert.equal(opening.image,'lesson-images/slide-01.png');
   const resolved=heroBox(opening,bundledLesson) as [number,number,number,number];assert.ok(resolved);
+  assert.ok(resolved[3]>Number(opening.hero_box[3]));
   for(const box of opening.content_boxes||[])assert.equal(rectanglesOverlap(resolved,box),false);
 });
 
@@ -153,13 +161,18 @@ test('runtime has the authored conversation state machine and follow-up transiti
 
 test('hero collision falls back and drag hit testing uses real target bounds',()=>{
   const slide={hero_anchor:'left',content_boxes:[[0,0.3,0.3,0.7]],hero_fallback_anchors:['right']};
-  assert.deepEqual(heroBox(slide,{default_hero_placement:'hidden'}),[0.76,0.34,0.22,0.62]);
+  const fallback=heroBox(slide,{default_hero_placement:'hidden'})!;assert.ok(fallback[0]>.5&&fallback[3]>.62);
   assert.equal(rectanglesOverlap([0,0,0.2,0.2],[0.1,0.1,0.2,0.2]),true);
   assert.equal(dropInsideTarget(150,130,{x:100,y:100,width:100,height:60}),true);
   assert.equal(dropInsideTarget(40,40,{x:100,y:100,width:100,height:60}),false);
   assert.equal(suitcaseDropOutcome(false,true),'PACK');
   assert.equal(suitcaseDropOutcome(true,false),'UNPACK');
   assert.equal(suitcaseDropOutcome(false,false),'RETURN');
+});
+
+test('hero scale has a visual-height floor and remains bounded',()=>{
+  const scale=computeHeroScale(360,203,[0.8,0.52,0.16,0.44]);
+  assert.ok(scale>=2&&scale<=3);
 });
 
 test('Android suitcase drag atomically packs, persists visually, unpacks, and offers a late tap fallback',()=>{
@@ -174,6 +187,23 @@ test('Android suitcase drag atomically packs, persists visually, unpacks, and of
   assert.equal(updatePackedItems(packed,'water','RETURN'),packed);
   packed=updatePackedItems(packed,'water',suitcaseDropOutcome(true,false));assert.deepEqual(packed,[]);
   assert.equal(suitcaseTapFallbackAvailable(2),false);assert.equal(suitcaseTapFallbackAvailable(3),true);
+  assert.equal(droppedObjectTutorPrompt('Camera','What will you take?'),'Camera! What will you take?');
+  assert.equal(nextEnabled('WAITING_VOICE',true,true),true);
+});
+
+test('generic media supports an authored intro-video to image sequence',()=>{
+  const slide={media_sequence:[{id:'intro',type:'video',src:'video/intro.mp4',autoplay:true,advance_on_end:true},{id:'scene',type:'image',src:'images/scene.png'}]};
+  const sequence=normalizeMediaSequence(slide);assert.deepEqual(sequence.map(item=>item.type),['video','image']);
+  assert.equal(usesGenericMediaRuntime(slide),true);assert.equal(mediaPhaseAfterEnd(sequence,0),1);assert.equal(mediaPhaseAfterEnd(sequence,1),1);
+});
+
+test('DOME cat listens during tutor speech and starts only a local latency game',()=>{
+  assert.deepEqual(CAT_ACTIVITY_STATES,['idle','listening','thinking','happy','encouraging','surprised','waiting','playing','sleeping']);
+  assert.equal(catStateForStage('AI_SPEAKING'),'listening');assert.equal(catStateForStage('WAITING_VOICE'),'waiting');
+  assert.equal(catProcessingState(1499),'thinking');assert.equal(catProcessingState(1500),'idle');assert.equal(catProcessingState(4000),'playing');
+  const cat=readFileSync(new URL('../src/components/CatActivityLayer.tsx',import.meta.url),'utf8');const player=readFileSync(new URL('../src/screens/LessonPlayer.tsx',import.meta.url),'utf8');
+  assert.match(cat,/gameActive/);assert.match(cat,/stage==='AI_SPEAKING'/);assert.match(player,/<CatActivityLayer/);
+  assert.match(player,/droppedObjectTutorPrompt\(labelTarget,targetText\)/);
 });
 
 test('programmatic demo flow has no early record, duplicate answer, or dead end',()=>{

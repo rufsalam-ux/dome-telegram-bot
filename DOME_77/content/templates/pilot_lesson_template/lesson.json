@@ -4,6 +4,7 @@
   "course_id": "conversation",
   "order": 2,
   "title": "Название урока",
+  "status": "draft",
   "active": false,
   "make_cartoon": false,
   "slides": [
@@ -20,6 +21,29 @@
       "order": 1
     },
     {
+      "type": "passive",
+      "title": "Intro video → image",
+      "prompt": "Сначала короткое видео, затем иллюстрация.",
+      "media_sequence": [
+        {
+          "id": "intro",
+          "type": "video",
+          "src": "video/intro.mp4",
+          "autoplay": true,
+          "advance_on_end": true
+        },
+        {
+          "id": "scene",
+          "type": "image",
+          "src": "images/example.jpg"
+        }
+      ],
+      "expects_answer": false,
+      "can_skip": true,
+      "slide_id": "step_01_media",
+      "order": 2
+    },
+    {
       "type": "choice",
       "title": "Выбери ответ",
       "prompt": "Выбери правильный ответ.",
@@ -32,7 +56,7 @@
       "expects_answer": true,
       "can_skip": false,
       "slide_id": "step_02",
-      "order": 2
+      "order": 3
     },
     {
       "type": "memory",
@@ -41,7 +65,7 @@
       "expects_answer": true,
       "can_skip": true,
       "slide_id": "step_03",
-      "order": 3,
+      "order": 4,
       "pairs": [
         {
           "left": "кот",
@@ -65,7 +89,7 @@
       "expects_answer": false,
       "can_skip": true,
       "slide_id": "step_04",
-      "order": 4
+      "order": 5
     },
     {
       "type": "voice_answer",
@@ -77,7 +101,7 @@
       "expects_answer": true,
       "can_skip": true,
       "slide_id": "step_05",
-      "order": 5
+      "order": 6
     }
   ],
   "schema_version": "1.3",
