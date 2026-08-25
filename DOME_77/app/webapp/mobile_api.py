@@ -24,6 +24,8 @@ from app.services.ai_speech import synthesize_bilingual_speech, translate_text
 from app.services.password_auth import hash_password, hash_verification_code, verify_password, verify_verification_code
 from app.services.standalone_demo_access import ensure_free_demo_entitlement
 from app.services.visual_localization import VisualLocalizationError, localize_embedded_text_image
+from app.services.course_catalog import list_courses
+from app.services.authored_content import lesson_dir as authored_lesson_dir
 from app.services.subscription_plan_changes import (
     PlanChangeError,
     cancel_plan_change,
@@ -114,6 +116,42 @@ async def bootstrap(request:web.Request)->web.Response:
     p=await _parent(request)
     async with SessionLocal() as db:cs=(await db.scalars(select(Child).where(Child.parent_id==p.id).order_by(Child.id))).all()
     return web.json_response({'parent':{'id':p.id,'name':p.display_name,'email':p.email,'email_verified':bool(p.email_verified),'phone':p.phone},'children':[_child_json(request,c) for c in cs]})
+
+
+async def lesson_catalog(request:web.Request)->web.Response:
+    """Return the published server catalog and child-specific access state.
+
+    The APK contains a universal player, not a baked lesson list. Publishing a
+    validated content_v1 lesson therefore changes this response immediately.
+    """
+
+    p=await _parent(request)
+    try:cid=int(request.match_info['child_id'])
+    except (TypeError,ValueError):raise web.HTTPBadRequest(text=json.dumps({'error':'child_id is required'}),content_type='application/json')
+    await _owned_child(p.id,cid)
+    items=[]
+    for course in list_courses():
+        if not course.active:continue
+        for lesson_id in course.lesson_ids:
+            try:data=_load_mobile_lesson(str(lesson_id))
+            except web.HTTPException:continue
+            if str(data.get('publication_status') or '').upper()!='PUBLISHED':continue
+            available,reason,entitlement=await can_start(cid,str(lesson_id),str(course.course_id),audit=False)
+            async with SessionLocal() as db:
+                resume=await db.scalar(select(LessonSession).where(
+                    LessonSession.child_id==cid,LessonSession.lesson_id==str(lesson_id),LessonSession.status=='IN_PROGRESS',
+                ).order_by(LessonSession.id.desc()))
+            items.append({
+                'lesson_id':str(lesson_id),'course_id':str(course.course_id),'course_title':course.title,
+                'title':str(data.get('title') or lesson_id),'description':str(data.get('description') or course.description or ''),
+                'order':int(data.get('order') or 9999),'revision':int(data.get('revision') or data.get('runtime_revision') or 1),
+                'available':bool(available),'access_reason':reason,
+                'completed_runs':int(entitlement.completed_runs or 0) if entitlement is not None else 0,
+                'max_completed_runs':int(entitlement.max_completed_runs or data.get('max_completed_runs') or 2) if entitlement is not None else int(data.get('max_completed_runs') or 2),
+                'resume_step':int(resume.current_step or 0) if resume is not None else None,
+            })
+    items.sort(key=lambda item:(item['course_title'],item['order'],item['lesson_id']))
+    return web.json_response({'lessons':items})
 
 async def create_child(request:web.Request)->web.Response:
     p=await _parent(request);data=await request.json();name=str(data.get('name') or '').strip()
@@ -570,10 +608,10 @@ async def complete(request:web.Request)->web.Response:
         try:detail=json.loads(slot.diagnostics_json or '{}')
         except (TypeError,ValueError,json.JSONDecodeError):detail={}
         voice_diagnostics.append({'required_voice_id':slot.required_voice_id,'status':slot.status,**detail})
-    movie_url=None;movie_status='PROCESSING'
+    movie_url=None;movie_configured=bool(lesson_data.get('cartoon_base') and lesson_data.get('timeline'));movie_status='PROCESSING' if movie_configured else 'NOT_CONFIGURED'
     out=settings.storage_root/'children'/str(c.id)/'cartoons'/f'mobile_{sess.lesson_id}_session{sid}.mp4';out.parent.mkdir(parents=True,exist_ok=True)
     should_render=False;movie_id=None
-    if hero_path.exists():
+    if movie_configured and hero_path.exists():
         async with SessionLocal() as db:
             movie=await db.scalar(select(LessonMovie).where(LessonMovie.lesson_session_id==sid))
             if movie is None:
@@ -587,7 +625,7 @@ async def complete(request:web.Request)->web.Response:
                 movie.status='PROCESSING';movie.error=None;movie.output_path=str(out);await db.commit();should_render=True
             movie_id=movie.id if movie else None
         if should_render:
-            lesson_dir=Path(settings.content_root)/'lessons'/sess.lesson_id
+            lesson_dir=authored_lesson_dir(sess.lesson_id)
             inputs=MovieRenderInputs(base_video=lesson_dir/str(lesson_data['cartoon_base']),character=hero_path,audio_by_phrase=audio_by_phrase,timeline=list(lesson_data.get('timeline') or []),output=out,lesson_dir=lesson_dir,target_language=c.target_language or 'ru')
             _spawn_movie_task(_render_mobile_movie_job(movie_id,inputs,c.id,sess.lesson_id,course,par.email if par else None,bool(par and par.email_reports_enabled),run_no,str(lesson_data.get('title') or sess.lesson_id)))
             movie_status='PROCESSING'
@@ -766,7 +804,7 @@ async def confirm_password_reset(request:web.Request)->web.Response:
     return web.json_response({'ok':True})
 
 def register_mobile_routes(app:web.Application):
-    app.router.add_post('/api/mobile/register',register);app.router.add_post('/api/mobile/verify-email',verify_email);app.router.add_post('/api/mobile/resend-verification',resend_verification);app.router.add_post('/api/mobile/login',login);app.router.add_post('/api/mobile/password-reset/request',request_password_reset);app.router.add_post('/api/mobile/password-reset/confirm',confirm_password_reset);app.router.add_get('/api/mobile/bootstrap',bootstrap);app.router.add_post('/api/mobile/children',create_child);app.router.add_get('/api/mobile/lesson/{lesson_id}/visual/{filename}',lesson_visual);app.router.add_get('/api/mobile/lesson/{lesson_id}/media/{filename}',lesson_media);app.router.add_get('/api/mobile/lesson/{lesson_id}',lesson)
+    app.router.add_post('/api/mobile/register',register);app.router.add_post('/api/mobile/verify-email',verify_email);app.router.add_post('/api/mobile/resend-verification',resend_verification);app.router.add_post('/api/mobile/login',login);app.router.add_post('/api/mobile/password-reset/request',request_password_reset);app.router.add_post('/api/mobile/password-reset/confirm',confirm_password_reset);app.router.add_get('/api/mobile/bootstrap',bootstrap);app.router.add_post('/api/mobile/children',create_child);app.router.add_get('/api/mobile/child/{child_id}/lessons',lesson_catalog);app.router.add_get('/api/mobile/lesson/{lesson_id}/visual/{filename}',lesson_visual);app.router.add_get('/api/mobile/lesson/{lesson_id}/media/{filename}',lesson_media);app.router.add_get('/api/mobile/lesson/{lesson_id}',lesson)
     app.router.add_get('/api/mobile/hero/file/{child_id}/{character_id}',hero_file);app.router.add_post('/api/mobile/child/{child_id}/hero/preset',hero_preset);app.router.add_post('/api/mobile/child/{child_id}/hero/upload',hero_upload)
     app.router.add_get('/api/mobile/child/{child_id}/subscription',subscription_overview);app.router.add_post('/api/mobile/child/{child_id}/subscription/plan-change/preview',subscription_plan_change_preview);app.router.add_post('/api/mobile/child/{child_id}/subscription/plan-change',subscription_plan_change_confirm);app.router.add_delete('/api/mobile/child/{child_id}/subscription/plan-change',subscription_plan_change_cancel)
     app.router.add_post('/api/mobile/session/start',session_start);app.router.add_post('/api/mobile/session/{session_id}/progress',session_progress);app.router.add_post('/api/mobile/session/{session_id}/voice',voice);app.router.add_post('/api/mobile/session/{session_id}/interactive',interactive);app.router.add_post('/api/mobile/session/{session_id}/complete',complete);app.router.add_get('/api/mobile/session/{session_id}/movie',movie_status)

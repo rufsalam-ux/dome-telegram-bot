@@ -1,9 +1,18 @@
 {
-  "cli": {"version": ">= 16.0.0", "appVersionSource": "remote"},
+  "cli": {"version": ">= 16.0.0", "appVersionSource": "local"},
   "build": {
     "development": {"developmentClient": true, "distribution": "internal"},
-    "preview": {"distribution": "internal", "android": {"buildType": "apk"}},
-    "production": {"autoIncrement": true}
+    "preview": {
+      "distribution": "internal",
+      "android": {"buildType": "apk"},
+      "env": {"EXPO_PUBLIC_DOME_API_BASE_URL": "https://dome-telegram-bot-production.up.railway.app"}
+    },
+    "production": {
+      "distribution": "store",
+      "autoIncrement": false,
+      "android": {"buildType": "app-bundle"},
+      "env": {"EXPO_PUBLIC_DOME_API_BASE_URL": "https://dome-telegram-bot-production.up.railway.app"}
+    }
   },
   "submit": {"production": {}}
 }

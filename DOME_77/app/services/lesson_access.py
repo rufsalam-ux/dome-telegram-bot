@@ -29,7 +29,7 @@ async def get_entitlement(child_id: int, lesson_id: str, course_id: str) -> Less
         ).order_by(LessonEntitlement.id.desc()))
 
 
-async def can_start(child_id: int, lesson_id: str, course_id: str) -> tuple[bool, str, LessonEntitlement | None]:
+async def can_start(child_id: int, lesson_id: str, course_id: str, *, audit: bool = True) -> tuple[bool, str, LessonEntitlement | None]:
     async with SessionLocal() as db:
         row = await db.scalar(select(LessonEntitlement).where(
             LessonEntitlement.child_id == child_id,
@@ -47,18 +47,19 @@ async def can_start(child_id: int, lesson_id: str, course_id: str) -> tuple[bool
             )
             if parent is None or grant is None:
                 return False, "RUN_LIMIT", row
-            add_qa_audit_event(
-                db,
-                event_type="RUN_LIMIT_BYPASS_AUTHORIZED",
-                grant=grant,
-                parent_id=parent.id,
-                child_id=child_id,
-                lesson_id=lesson_id,
-                course_id=course_id,
-                entitlement=row,
-                actor=f"account-role:{parent.account_role}",
-            )
-            await db.commit()
+            if audit:
+                add_qa_audit_event(
+                    db,
+                    event_type="RUN_LIMIT_BYPASS_AUTHORIZED",
+                    grant=grant,
+                    parent_id=parent.id,
+                    child_id=child_id,
+                    lesson_id=lesson_id,
+                    course_id=course_id,
+                    entitlement=row,
+                    actor=f"account-role:{parent.account_role}",
+                )
+                await db.commit()
             return True, "QA_RUN_LIMIT_BYPASS", row
         return True, "OK", row
 

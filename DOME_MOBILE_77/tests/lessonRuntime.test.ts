@@ -249,6 +249,11 @@ test('regression: card questions advance conversationally without changing media
   assert.equal(nextCardQuestion(cards,'A',index).done,true);
 });
 
+test('studio-authored lessons use data order without demo_001 slide ids',()=>{
+  const slides=[{slide_id:'welcome',order:2},{slide_id:'warmup',order:1},{slide_id:'finish',order:3}];
+  assert.deepEqual(buildRuntimeOrder(slides).map(slide=>slide.slide_id),['warmup','welcome','finish']);
+});
+
 test('regression: optional tasks expose Next during speech, processing, and voice wait',()=>{
   const optional={answer_mode:'required_voice'};assert.equal(isRequiredForMovie(optional),false);
   for(const stage of ['AI_SPEAKING','PROCESSING','WAITING_VOICE'] as const)assert.equal(nextEnabled(stage,true,{requiredForMovie:isRequiredForMovie(optional)}),true);

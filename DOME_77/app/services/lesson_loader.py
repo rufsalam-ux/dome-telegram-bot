@@ -14,8 +14,13 @@ REMOVED_SLIDE_IDS = {"slide_02", *{f"slide_{n:02d}" for n in range(25, 40)}}
 REMOVED_ORDERS = {2, *range(25, 40)}
 
 
-def _runtime_slides(slides: list[dict]) -> list[dict]:
-    """Hard-filter removed source slides regardless of stale JSON/state."""
+def _runtime_slides(slides: list[dict], lesson_id: str) -> list[dict]:
+    """Apply the historic DOME 77 cut only to its original lesson.
+
+    Studio-authored lessons may legitimately use step_02 or orders 25..39.
+    """
+    if lesson_id != "demo_001":
+        return list(slides)
     result = []
     for slide in slides:
         slide_id = str(slide.get("slide_id", ""))
@@ -28,6 +33,14 @@ def _runtime_slides(slides: list[dict]) -> list[dict]:
 
 def _enrich_runtime_layout(slide: dict) -> dict:
     """Give every slide a common collision/layout contract."""
+
+    if slide.get("moviePhraseId") and not slide.get("required_phrase_id"):
+        slide["required_phrase_id"] = str(slide["moviePhraseId"])
+    if "requiredForMovie" not in slide and "required_for_movie" not in slide:
+        slide["requiredForMovie"] = bool(slide.get("required_phrase_id") and slide.get("allow_skip") is False)
+    if slide.get("requiredForMovie") is True or slide.get("required_for_movie") is True:
+        slide["allow_skip"] = False
+        slide.setdefault("answer_mode", "required_voice")
 
     boxes = [list(value) for value in slide.get("content_boxes", []) if isinstance(value, list) and len(value) == 4]
     for option in slide.get("selection_options", []) or []:
@@ -115,8 +128,8 @@ def load_lesson(lesson_id: str, *, preview: bool = False) -> dict:
                 lesson["timeline"] = external_timeline
         except Exception:
             pass
-    lesson["slides"] = [_enrich_runtime_layout(slide) for slide in _runtime_slides(lesson.get("slides") or [])]
-    bad = [s for s in lesson["slides"] if int(s.get("order", 0) or 0) in REMOVED_ORDERS]
+    lesson["slides"] = [_enrich_runtime_layout(slide) for slide in _runtime_slides(lesson.get("slides") or [], lesson_id)]
+    bad = [s for s in lesson["slides"] if lesson_id == "demo_001" and int(s.get("order", 0) or 0) in REMOVED_ORDERS]
     if bad:
         raise RuntimeError(f"Removed slides leaked into runtime: {[s.get('slide_id') for s in bad]}")
     lesson["runtime_revision"] = 79

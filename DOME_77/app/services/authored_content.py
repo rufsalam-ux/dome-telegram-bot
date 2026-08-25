@@ -237,6 +237,11 @@ def _validate_slide(slide: dict[str, Any], i: int, prefix: str = "slide") -> lis
     if kind not in SUPPORTED_CONTENT_TYPES:
         return [f"{label}: unsupported type {kind}"]
     errors.extend(_validate_media_sequence(slide, label))
+    required_for_movie = slide.get("requiredForMovie") is True or slide.get("required_for_movie") is True
+    if required_for_movie and not str(slide.get("moviePhraseId") or slide.get("required_phrase_id") or "").strip():
+        errors.append(f"{label}: requiredForMovie needs moviePhraseId/required_phrase_id")
+    if required_for_movie and slide.get("allow_skip") is True:
+        errors.append(f"{label}: requiredForMovie cannot allow skip")
 
     options = list(slide.get("options") or slide.get("items") or [])
     correct = _indices(slide)

@@ -263,9 +263,11 @@ async def paypal_webhook(request:web.Request)->web.Response:
 
 
 async def start_webapp_server():
-    app = web.Application()
+    app = web.Application(client_max_size=max(1, settings.content_studio_max_upload_mb) * 1024 * 1024)
     from app.webapp.mobile_api import register_mobile_routes
+    from app.webapp.content_studio import register_content_studio_routes
     register_mobile_routes(app)
+    register_content_studio_routes(app)
     static = Path(__file__).parent / "static"
     app.router.add_get("/health", health)
     app.router.add_get("/payment/success", payment_success)

@@ -137,6 +137,10 @@ export function createChild(name:string,ageYears:number,targetLanguage:string,na
 
 export function getLesson(id='demo_001'){return request(`/api/mobile/lesson/${encodeURIComponent(id)}`)}
 
+export function listLessons(childId:string|number){
+  return request(`/api/mobile/child/${encodeURIComponent(String(childId))}/lessons`);
+}
+
 export async function lessonVisualSource(lessonId:string,imagePath:string,childId:string|number,version:string|number='1'){
   const filename=String(imagePath||'').split('/').pop()||'';
   const query=new URLSearchParams({child_id:String(childId),version:String(version)});

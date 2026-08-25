@@ -2,12 +2,20 @@
   "expo": {
     "name": "DOME",
     "slug": "dome-mobile",
-    "version": "3.0.3",
+    "version": "3.1.0",
+    "scheme": "dome",
+    "icon": "./assets/branding/dome-app-icon-v1.png",
     "orientation": "default",
     "userInterfaceStyle": "automatic",
+    "splash": {
+      "image": "./assets/branding/dome-app-icon-v1.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#063FC4"
+    },
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.bilingvadom.dome",
+      "buildNumber": "3.1.0",
       "infoPlist": {
         "NSMicrophoneUsageDescription": "DOME uses the microphone during speaking activities when the parent has consented.",
         "NSCameraUsageDescription": "DOME may use the camera for optional learning activities when the parent has enabled them.",
@@ -16,8 +24,12 @@
     },
     "android": {
       "package": "com.bilingvadom.dome",
-      "versionCode": 30003,
+      "versionCode": 30100,
       "softwareKeyboardLayoutMode": "resize",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/branding/dome-adaptive-foreground-v1.png",
+        "backgroundColor": "#063FC4"
+      },
       "permissions": [
         "RECORD_AUDIO"
       ]

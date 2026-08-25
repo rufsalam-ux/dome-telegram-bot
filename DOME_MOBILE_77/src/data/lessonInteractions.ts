@@ -57,8 +57,10 @@ export const SUITCASE_ITEMS=[
 ] as const;
 
 export function buildRuntimeOrder(slides:any[]):any[]{
-  const by:Record<string,any>={};slides.forEach(slide=>{by[slide.slide_id]=slide});
-  const output:any[]=[];const seen=new Set<string>();let id='slide_01';
+  const ordered=[...slides].sort((a,b)=>(Number(a?.order)||9999)-(Number(b?.order)||9999));
+  if(!ordered.some(slide=>String(slide?.next_slide||'').trim()))return ordered;
+  const by:Record<string,any>={};ordered.forEach(slide=>{by[slide.slide_id]=slide});
+  const output:any[]=[];const seen=new Set<string>();let id=String(ordered.find(slide=>slide?.entry===true)?.slide_id||(by.slide_01?'slide_01':ordered[0]?.slide_id)||'');
   while(id&&by[id]&&!seen.has(id)&&output.length<80){seen.add(id);output.push(by[id]);id=by[id].next_slide}
   return output;
 }

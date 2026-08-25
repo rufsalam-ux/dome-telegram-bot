@@ -72,6 +72,10 @@ class Settings(BaseSettings):
     support_chat_url: str = ""
     support_call_label: str = "+995000000000"
     mobile_auth_secret: str = ""
+    # Separate owner credential for the browser-based Content Studio. It is
+    # intentionally unrelated to Telegram ids and mobile parent sessions.
+    content_studio_token: str = ""
+    content_studio_max_upload_mb: int = 250
     email_delivery_provider: str = "smtp"
     resend_api_key: str = ""
     resend_api_url: str = "https://api.resend.com/emails"
