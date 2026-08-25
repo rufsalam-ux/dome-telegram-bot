@@ -122,8 +122,29 @@ export function heroBox(slide:any,lesson:any):number[]|null{
 }
 
 export type PixelRect={x:number;y:number;width:number;height:number};
+export type PixelPoint={x:number;y:number};
 export function dropInsideTarget(pageX:number,pageY:number,target:PixelRect,padding=0):boolean{
-  return pageX>=target.x-padding&&pageX<=target.x+target.width+padding&&pageY>=target.y-padding&&pageY<=target.y+target.height+padding;
+  return validPixelRect(target)&&Number.isFinite(pageX)&&Number.isFinite(pageY)&&pageX>=target.x-padding&&pageX<=target.x+target.width+padding&&pageY>=target.y-padding&&pageY<=target.y+target.height+padding;
+}
+
+export function validPixelRect(rect:PixelRect|undefined|null):rect is PixelRect{
+  return Boolean(rect&&Number.isFinite(rect.x)&&Number.isFinite(rect.y)&&Number.isFinite(rect.width)&&Number.isFinite(rect.height)&&rect.width>0&&rect.height>0);
+}
+
+export function movedPixelRect(origin:PixelRect|undefined|null,dx:number,dy:number):PixelRect|undefined{
+  return validPixelRect(origin)&&Number.isFinite(dx)&&Number.isFinite(dy)?{...origin,x:origin.x+dx,y:origin.y+dy}:undefined;
+}
+
+export function pixelRectOverlapRatio(item:PixelRect|undefined|null,target:PixelRect|undefined|null):number{
+  if(!validPixelRect(item)||!validPixelRect(target))return 0;
+  const width=Math.max(0,Math.min(item.x+item.width,target.x+target.width)-Math.max(item.x,target.x));
+  const height=Math.max(0,Math.min(item.y+item.height,target.y+target.height)-Math.max(item.y,target.y));
+  return width*height/(item.width*item.height);
+}
+
+export function suitcaseDropAccepted(point:PixelPoint|undefined,item:PixelRect|undefined,target:PixelRect|undefined,padding=10,minItemOverlap=0.22):boolean{
+  if(!validPixelRect(target))return false;
+  return Boolean(point&&dropInsideTarget(point.x,point.y,target,padding))||pixelRectOverlapRatio(item,target)>=minItemOverlap;
 }
 
 export type SuitcaseDropOutcome='PACK'|'UNPACK'|'RETURN';
@@ -131,6 +152,23 @@ export function suitcaseDropOutcome(packed:boolean,inside:boolean):SuitcaseDropO
   if(!packed&&inside)return 'PACK';
   if(packed&&!inside)return 'UNPACK';
   return 'RETURN';
+}
+
+export function updatePackedItems(current:string[],itemId:string,outcome:SuitcaseDropOutcome):string[]{
+  if(outcome==='PACK')return Array.from(new Set([...current,itemId]));
+  if(outcome==='UNPACK')return current.filter(value=>value!==itemId);
+  return current;
+}
+
+export function suitcaseTapFallbackAvailable(failedDrags:number,threshold=3):boolean{return failedDrags>=threshold}
+
+export function initialBilingualHint(text:string,languageLevel='PRE_A1',difficulty=0.15,maxLength=120):string{
+  if(String(languageLevel||'').toUpperCase()!=='PRE_A1'&&difficulty>=0.25)return '';
+  const compact=String(text||'').replace(/\s+/g,' ').trim();if(!compact)return '';
+  const first=compact.match(/^.*?[.!?](?:\s|$)/)?.[0]?.trim()||compact;
+  if(first.length<=maxLength)return first;
+  const shortened=first.slice(0,Math.max(1,maxLength-1));const boundary=shortened.lastIndexOf(' ');
+  return `${shortened.slice(0,boundary>maxLength*0.55?boundary:shortened.length).trim()}…`;
 }
 
 export function visualRequiredForSlide(slide:any):boolean{

@@ -110,6 +110,8 @@ def test_mobile_interactions_cover_selection_suitcase_animals_audio_level_and_mo
     assert "DragDropSuitcase" in player and "updateSuitcase" in player and "persistInteraction" in player
     drag = (ROOT.parent / "DOME_MOBILE_77/src/components/DragDropSuitcase.tsx").read_text(encoding="utf-8")
     assert "PanResponder.create" in drag and "onPanResponderMove" in drag and "scrollEnabled={!dragging}" in player
+    assert "collapsable={false}" in drag and "suitcaseDropAccepted" in drag and "Отпусти здесь" in drag
+    assert "suitcase-tap-fallback-" in drag and "packed_items:next" in player
     assert "onPress={()=>toggleSuitcase" not in player
     assert "penguin_parrot" in interactions and "lion_turtle" in interactions
     assert "lesson-target-${slide.slide_id}-${option.id}" in player
@@ -258,7 +260,11 @@ async def test_scripted_mobile_demo_traverses_real_endpoints_and_reaches_ready_m
             await post_interactive(session_id,"slide_09","card_selector",{"selected_card_id":"A","card_question_index":index+1,"completed":index==2})
         await post_voice(session_id,"slide_19","lesha_clothes","Why are you dressed so warmly?")
         await post_interactive(session_id,"slide_20","gift_selector",{"selected_gift_id":"book"});await post_voice(session_id,"slide_20","mila_gift","What did Mila bring you?")
-        await post_interactive(session_id,"slide_24","suitcase",{"packed":["jacket","water","camera"],"completed":True});await post_voice(session_id,"slide_24","take_trip","What will you take and why?")
+        packed_items=["jacket","water","camera"]
+        await post_interactive(session_id,"slide_24","suitcase",{"packed_items":packed_items,"selected":packed_items,"completed":True});await post_voice(session_id,"slide_24","take_trip","What will you take and why?")
+        resumed=await client.post("/api/mobile/session/start",headers=headers,json={"child_id":child_id,"lesson_id":"demo_001"});assert resumed.status==200
+        resumed_payload=await resumed.json();assert resumed_payload["session_id"]==session_id and resumed_payload["resumed"] is True
+        resumed_state=resumed_payload["interactive_state"]["slide_24"];assert resumed_state["packed_items"]==packed_items and resumed_state["selected"]==packed_items
         await post_voice(session_id,"slide_47","zebra","Tell me about the zebra.")
         for phrase,prompt in (("penguin","What can a penguin do?"),("parrot","What color is the parrot?")):
             await post_interactive(session_id,"slide_46","animal_compare",{"selected_animal_id":phrase});await post_voice(session_id,"slide_46",phrase,prompt)

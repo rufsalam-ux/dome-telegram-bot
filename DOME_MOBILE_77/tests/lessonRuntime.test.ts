@@ -9,7 +9,9 @@ import {
   cardVoiceKey,
   dropInsideTarget,
   heroBox,
+  initialBilingualHint,
   lessonLayoutPolicy,
+  movedPixelRect,
   nextCardQuestion,
   nextEnabled,
   recordEnabled,
@@ -20,8 +22,11 @@ import {
   runtimePrompt,
   stageAfterTutorSpeech,
   suitcaseDropOutcome,
+  suitcaseDropAccepted,
+  suitcaseTapFallbackAvailable,
   tutorAudioTransition,
   tutorAudioWatchdogStage,
+  updatePackedItems,
   visualRequiredForSlide,
 } from '../src/engine/lessonRuntime.ts';
 import bundledLesson from '../src/data/botLesson.json' with {type:'json'};
@@ -46,6 +51,11 @@ test('PRE_A1 opening retains the complete authored question',()=>{
   assert.match(prompt,/Как ты сегодня себя чувствуешь/);
   assert.notEqual(prompt,'Привет! У меня всё хорошо.');
   assert.equal(runtimePrompt(greeting,'PRE_A1',0.12,'retry'),'Привет! У меня всё хорошо.');
+});
+
+test('PRE_A1 receives one short immediate home-language duplicate',()=>{
+  assert.equal(initialBilingualHint('Как ты сегодня себя чувствуешь? Потом расскажи подробно.','PRE_A1',0.12),'Как ты сегодня себя чувствуешь?');
+  assert.equal(initialBilingualHint('Как ты сегодня себя чувствуешь?','A1',0.45),'');
 });
 
 test('selected card has a deterministic three-question flow and stable voice keys',()=>{
@@ -150,6 +160,20 @@ test('hero collision falls back and drag hit testing uses real target bounds',()
   assert.equal(suitcaseDropOutcome(false,true),'PACK');
   assert.equal(suitcaseDropOutcome(true,false),'UNPACK');
   assert.equal(suitcaseDropOutcome(false,false),'RETURN');
+});
+
+test('Android suitcase drag atomically packs, persists visually, unpacks, and offers a late tap fallback',()=>{
+  const target={x:20,y:40,width:300,height:130};const origin={x:44,y:250,width:58,height:58};
+  const moved=movedPixelRect(origin,80,-112)!;
+  // The item overlaps the target even if Android reports a stale/missing
+  // release point. This is the regression that previously returned it.
+  assert.equal(suitcaseDropAccepted(undefined,moved,target),true);
+  let packed:string[]=[];const packOutcome=suitcaseDropOutcome(false,true);
+  packed=updatePackedItems(packed,'water',packOutcome);
+  assert.deepEqual(packed,['water']);assert.equal(packed.includes('water'),true);
+  assert.equal(updatePackedItems(packed,'water','RETURN'),packed);
+  packed=updatePackedItems(packed,'water',suitcaseDropOutcome(true,false));assert.deepEqual(packed,[]);
+  assert.equal(suitcaseTapFallbackAvailable(2),false);assert.equal(suitcaseTapFallbackAvailable(3),true);
 });
 
 test('programmatic demo flow has no early record, duplicate answer, or dead end',()=>{
