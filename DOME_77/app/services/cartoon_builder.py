@@ -4,6 +4,8 @@ import json
 import logging
 import re
 import subprocess
+import tempfile
+import time
 from pathlib import Path
 
 from app.core.config import settings
@@ -25,6 +27,9 @@ def _cartoon_config() -> dict:
 
 class CartoonBuildError(RuntimeError):
     pass
+
+
+SAFE_MOVIE_ERROR = "Мультфильм пока не удалось собрать. Все записи сохранены — попробуйте ещё раз."
 
 
 def _probe_video(path: Path) -> tuple[int, int, float]:
@@ -160,166 +165,350 @@ def _y_expression(segment: dict) -> str:
     return f"{y}+1.5*sin(2.2*(t-{start}))"
 
 
-def build_timeline_cartoon(base_video: Path, character_png: Path, audio_by_phrase: dict[str, Path], timeline: list[dict], output_mp4: Path, base_video_filters: list[str] | None = None) -> Path:
-    """Render one cartoon with bounded CPU/RAM and actionable Railway logs."""
-    if not base_video.exists():
-        raise CartoonBuildError(f"Не найдена основа мультфильма: {base_video}")
-    if not character_png.exists():
-        raise CartoonBuildError(f"Не найден герой: {character_png}")
-    if not timeline:
-        raise CartoonBuildError("Timeline пуст.")
-    frame_width, frame_height, base_duration = _probe_video(base_video)
-    timeline = _resolve_normalized_timeline([dict(x) for x in timeline], frame_width, frame_height)
-    minimum=float(_cartoon_config().get("first_child_scene_seconds",8))
-    first=timeline[0]
-    first["end"]=max(float(first.get("end",0)),float(first.get("visible_start",0))+minimum)
+def _tail_text(path: Path, limit: int = 8000) -> str:
+    if not path.exists():
+        return ""
+    with path.open("rb") as stream:
+        stream.seek(0, 2)
+        stream.seek(max(0, stream.tell() - limit))
+        return stream.read(limit).decode("utf-8", errors="ignore")
 
-    output_mp4.parent.mkdir(parents=True, exist_ok=True)
-    ensure_animation_library(settings.storage_root / "animation-library")
-    # v49: load a reusable character rig if one exists. The current FFmpeg path remains
-    # the stable fallback until a full-body AnimationProvider is configured.
-    _rig = load_character_rig(character_png, settings.storage_root / "character-rigs")
-    _motion_plans = [normalize_motion_plan(item) for item in timeline]
-    work = output_mp4.parent / f"{output_mp4.stem}_work"
-    work.mkdir(parents=True, exist_ok=True)
-    error_file = work / "ffmpeg_error.txt"
-    command_file = work / "ffmpeg_command.txt"
 
-    # v57: final delivery must be fast. Reuse already-generated full-body clips,
-    # but never start slow external animation generation while the child waits.
-    # Missing cached motion falls back immediately to the stable PNG animation.
-    allow_generate_during_render=bool(_cartoon_config().get("generate_missing_animation_during_render",False))
-    render_threads=max(1,min(4,int(_cartoon_config().get("render_threads",2))))
-    ai_clips: list[Path | None] = []
-    for idx, segment in enumerate(timeline):
+def _run_ffmpeg_step(cmd: list[str], *, step: str, work: Path, timeout: float) -> None:
+    """Run one bounded FFmpeg stage without buffering media or unbounded stderr in RAM."""
+
+    command_file = work / f"{step}.command.txt"
+    error_file = work / f"{step}.stderr.log"
+    command_file.write_text(" ".join(cmd), encoding="utf-8")
+    started = time.monotonic()
+    log.info("MOBILE_MOVIE_FFMPEG_START step=%s timeout=%.1f", step, timeout)
+    try:
+        with error_file.open("wb") as error_stream:
+            subprocess.run(
+                cmd,
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=error_stream,
+                timeout=max(5.0, timeout),
+            )
+    except FileNotFoundError as exc:
+        log.exception("FFmpeg executable not found step=%s executable=%s", step, settings.ffmpeg_bin)
+        raise CartoonBuildError(SAFE_MOVIE_ERROR) from exc
+    except subprocess.TimeoutExpired as exc:
+        log.error("FFmpeg timed out step=%s command=%s stderr=%s", step, command_file, _tail_text(error_file, 4000))
+        raise CartoonBuildError(SAFE_MOVIE_ERROR) from exc
+    except subprocess.CalledProcessError as exc:
+        log.error(
+            "FFmpeg failed step=%s code=%s command=%s stderr=%s",
+            step,
+            exc.returncode,
+            command_file,
+            _tail_text(error_file),
+        )
+        raise CartoonBuildError(SAFE_MOVIE_ERROR) from exc
+    log.info("MOBILE_MOVIE_FFMPEG_DONE step=%s elapsed=%.2f", step, time.monotonic() - started)
+
+
+_BETWEEN_RE = re.compile(r"between\(t,\s*(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)\)")
+
+
+def _shift_timed_filters(filters: list[str] | None, offset: float) -> list[str]:
+    """Translate authored absolute timeline filters into one local segment timeline."""
+
+    def replace(match: re.Match[str]) -> str:
+        return f"between(t,{float(match.group(1)) - offset:.3f},{float(match.group(2)) - offset:.3f})"
+
+    return [_BETWEEN_RE.sub(replace, value) for value in (filters or [])]
+
+
+def _render_windows(timeline: list[dict], duration: float) -> list[tuple[float, float]]:
+    boundaries = {0.0, round(duration, 6)}
+    for segment in timeline:
+        boundaries.add(max(0.0, min(duration, float(segment["visible_start"]))))
+        boundaries.add(max(0.0, min(duration, float(segment["end"]))))
+    ordered = sorted(boundaries)
+    return [(start, end) for start, end in zip(ordered, ordered[1:]) if end - start >= 0.01]
+
+
+def _local_segment(segment: dict, window_start: float, window_end: float) -> dict:
+    local = dict(segment)
+    local["visible_start"] = max(0.0, float(segment["visible_start"]) - window_start)
+    local["talk_start"] = max(0.0, float(segment.get("talk_start", segment["visible_start"])) - window_start)
+    local["end"] = min(window_end - window_start, float(segment["end"]) - window_start)
+    return local
+
+
+def _concat_line(path: Path) -> str:
+    return "file '" + path.resolve().as_posix().replace("'", "'\\''") + "'"
+
+
+def _has_audio_stream(path: Path) -> bool:
+    ffprobe = settings.ffmpeg_bin.replace("ffmpeg", "ffprobe")
+    try:
+        result = subprocess.run(
+            [ffprobe, "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=index", "-of", "csv=p=0", str(path)],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        return bool(result.stdout.strip())
+    except Exception:
         try:
-            ai_clips.append(prepare_character_animation(character_png, segment, work / "ai-animation", Path(audio_by_phrase[segment["phrase_id"]]) if audio_by_phrase.get(segment["phrase_id"]) else None, allow_generate=allow_generate_during_render))
-        except Exception as exc:
-            log.warning("AI animation fallback for scene %s: %s", idx, exc)
-            ai_clips.append(None)
+            result = subprocess.run(
+                [settings.ffmpeg_bin, "-hide_banner", "-i", str(path), "-t", "0", "-f", "null", "-"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            return "Audio:" in (result.stderr or "")
+        except Exception:
+            return False
 
+
+def _build_voice_track(
+    audio_segments: list[dict],
+    duration: float,
+    output: Path,
+    work: Path,
+    render_threads: int,
+    timeout: float,
+) -> Path:
+    """Stream voices in authored order; never allocate ten full delayed tracks."""
+
+    ordered = sorted(audio_segments, key=lambda row: float(row.get("talk_start", row["visible_start"])))
     cmd = [
         settings.ffmpeg_bin, "-y", "-hide_banner", "-loglevel", "warning",
-        "-threads", str(render_threads), "-filter_threads", str(render_threads), "-filter_complex_threads", str(render_threads),
-        "-i", str(base_video), "-loop", "1", "-framerate", "30", "-i", str(character_png),
+        "-threads", str(render_threads), "-filter_threads", "1", "-filter_complex_threads", "1",
     ]
-    clip_inputs: dict[int, int] = {}
-    next_input = 2
-    for idx, clip in enumerate(ai_clips):
-        if clip:
-            cmd += ["-stream_loop", "-1", "-i", str(clip)]
-            clip_inputs[idx] = next_input
-            next_input += 1
-
-    audio_segments = []
-    for segment in timeline:
-        path = audio_by_phrase.get(segment["phrase_id"])
-        if path and Path(path).exists() and Path(path).stat().st_size > 0:
-            cmd += ["-i", str(path)]
-            audio_segments.append({**segment, "input_index": next_input})
-            next_input += 1
+    for segment in ordered:
+        cmd += ["-i", str(segment["audio_path"])]
 
     filters: list[str] = []
-    timeline_end = max(float(item["end"]) for item in timeline)
-    pad_seconds = max(0.0, timeline_end - base_duration)
-    # Split the PNG only for fallback scenes. AI clips are green-screen keyed individually.
-    fallback_indices=[i for i,c in enumerate(ai_clips) if not c]
-    if fallback_indices:
-        split_labels = "".join(f"[hero{i}]" for i in fallback_indices)
-        filters.append(f"[1:v]format=rgba,split={len(fallback_indices)}{split_labels}")
-    base_source="[0:v]"
-    if base_video_filters:
-        filters.append(f"[0:v]{','.join(base_video_filters)}[localizedv]")
-        base_source="[localizedv]"
-    if pad_seconds > 0.001:
-        filters.append(f"{base_source}tpad=stop_mode=clone:stop_duration={pad_seconds:.3f}[basev]")
-        previous = "[basev]"
-    else:
-        previous = base_source
-    for idx, segment in enumerate(timeline):
-        height = int(segment.get("height", 225))
-        start = float(segment["visible_start"])
-        end = float(segment["end"])
-        fade_out_start = max(start, end - 0.18)
-        if ai_clips[idx]:
-            src=clip_inputs[idx]
-            # Remove the provider's solid green background. Similarity/blend are deliberately
-            # conservative to preserve green details on the character if present.
-            filters.append(
-                f"[{src}:v]setpts=PTS-STARTPTS,chromakey=0x00FF00:0.28:0.08,format=rgba,"
-                f"scale=-1:{height},fade=t=in:st=0:d=0.12:alpha=1,fade=t=out:st={max(.01,end-start-.18)}:d=.18:alpha=1[hs{idx}]"
-            )
-        else:
-            profile = animation_profile(segment.get("animation", "stand_front_talk"), settings.storage_root / "animation-library")
-            pre = "hflip," if bool(profile.get("mirror", False)) else ""
-            rotation = float(profile.get("rotation", 0.012))
-            filters.append(
-                f"[hero{idx}]{pre}scale=-1:{height},"
-                f"rotate='{rotation}*sin(3.2*(t-{start}))':ow=rotw(iw):oh=roth(ih):c=none,"
-                f"fade=t=in:st={start}:d=0.15:alpha=1,fade=t=out:st={fade_out_start}:d=0.18:alpha=1[hs{idx}]"
-            )
-        out = f"[v{idx}]"
-        xexpr=_x_expression(segment)
-        yexpr=_y_expression(segment)
-        if ai_clips[idx]:
-            # AI clip timestamps start at zero, but overlay placement follows lesson timeline.
-            filters.append(f"{previous}[hs{idx}]overlay=x='{xexpr}':y='{yexpr}':enable='between(t,{start},{end})':eof_action=pass{out}")
-        else:
-            filters.append(f"{previous}[hs{idx}]overlay=x='{xexpr}':y='{yexpr}':enable='between(t,{start},{end})':eof_action=pass{out}")
-        previous = out
-    filters.append(f"{previous}format=yuv420p[vout]")
-
-    if audio_segments:
-        labels = []
-        for idx, segment in enumerate(audio_segments):
-            delay = int(round(float(segment.get("talk_start", segment["visible_start"])) * 1000))
-            label = f"[a{idx}]"
-            filters.append(
-                f"[{segment['input_index']}:a]atrim=0:5,asetpts=PTS-STARTPTS,"
-                f"highpass=f=80,acompressor=threshold=-20dB:ratio=3:makeup=3,"
-                f"alimiter=limit=0.891,adelay={delay}|{delay}{label}"
-            )
-            labels.append(label)
-        filters.append(f"{''.join(labels)}amix=inputs={len(labels)}:normalize=0:dropout_transition=0[voice]")
-        # Mix voices with the original soundtrack. Avoid sidechaincompress here: it was fragile
-        # across FFmpeg builds and could abort the entire render.
-        if pad_seconds > 0.001:
-            filters.append(f"[0:a]apad=pad_dur={pad_seconds:.3f}[basea]")
-            filters.append("[basea][voice]amix=inputs=2:normalize=0:dropout_transition=0,alimiter=limit=0.891[aout]")
-        else:
-            filters.append("[0:a][voice]amix=inputs=2:normalize=0:dropout_transition=0,alimiter=limit=0.891[aout]")
-
-    cmd += ["-filter_complex", ";".join(filters), "-map", "[vout]"]
-    cmd += ["-map", "[aout]"] if audio_segments else ["-map", "0:a?"]
+    pieces: list[str] = []
+    cursor = 0.0
+    for index, segment in enumerate(ordered):
+        start = max(cursor, min(duration, float(segment.get("talk_start", segment["visible_start"]))))
+        if start - cursor >= 0.001:
+            label = f"[silence{index}]"
+            filters.append(f"anullsrc=r=48000:cl=stereo:d={start - cursor:.3f},asetpts=PTS-STARTPTS{label}")
+            pieces.append(label)
+        end = max(start + 0.05, min(duration, float(segment.get("end", start + 5.0))))
+        slot_duration = min(duration - start, end - start)
+        label = f"[voice{index}]"
+        filters.append(
+            f"[{index}:a]atrim=0:{slot_duration:.3f},asetpts=PTS-STARTPTS,"
+            "highpass=f=80,acompressor=threshold=-20dB:ratio=3:makeup=3,alimiter=limit=0.891,"
+            f"aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,apad=pad_dur={slot_duration:.3f},"
+            f"atrim=0:{slot_duration:.3f}{label}"
+        )
+        pieces.append(label)
+        cursor = start + slot_duration
+    if duration - cursor >= 0.001:
+        label = "[silence_final]"
+        filters.append(f"anullsrc=r=48000:cl=stereo:d={duration - cursor:.3f},asetpts=PTS-STARTPTS{label}")
+        pieces.append(label)
+    filters.append(f"{''.join(pieces)}concat=n={len(pieces)}:v=0:a=1[aout]")
     cmd += [
-        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
-        "-maxrate", "2600k", "-bufsize", "5200k",
-        "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart",
-        "-t", f"{max(base_duration, timeline_end):.3f}", str(output_mp4),
+        "-filter_complex", ";".join(filters), "-map", "[aout]",
+        "-c:a", "aac", "-b:a", "128k", "-t", f"{duration:.3f}", str(output),
     ]
-    command_file.write_text(" ".join(cmd), encoding="utf-8")
-    log.info("Rendering cartoon: base=%s character=%s voices=%s output=%s", base_video, character_png, len(audio_segments), output_mp4)
-    try:
-        ffmpeg_timeout=int(_cartoon_config().get("ffmpeg_timeout_seconds",180))
-        result = subprocess.run(cmd, check=True, capture_output=True, timeout=ffmpeg_timeout)
-        if result.stderr:
-            log.info("FFmpeg warnings: %s", result.stderr.decode("utf-8", errors="ignore")[-2000:])
-    except FileNotFoundError as exc:
-        log.exception("FFmpeg executable not found: %s", settings.ffmpeg_bin)
-        raise CartoonBuildError("FFmpeg не установлен в контейнере.") from exc
-    except subprocess.TimeoutExpired as exc:
-        detail = (exc.stderr or b"").decode("utf-8", errors="ignore")
-        error_file.write_text(detail or "FFmpeg timed out", encoding="utf-8")
-        log.error("FFmpeg timed out. stderr=%s", detail[-4000:])
-        raise CartoonBuildError("Сборка мультфильма превысила допустимое время. Ошибка записана в Railway Logs.") from exc
-    except subprocess.CalledProcessError as exc:
-        detail = exc.stderr.decode("utf-8", errors="ignore")
-        error_file.write_text(detail, encoding="utf-8")
-        log.error("FFmpeg failed code=%s command=%s stderr=%s", exc.returncode, command_file, detail[-8000:])
-        raise CartoonBuildError(f"FFmpeg завершился с кодом {exc.returncode}. Подробности выведены в Railway Logs.") from exc
+    _run_ffmpeg_step(cmd, step="voice_track", work=work, timeout=timeout)
+    return output
 
-    if not output_mp4.exists() or output_mp4.stat().st_size < 10_000:
-        raise CartoonBuildError("FFmpeg не создал полноценный MP4-файл.")
+
+def build_timeline_cartoon(base_video: Path, character_png: Path, audio_by_phrase: dict[str, Path], timeline: list[dict], output_mp4: Path, base_video_filters: list[str] | None = None) -> Path:
+    """Render the authored movie with disk-backed sequential FFmpeg stages.
+
+    The former single graph split a 1080p hero stream ten times and kept ten
+    delayed audio streams alive for the full film. On Railway that graph hit
+    the 1 GB cgroup hard limit. Here each video window is rendered separately,
+    at most the currently visible hero is decoded, voices are concatenated as
+    a streaming audio track, and the final video concat/mux uses stream copy.
+    """
+    if not base_video.exists():
+        log.error("Movie base is missing: %s", base_video)
+        raise CartoonBuildError(SAFE_MOVIE_ERROR)
+    if not character_png.exists():
+        log.error("Movie hero is missing: %s", character_png)
+        raise CartoonBuildError(SAFE_MOVIE_ERROR)
+    if not timeline:
+        log.error("Movie timeline is empty")
+        raise CartoonBuildError(SAFE_MOVIE_ERROR)
+
+    cfg = _cartoon_config()
+    frame_width, frame_height, base_duration = _probe_video(base_video)
+    timeline = _resolve_normalized_timeline([dict(item) for item in timeline], frame_width, frame_height)
+    minimum = float(cfg.get("first_child_scene_seconds", 8))
+    timeline[0]["end"] = max(float(timeline[0].get("end", 0)), float(timeline[0].get("visible_start", 0)) + minimum)
+    timeline_end = max(float(item["end"]) for item in timeline)
+    render_duration = max(base_duration, timeline_end)
+    output_mp4.parent.mkdir(parents=True, exist_ok=True)
+    ensure_animation_library(settings.storage_root / "animation-library")
+    _rig = load_character_rig(character_png, settings.storage_root / "character-rigs")
+    _motion_plans = [normalize_motion_plan(item) for item in timeline]
+
+    allow_generate = bool(cfg.get("generate_missing_animation_during_render", False))
+    render_threads = max(1, min(2, int(cfg.get("render_threads", 1))))
+    total_timeout = max(60, int(cfg.get("total_render_timeout_seconds", 600)))
+    step_timeout = max(30, int(cfg.get("ffmpeg_timeout_seconds", 300)))
+    render_started = time.monotonic()
+
+    def remaining_timeout() -> float:
+        remaining = total_timeout - (time.monotonic() - render_started)
+        if remaining <= 5:
+            raise CartoonBuildError(SAFE_MOVIE_ERROR)
+        return min(float(step_timeout), remaining)
+
+    with tempfile.TemporaryDirectory(prefix=f"{output_mp4.stem}_render_", dir=output_mp4.parent) as work_value:
+        work = Path(work_value)
+        ai_clips: list[Path | None] = []
+        for index, segment in enumerate(timeline):
+            try:
+                phrase_audio = Path(audio_by_phrase[segment["phrase_id"]]) if audio_by_phrase.get(segment["phrase_id"]) else None
+                ai_clips.append(prepare_character_animation(character_png, segment, work / "ai-animation", phrase_audio, allow_generate=allow_generate))
+            except Exception as exc:
+                log.warning("AI animation fallback for scene %s: %s", index, exc)
+                ai_clips.append(None)
+
+        segment_files: list[Path] = []
+        windows = _render_windows(timeline, render_duration)
+        log.info(
+            "MOBILE_MOVIE_RENDER_PLAN duration=%.3f windows=%s voices=%s threads=%s",
+            render_duration,
+            len(windows),
+            sum(1 for item in timeline if audio_by_phrase.get(item["phrase_id"])),
+            render_threads,
+        )
+        for window_index, (window_start, window_end) in enumerate(windows):
+            window_duration = window_end - window_start
+            active = [
+                index for index, item in enumerate(timeline)
+                if float(item["visible_start"]) < window_end - 0.001 and float(item["end"]) > window_start + 0.001
+            ]
+            cmd = [
+                settings.ffmpeg_bin, "-y", "-hide_banner", "-loglevel", "warning",
+                "-threads", str(render_threads), "-filter_threads", "1", "-filter_complex_threads", "1",
+                "-ss", f"{min(window_start, max(0.0, base_duration - 0.05)):.3f}", "-i", str(base_video),
+            ]
+            input_by_scene: dict[int, int] = {}
+            for scene_index in active:
+                clip = ai_clips[scene_index]
+                if clip:
+                    cmd += ["-stream_loop", "-1", "-i", str(clip)]
+                else:
+                    cmd += ["-loop", "1", "-framerate", "15", "-i", str(character_png)]
+                input_by_scene[scene_index] = len(input_by_scene) + 1
+
+            base_chain = ["setpts=PTS-STARTPTS", *_shift_timed_filters(base_video_filters, window_start)]
+            pad = max(0.0, window_end - base_duration)
+            if pad > 0.001:
+                base_chain.append(f"tpad=stop_mode=clone:stop_duration={pad + 0.05:.3f}")
+            filters = [f"[0:v]{','.join(base_chain)}[basev]"]
+            previous = "[basev]"
+            for local_index, scene_index in enumerate(active):
+                segment = _local_segment(timeline[scene_index], window_start, window_end)
+                height = int(segment.get("height", 225))
+                start = float(segment["visible_start"])
+                end = float(segment["end"])
+                hero_label = f"[hero{local_index}]"
+                source = input_by_scene[scene_index]
+                if ai_clips[scene_index]:
+                    filters.append(
+                        f"[{source}:v]setpts=PTS-STARTPTS,chromakey=0x00FF00:0.28:0.08,format=rgba,"
+                        f"scale=-1:{height},fade=t=in:st={start:.3f}:d=0.12:alpha=1,"
+                        f"fade=t=out:st={max(start, end - 0.18):.3f}:d=0.18:alpha=1{hero_label}"
+                    )
+                else:
+                    profile = animation_profile(segment.get("animation", "stand_front_talk"), settings.storage_root / "animation-library")
+                    pre = "hflip," if bool(profile.get("mirror", False)) else ""
+                    rotation = float(profile.get("rotation", 0.012))
+                    filters.append(
+                        f"[{source}:v]setpts=PTS-STARTPTS,{pre}scale=-1:{height},"
+                        f"rotate='{rotation}*sin(3.2*(t-{start:.3f}))':ow=rotw(iw):oh=roth(ih):c=none,"
+                        f"fade=t=in:st={start:.3f}:d=0.15:alpha=1,"
+                        f"fade=t=out:st={max(start, end - 0.18):.3f}:d=0.18:alpha=1{hero_label}"
+                    )
+                out = f"[overlay{local_index}]"
+                filters.append(
+                    f"{previous}{hero_label}overlay=x='{_x_expression(segment)}':y='{_y_expression(segment)}':"
+                    f"enable='between(t,{start:.3f},{end:.3f})':eof_action=pass{out}"
+                )
+                previous = out
+            filters.append(f"{previous}fps=30,format=yuv420p[vout]")
+            segment_path = work / f"video_{window_index:03d}.mp4"
+            cmd += [
+                "-filter_complex", ";".join(filters), "-map", "[vout]", "-an",
+                "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
+                "-maxrate", "2600k", "-bufsize", "5200k", "-r", "30",
+                "-t", f"{window_duration:.3f}", str(segment_path),
+            ]
+            _run_ffmpeg_step(cmd, step=f"video_{window_index:03d}", work=work, timeout=remaining_timeout())
+            segment_files.append(segment_path)
+
+        concat_list = work / "video_segments.txt"
+        concat_list.write_text("\n".join(_concat_line(path) for path in segment_files) + "\n", encoding="utf-8")
+        video_only = work / "video_only.mp4"
+        _run_ffmpeg_step(
+            [
+                settings.ffmpeg_bin, "-y", "-hide_banner", "-loglevel", "warning",
+                "-threads", str(render_threads), "-f", "concat", "-safe", "0", "-i", str(concat_list),
+                "-map", "0:v:0", "-c:v", "copy", "-an", str(video_only),
+            ],
+            step="video_concat",
+            work=work,
+            timeout=remaining_timeout(),
+        )
+
+        audio_segments = []
+        for segment in timeline:
+            path = audio_by_phrase.get(segment["phrase_id"])
+            if path and Path(path).exists() and Path(path).stat().st_size > 0:
+                audio_segments.append({**segment, "audio_path": Path(path)})
+        voice_track: Path | None = None
+        if audio_segments:
+            voice_track = _build_voice_track(
+                audio_segments,
+                render_duration,
+                work / "voice_track.m4a",
+                work,
+                render_threads,
+                remaining_timeout(),
+            )
+
+        final_tmp = work / "final.mp4"
+        base_has_audio = _has_audio_stream(base_video)
+        final_cmd = [
+            settings.ffmpeg_bin, "-y", "-hide_banner", "-loglevel", "warning",
+            "-threads", str(render_threads), "-filter_threads", "1", "-filter_complex_threads", "1",
+            "-i", str(video_only), "-i", str(base_video),
+        ]
+        if voice_track:
+            final_cmd += ["-i", str(voice_track)]
+        if base_has_audio and voice_track:
+            audio_filter = (
+                f"[1:a]apad=pad_dur={max(0.0, render_duration - base_duration) + 0.05:.3f},"
+                f"atrim=0:{render_duration:.3f},asetpts=PTS-STARTPTS[basea];"
+                f"[2:a]atrim=0:{render_duration:.3f},asetpts=PTS-STARTPTS[voice];"
+                "[basea][voice]amix=inputs=2:normalize=0:dropout_transition=0,alimiter=limit=0.891[aout]"
+            )
+            final_cmd += ["-filter_complex", audio_filter, "-map", "0:v:0", "-map", "[aout]", "-c:a", "aac", "-b:a", "128k"]
+        elif base_has_audio:
+            audio_filter = f"[1:a]apad=pad_dur={max(0.0, render_duration - base_duration) + 0.05:.3f},atrim=0:{render_duration:.3f}[aout]"
+            final_cmd += ["-filter_complex", audio_filter, "-map", "0:v:0", "-map", "[aout]", "-c:a", "aac", "-b:a", "128k"]
+        elif voice_track:
+            final_cmd += ["-map", "0:v:0", "-map", "2:a:0", "-c:a", "copy"]
+        else:
+            final_cmd += ["-map", "0:v:0", "-an"]
+        final_cmd += ["-c:v", "copy", "-movflags", "+faststart", "-t", f"{render_duration:.3f}", str(final_tmp)]
+        _run_ffmpeg_step(final_cmd, step="final_mux", work=work, timeout=remaining_timeout())
+
+        if not final_tmp.exists() or final_tmp.stat().st_size < 10_000:
+            log.error("Final movie artifact is missing or empty: %s", final_tmp)
+            raise CartoonBuildError(SAFE_MOVIE_ERROR)
+        final_tmp.replace(output_mp4)
+
     log.info("Cartoon ready: %s bytes=%s", output_mp4, output_mp4.stat().st_size)
     return ensure_telegram_safe_mp4(output_mp4)
 

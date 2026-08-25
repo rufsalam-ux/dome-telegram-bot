@@ -42,6 +42,7 @@ from app.services.subscription_provider import (
 log=logging.getLogger('dome.mobile_api')
 MOBILE_LANGUAGES={'ru','en','es','de','fr','it','pt','tr','ar','zh'}
 _movie_tasks:set[asyncio.Task]=set()
+MOVIE_RETRY_MESSAGE='Мультфильм пока не собрался. Все записи сохранены — попробуйте ещё раз.'
 
 
 def _utcnow() -> datetime:
@@ -623,7 +624,7 @@ async def movie_status(request:web.Request)->web.Response:
         try:detail=json.loads(slot.diagnostics_json or '{}')
         except (TypeError,ValueError,json.JSONDecodeError):detail={}
         diagnostics.append({'required_voice_id':slot.required_voice_id,'status':slot.status,**detail})
-    return web.json_response({'status':movie.status,'url':url,'error':movie.error if movie.status=='FAILED' else None,'run_number':movie.run_number,'voice_diagnostics':diagnostics})
+    return web.json_response({'status':movie.status,'url':url,'error':MOVIE_RETRY_MESSAGE if movie.status=='FAILED' else None,'can_retry':movie.status=='FAILED','run_number':movie.run_number,'voice_diagnostics':diagnostics})
 
 async def movie_file(request:web.Request)->web.StreamResponse:
     cid=int(request.match_info['child_id']);filename=request.match_info['filename'];val=f'movie:{cid}:{filename}'

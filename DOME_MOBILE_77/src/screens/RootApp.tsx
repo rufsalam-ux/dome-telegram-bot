@@ -1,14 +1,18 @@
-import React,{useEffect,useState} from 'react';
+import React,{Suspense,useEffect,useRef,useState} from 'react';
 import {Image,Linking,ScrollView,Share,Text,View,Alert} from 'react-native';
 import {Body,Button,Card,H1,H2} from '../components/Ui';
 import {useAppStore} from '../store/AppStore';
 import {bootstrap,isUnauthorizedError,listMovies,API_BASE,restoreApiToken,updateChildLanguages} from '../api/mobile';
-import {PurchaseScreen} from './PurchaseScreen';
-import {LessonPlayer} from './LessonPlayer';
-import {AdminScreen} from './AdminScreen';
-import {AuthScreen} from './AuthScreen';
-import {HeroScreen} from './HeroScreen';
-import {AddChildScreen} from './AddChildScreen';
+import {logStartupStage,startupErrorText,withStartupTimeout} from '../engine/startup';
+
+// LessonPlayer initializes native audio/video modules. Load it only when the
+// lesson route is requested so a media-module problem can never block app boot.
+const LazyLessonPlayer=React.lazy(()=>import('./LessonPlayer').then(module=>({default:module.LessonPlayer})));
+const LazyPurchaseScreen=React.lazy(()=>import('./PurchaseScreen').then(module=>({default:module.PurchaseScreen})));
+const LazyAdminScreen=React.lazy(()=>import('./AdminScreen').then(module=>({default:module.AdminScreen})));
+const LazyAuthScreen=React.lazy(()=>import('./AuthScreen').then(module=>({default:module.AuthScreen})));
+const LazyHeroScreen=React.lazy(()=>import('./HeroScreen').then(module=>({default:module.HeroScreen})));
+const LazyAddChildScreen=React.lazy(()=>import('./AddChildScreen').then(module=>({default:module.AddChildScreen})));
 
 const LANGUAGES=[
   ['ru','Русский'],['en','English'],['es','Español'],['de','Deutsch'],['fr','Français'],
@@ -22,31 +26,53 @@ export function RootApp(){
   const[native,setNative]=useState('ru');
   const[savingLang,setSavingLang]=useState(false);
   const[sessionReady,setSessionReady]=useState(false);
+  const[startupError,setStartupError]=useState('');
+  const[bootAttempt,setBootAttempt]=useState(0);
+  const firstScreenLoggedForAttempt=useRef(-1);
   const visibleChildren=s.children.filter(child=>Boolean(child?.id&&child?.name?.trim()));
 
   useEffect(()=>{
     let active=true;
+    setSessionReady(false);setStartupError('');
     (async()=>{
+      let route='auth';
       try{
-        const token=await restoreApiToken();
-        if(!token)return;
-        const data=await bootstrap();
-        if(active)await s.hydrate(data,token);
-      }catch(error){
-        if(active&&isUnauthorizedError(error))await s.logout();
+        const token=await withStartupTimeout(restoreApiToken(),'secure_store',5000);
+        logStartupStage('SECURESTORE_DONE',{has_token:Boolean(token),boot_attempt:bootAttempt});
+        if(!token){
+          logStartupStage('BACKEND_BOOTSTRAP_DONE',{skipped:true,reason:'NO_TOKEN',boot_attempt:bootAttempt});
+          return;
+        }
+        const data=await withStartupTimeout(bootstrap(),'bootstrap',8000);
+        logStartupStage('BACKEND_BOOTSTRAP_DONE',{child_count:Array.isArray(data?.children)?data.children.length:0,boot_attempt:bootAttempt});
+        if(active)await withStartupTimeout(s.hydrate(data,token),'hydrate',5000);
+        route='children';
+      }catch(error:any){
+        console.error('DOME_STARTUP_RESTORE_ERROR',error);
+        if(active&&isUnauthorizedError(error))await withStartupTimeout(s.logout(),'logout',3000).catch(logoutError=>console.error('DOME_STARTUP_LOGOUT_ERROR',logoutError));
+        else if(active){route='startup_error';setStartupError(startupErrorText(error))}
       }finally{
-        if(active)setSessionReady(true);
+        if(active){logStartupStage('NAV_READY',{route,boot_attempt:bootAttempt});setSessionReady(true)}
       }
     })();
     return()=>{active=false};
-  },[]);
+  },[bootAttempt]);
+  useEffect(()=>{
+    if(!sessionReady||firstScreenLoggedForAttempt.current===bootAttempt)return;
+    const frame=requestAnimationFrame(()=>{
+      firstScreenLoggedForAttempt.current=bootAttempt;
+      logStartupStage('FIRST_SCREEN_RENDERED',{screen:startupError?'startup_error':s.screen,boot_attempt:bootAttempt});
+    });
+    return()=>cancelAnimationFrame(frame);
+  },[bootAttempt,sessionReady,startupError,s.screen]);
   useEffect(()=>{if(s.selectedChild){setTarget(s.selectedChild.learningLanguage||'ru');setNative(s.selectedChild.nativeLanguage||'ru')}},[s.selectedChild?.id]);
 
   if(!sessionReady)return <View style={{flex:1,alignItems:'center',justifyContent:'center',padding:24}}><Body>Восстанавливаем вход…</Body></View>;
-  if(s.screen==='auth')return <AuthScreen/>;
+  if(startupError)return <View style={{flex:1,alignItems:'center',justifyContent:'center',padding:28}}><H1>DOME</H1><Body>{startupError} Проверьте интернет и повторите попытку.</Body><Button title='Повторить запуск' onPress={()=>setBootAttempt(value=>value+1)}/><Button secondary title='Открыть экран входа' onPress={()=>{setStartupError('');s.setScreen('auth')}}/></View>;
+  if(s.screen==='auth')return <LazyAuthScreen/>;
   if(s.screen==='children')return <ScrollView contentContainerStyle={{padding:24,flexGrow:1}}>{visibleChildren.length?<><H1>Кто сегодня занимается?</H1><Body>Выберите ребёнка или добавьте новый профиль.</Body><Button testID='add-child-button' title='＋ Добавить ребёнка' onPress={()=>s.setScreen('add_child')}/>{visibleChildren.map(c=><Card key={c.id}><H2>{c.name}</H2><Body>{c.age?`${c.age} лет · `:''}изучает {c.learningLanguage||'ru'}</Body><Button title='Выбрать' onPress={()=>{s.setSelectedChild(c);s.setScreen(c.activeCharacterId?'home':'hero')}}/></Card>)}</>:<><H1>Добро пожаловать в DOME</H1><Body>Аккаунт подтверждён. Создайте первый профиль ребёнка, чтобы начать занятия.</Body><Button testID='add-child-onboarding-button' title='＋ Добавить ребёнка' onPress={()=>s.setScreen('add_child')}/><Card><H2>Первый шаг</H2><Body>Укажите имя, возраст и языки обучения. После этого вместе выберите героя.</Body></Card></>}<Button secondary title='Выйти из аккаунта' onPress={s.logout}/></ScrollView>;
-  if(s.screen==='add_child')return <AddChildScreen/>;
-  if(s.screen==='hero')return <HeroScreen/>;
+  if(s.screen==='add_child')return <LazyAddChildScreen/>;
+  if(s.screen==='hero')return <LazyHeroScreen/>;
 
   if(s.screen==='language'){
     const c=s.selectedChild;if(!c)return null;
@@ -55,10 +81,10 @@ export function RootApp(){
   }
 
   if(s.screen==='home')return <ScrollView contentContainerStyle={{padding:24}}><H1>{s.selectedChild?.name||'DOME'}</H1>{s.selectedChild?.heroUrl?<Image source={{uri:s.selectedChild.heroUrl.startsWith('http')?s.selectedChild.heroUrl:API_BASE+s.selectedChild.heroUrl}} style={{height:150,width:'100%',resizeMode:'contain'}}/>:null}<Card><Body>Изучаемый: {s.selectedChild?.learningLanguage||'ru'} · объяснения: {s.selectedChild?.nativeLanguage||'ru'}</Body></Card><Button title='▶ Продолжить урок' onPress={()=>s.setScreen('lesson')}/><Button title='📚 Мои уроки' onPress={()=>s.setScreen('lessons')}/><Button title='🌍 Изменить языки' secondary onPress={()=>s.setScreen('language')}/><Button title='🎭 Мой герой' secondary onPress={()=>s.setScreen('hero')}/><Button title='🎬 Мои мультфильмы' secondary onPress={async()=>{if(s.selectedChild)try{const r=await listMovies(s.selectedChild.id);setMovies(r.movies||[])}catch{}s.setScreen('movies')}}/><Button title='💳 Тарифы и подписка' secondary onPress={()=>s.setScreen('plans')}/><Button title='📊 Мои успехи' secondary onPress={()=>Alert.alert('Прогресс','Данные берутся с сервера DOME.')}/><Button secondary title='Сменить ребёнка' onPress={()=>s.setScreen('children')}/></ScrollView>;
-  if(s.screen==='plans'||s.screen==='purchase')return <PurchaseScreen/>;
+  if(s.screen==='plans'||s.screen==='purchase')return <LazyPurchaseScreen/>;
   if(s.screen==='lessons')return <ScrollView contentContainerStyle={{padding:24}}><H1>Разговорные занятия</H1><Card><H2>Путешествие: Мадагаскар и Исландия</H2><Body>Полный урок DOME с живой AI-озвучкой, голосовыми ответами, героем и мультфильмом.</Body><Button title='Начать' onPress={()=>s.setScreen('lesson')}/></Card><Button secondary title='Назад' onPress={()=>s.setScreen('home')}/></ScrollView>;
-  if(s.screen==='lesson')return <LessonPlayer/>;
+  if(s.screen==='lesson')return <Suspense fallback={<View style={{flex:1,alignItems:'center',justifyContent:'center',padding:24}}><Body>Открываем урок…</Body></View>}><LazyLessonPlayer/></Suspense>;
   if(s.screen==='movies')return <ScrollView contentContainerStyle={{padding:24}}><H1>Мои мультфильмы</H1>{movies.length?movies.map((m:any)=><Card key={`${m.session_id}-${m.created_at}`}><Body>{m.title||m.filename}</Body><Body muted>{m.status==='READY'?'Готов':m.status==='PROCESSING'?'Обрабатывается…':m.status==='FAILED'?'Нужен повторный запуск':'Ожидает данных'} · {m.created_at||''}</Body>{m.url?<><Button title='▶ Смотреть / скачать' onPress={()=>Linking.openURL(m.url)}/><Button secondary title='Поделиться' onPress={()=>Share.share({message:m.url,url:m.url})}/></>:null}</Card>):<Card><Body>Пока мультфильмов нет.</Body></Card>}<Button secondary title='Обновить' onPress={async()=>{if(s.selectedChild){const r=await listMovies(s.selectedChild.id);setMovies(r.movies||[])}}}/><Button secondary title='Назад' onPress={()=>s.setScreen('home')}/></ScrollView>;
-  if(s.screen==='admin')return <AdminScreen/>;
+  if(s.screen==='admin')return <LazyAdminScreen/>;
   return <View style={{padding:24}}><Text>Неизвестный экран</Text></View>
 }

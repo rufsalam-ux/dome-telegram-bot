@@ -13,11 +13,15 @@ import {
   dropInsideTarget,
   heroBox,
   initialBilingualHint,
+  isRequiredForMovie,
+  LessonRuntimeTimeoutError,
   lessonLayoutPolicy,
   movedPixelRect,
   nextCardQuestion,
   nextEnabled,
+  progressiveHint,
   recordEnabled,
+  recoveryStageAfterFailure,
   rectanglesOverlap,
   requiresSelection,
   requiresVoice,
@@ -31,9 +35,12 @@ import {
   tutorAudioWatchdogStage,
   updatePackedItems,
   visualRequiredForSlide,
+  withLessonTimeout,
 } from '../src/engine/lessonRuntime.ts';
+import {avatarFacing,avatarScaleX,canonicalChildAvatarUri,lessonAvatarConfig,slideAvatarConfig} from '../src/engine/avatarRuntime.ts';
 import {CAT_ACTIVITY_STATES,catProcessingState,catStateForStage} from '../src/engine/catRuntime.ts';
 import {mediaPhaseAfterEnd,normalizeMediaSequence,usesGenericMediaRuntime} from '../src/engine/mediaRuntime.ts';
+import {StartupTimeoutError,startupErrorText,withStartupTimeout} from '../src/engine/startup.ts';
 import bundledLesson from '../src/data/botLesson.json' with {type:'json'};
 import {buildRuntimeOrder} from '../src/data/lessonInteractions.ts';
 import {beginVisualAssetLoad,failVisualAsset,loadVisualAssetWithRetry,useLocalizedVisualAsset,visualAssetSourceForKey} from '../src/engine/visualAsset.ts';
@@ -93,14 +100,15 @@ test('third unsupported take advances without being accepted',()=>{
   assert.equal(advanceAfterAssessment({accepted:false,advance_allowed:false,needs_retry:true}),'RETRY');
 });
 
-test('Mila hero placement is declarative and left of Mila',()=>{
+test('Mila hero placement is declarative, scene-sized, and left of Mila',()=>{
   const standalone=heroBox(mila,{default_hero_placement:'hidden'})!;
-  assert.ok(standalone[3]>.61&&standalone[3]<=.92);
+  assert.ok(standalone[3]>=.58&&standalone[3]<=.92);
   assert.equal(heroBox({}, {default_hero_placement:'hidden'}),null);
   const authored=(bundledLesson.slides as any[]).find(slide=>slide.slide_id==='slide_20');
   const resolved=heroBox(authored,bundledLesson) as [number,number,number,number];
-  assert.ok(resolved[3]>.61,'Mila hero must be visibly larger than the old box');
+  assert.ok(resolved[3]>=.58,'Mila hero must remain a full-height scene participant');
   assert.ok(resolved[0]+resolved[2]<Number(authored.character_box[0]));
+  assert.ok(Math.abs((resolved[1]+resolved[3])-(authored.character_box[1]+authored.character_box[3]))<.03,'Mila and child must share a baseline');
   for(const item of authored.selection_options)assert.equal(rectanglesOverlap(resolved,item.rect),false);
 });
 
@@ -188,7 +196,7 @@ test('Android suitcase drag atomically packs, persists visually, unpacks, and of
   packed=updatePackedItems(packed,'water',suitcaseDropOutcome(true,false));assert.deepEqual(packed,[]);
   assert.equal(suitcaseTapFallbackAvailable(2),false);assert.equal(suitcaseTapFallbackAvailable(3),true);
   assert.equal(droppedObjectTutorPrompt('Camera','What will you take?'),'Camera! What will you take?');
-  assert.equal(nextEnabled('WAITING_VOICE',true,true),true);
+  assert.equal(nextEnabled('WAITING_VOICE',true,{requiredForMovie:false}),true);
 });
 
 test('generic media supports an authored intro-video to image sequence',()=>{
@@ -197,13 +205,107 @@ test('generic media supports an authored intro-video to image sequence',()=>{
   assert.equal(usesGenericMediaRuntime(slide),true);assert.equal(mediaPhaseAfterEnd(sequence,0),1);assert.equal(mediaPhaseAfterEnd(sequence,1),1);
 });
 
-test('DOME cat listens during tutor speech and starts only a local latency game',()=>{
+test('DOME cat is an independent companion and reward star stays in its own layer',()=>{
   assert.deepEqual(CAT_ACTIVITY_STATES,['idle','listening','thinking','happy','encouraging','surprised','waiting','playing','sleeping']);
   assert.equal(catStateForStage('AI_SPEAKING'),'listening');assert.equal(catStateForStage('WAITING_VOICE'),'waiting');
-  assert.equal(catProcessingState(1499),'thinking');assert.equal(catProcessingState(1500),'idle');assert.equal(catProcessingState(4000),'playing');
-  const cat=readFileSync(new URL('../src/components/CatActivityLayer.tsx',import.meta.url),'utf8');const player=readFileSync(new URL('../src/screens/LessonPlayer.tsx',import.meta.url),'utf8');
-  assert.match(cat,/gameActive/);assert.match(cat,/stage==='AI_SPEAKING'/);assert.match(player,/<CatActivityLayer/);
+  assert.equal(catProcessingState(1499),'thinking');assert.equal(catProcessingState(1500),'idle');assert.equal(catProcessingState(4000),'waiting');
+  const cat=readFileSync(new URL('../src/components/CatActivityLayer.tsx',import.meta.url),'utf8');const reward=readFileSync(new URL('../src/components/RewardEffectLayer.tsx',import.meta.url),'utf8');const player=readFileSync(new URL('../src/screens/LessonPlayer.tsx',import.meta.url),'utf8');
+  assert.doesNotMatch(cat,/star\.png|gameActive|cat-mini-game-star/);assert.match(cat,/stage==='AI_SPEAKING'/);assert.match(reward,/star\.png/);assert.match(player,/<CatActivityLayer/);
   assert.match(player,/droppedObjectTutorPrompt\(labelTarget,targetText\)/);
+});
+
+test('regression: selected child avatar identity persists across slide transitions',()=>{
+  const child={id:7,heroUrl:'/media/children/7/canonical.png'};
+  const first=canonicalChildAvatarUri(child,'https://api.dome.test');
+  const second=canonicalChildAvatarUri({...child},'https://api.dome.test');
+  assert.equal(first,'https://api.dome.test/media/children/7/canonical.png');assert.equal(second,first);
+  for(const slide of (bundledLesson.slides as any[]).slice(0,6))assert.ok(slideAvatarConfig(slide,bundledLesson.lesson_id));
+});
+
+test('regression: AI state changes cannot replace or duplicate the child avatar',()=>{
+  const avatar=readFileSync(new URL('../src/components/ChildAvatarLayer.tsx',import.meta.url),'utf8');
+  const player=readFileSync(new URL('../src/screens/LessonPlayer.tsx',import.meta.url),'utf8');
+  assert.doesNotMatch(avatar,/RuntimeStage|AI_SPEAKING|PROCESSING|star\.png|cat\.png/);
+  assert.equal((player.match(/<ChildAvatarLayer/g)||[]).length,2,'one authored image path plus one generic-media path');
+  assert.match(player,/canonicalChildAvatarUri\(child,API_BASE\)/);
+});
+
+test('regression: reward star can never become the child avatar or cat',()=>{
+  const avatar=readFileSync(new URL('../src/components/ChildAvatarLayer.tsx',import.meta.url),'utf8');
+  const cat=readFileSync(new URL('../src/components/CatActivityLayer.tsx',import.meta.url),'utf8');
+  const reward=readFileSync(new URL('../src/components/RewardEffectLayer.tsx',import.meta.url),'utf8');
+  assert.doesNotMatch(avatar+cat,/star\.png/);assert.match(reward,/star\.png/);assert.match(reward,/pointerEvents='none'/);
+});
+
+test('regression: card selection preserves the current visual slide',()=>{
+  const player=readFileSync(new URL('../src/screens/LessonPlayer.tsx',import.meta.url),'utf8');
+  assert.match(player,/const artworkSlide=slide/);assert.doesNotMatch(player,/selectedCardBranch/);
+  assert.match(player,/Legacy slide_10\.\.15 artwork/);
+});
+
+test('regression: card questions advance conversationally without changing media',()=>{
+  const questions=cardQuestions(cards,'A');let index=0;const visual='lesson-images/slide-09.png';
+  for(const expected of ['A2','A3']){const result=nextCardQuestion(cards,'A',index);assert.equal(result.question?.id,expected);assert.equal(visual,'lesson-images/slide-09.png');index=result.index}
+  assert.equal(nextCardQuestion(cards,'A',index).done,true);
+});
+
+test('regression: optional tasks expose Next during speech, processing, and voice wait',()=>{
+  const optional={answer_mode:'required_voice'};assert.equal(isRequiredForMovie(optional),false);
+  for(const stage of ['AI_SPEAKING','PROCESSING','WAITING_VOICE'] as const)assert.equal(nextEnabled(stage,true,{requiredForMovie:isRequiredForMovie(optional)}),true);
+});
+
+test('regression: requiredForMovie is strict and recoverable without weakening required behavior',()=>{
+  const required={answer_mode:'required_voice',requiredForMovie:true};assert.equal(isRequiredForMovie(required),true);
+  assert.equal(nextEnabled('WAITING_VOICE',true,{requiredForMovie:true}),false);
+  assert.equal(nextEnabled('COMPLETE',true,{requiredForMovie:true}),true);
+  assert.equal(nextEnabled('RETRY',true,{requiredForMovie:true,recoveryAvailable:true}),true);
+  assert.equal(isRequiredForMovie({requiredForMovie:'true'}),false);
+});
+
+test('regression: failed AI/backend work has a bounded timeout and a deterministic recovery stage',async()=>{
+  await assert.rejects(withLessonTimeout(new Promise(()=>{}),'voice assessment',5),error=>error instanceof LessonRuntimeTimeoutError&&error.operation==='voice assessment');
+  assert.equal(recoveryStageAfterFailure(greeting,true),'WAITING_VOICE');
+  assert.equal(tutorAudioWatchdogStage('AI_SPEAKING',{playing:true,isBuffering:true},'WAITING_VOICE',true),'WAITING_VOICE');
+});
+
+test('regression: Mila selection, voice, feedback, and Next all have an exit',()=>{
+  let stage=stageAfterTutorSpeech(mila,false);assert.equal(stage,'WAITING_ACTION');
+  stage=stageAfterTutorSpeech(mila,true);assert.equal(stage,'WAITING_VOICE');
+  stage=advanceAfterAssessment({accepted:true});assert.equal(stage,'COMPLETE');
+  assert.equal(nextEnabled(stage,true,{requiredForMovie:isRequiredForMovie(mila)}),true);
+  assert.equal(recoveryStageAfterFailure(mila,true),'WAITING_VOICE');
+});
+
+test('regression: avatar sizing and orientation are scene-relative for Lyosha and Mila',()=>{
+  const lesson=lessonAvatarConfig(bundledLesson);const lyosha=slideAvatarConfig((bundledLesson.slides as any[]).find(slide=>slide.slide_id==='slide_19'),bundledLesson.lesson_id);const milaSlide=slideAvatarConfig((bundledLesson.slides as any[]).find(slide=>slide.slide_id==='slide_20'),bundledLesson.lesson_id);
+  const lyoshaBox=heroBox(lyosha,lesson) as number[];const milaBox=heroBox(milaSlide,lesson) as number[];
+  assert.ok(lyoshaBox[3]>=.62);assert.ok(Math.abs((lyoshaBox[1]+lyoshaBox[3])-(lyosha.character_box[1]+lyosha.character_box[3]))<.03);assert.equal(avatarFacing(lyosha,lesson),'left');assert.equal(avatarScaleX(avatarFacing(lyosha,lesson)),-1);
+  assert.ok(milaBox[3]>=.58);assert.equal(avatarFacing(milaSlide,lesson),'right');assert.equal(avatarScaleX(avatarFacing(milaSlide,lesson)),1);
+});
+
+test('regression: cat state remains independent from child avatar identity',()=>{
+  const uri=canonicalChildAvatarUri({heroUrl:'https://cdn.test/child.png'},'https://api.test');
+  for(const stage of RUNTIME_STAGES){assert.equal(canonicalChildAvatarUri({heroUrl:uri},'https://api.test'),uri);assert.ok(CAT_ACTIVITY_STATES.includes(catStateForStage(stage)))}
+});
+
+test('progressive assistance advances from rephrase to example, starter, and choices',()=>{
+  const slide={question:'Какой должен быть друг?',simplified_text:'Мой друг должен быть добрым.',selection_options:[{label:'Добрый'},{label:'Весёлый'}]};
+  assert.equal(progressiveHint(slide,1).step,'REPHRASE');assert.equal(progressiveHint(slide,2).step,'EXAMPLE');assert.equal(progressiveHint(slide,3).step,'STARTER');assert.equal(progressiveHint(slide,4).step,'CHOICES');assert.match(progressiveHint(slide,4).prompt,/Добрый.*Весёлый/);
+});
+
+test('cold startup is isolated from lesson native modules and cannot wait forever',async()=>{
+  const packageJson=JSON.parse(readFileSync(new URL('../package.json',import.meta.url),'utf8'));
+  const entry=readFileSync(new URL('../index.js',import.meta.url),'utf8');
+  const app=readFileSync(new URL('../App.tsx',import.meta.url),'utf8');
+  const root=readFileSync(new URL('../src/screens/RootApp.tsx',import.meta.url),'utf8');
+  const mobileApi=readFileSync(new URL('../src/api/mobile.ts',import.meta.url),'utf8');
+  assert.equal(packageJson.main,'index.js');assert.match(entry,/ENTRY_EVALUATION/);assert.match(entry,/registerRootComponent/);assert.match(entry,/APP_MODULE_LOAD_FAILED/);
+  assert.doesNotMatch(app,/from ['"]\.\/src\/store\/AppStore['"]/);assert.doesNotMatch(app,/from ['"]\.\/src\/screens\/RootApp['"]/);assert.match(app,/React\.lazy\(\(\)=>import\(['"]\.\/src\/AppRuntime['"]\)/);
+  assert.doesNotMatch(mobileApi,/^import .*expo-(file-system|secure-store)/m);assert.match(mobileApi,/import\(['"]expo-secure-store['"]\)/);
+  assert.doesNotMatch(root,/import\s+\{LessonPlayer\}\s+from/);assert.match(root,/React\.lazy/);assert.match(root,/withStartupTimeout/);
+  for(const stage of ['APP_MOUNT','SECURESTORE_DONE','BACKEND_BOOTSTRAP_DONE','NAV_READY','FIRST_SCREEN_RENDERED'])assert.match(app+root,new RegExp(`['"]${stage}['"]`));
+  await assert.rejects(withStartupTimeout(new Promise(()=>{}),'bootstrap',5),error=>error instanceof StartupTimeoutError&&error.stage==='bootstrap');
+  assert.match(startupErrorText(new StartupTimeoutError('secure_store',5)),/сохранённый вход/);
 });
 
 test('programmatic demo flow has no early record, duplicate answer, or dead end',()=>{

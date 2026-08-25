@@ -6,6 +6,20 @@ export const RUNTIME_STAGES = [
 export type RuntimeStage = typeof RUNTIME_STAGES[number];
 export type PromptPhase = 'initial'|'retry';
 export type RectTuple = [number,number,number,number];
+export type NextPolicy={requiredForMovie?:boolean;recoveryAvailable?:boolean};
+
+export const LESSON_OPERATION_TIMEOUT_MS=18_000;
+
+export class LessonRuntimeTimeoutError extends Error{
+  readonly operation:string;readonly timeoutMs:number;
+  constructor(operation:string,timeoutMs:number){super(`${operation} timed out after ${timeoutMs}ms`);this.name='LessonRuntimeTimeoutError';this.operation=operation;this.timeoutMs=timeoutMs}
+}
+
+export function withLessonTimeout<T>(operation:Promise<T>,label:string,timeoutMs=LESSON_OPERATION_TIMEOUT_MS):Promise<T>{
+  let timer:ReturnType<typeof setTimeout>|undefined;
+  const timeout=new Promise<never>((_,reject)=>{timer=setTimeout(()=>reject(new LessonRuntimeTimeoutError(label,timeoutMs)),timeoutMs)});
+  return Promise.race([operation,timeout]).finally(()=>{if(timer)clearTimeout(timer)}) as Promise<T>;
+}
 
 export function requiresSelection(slide:any):boolean{
   return Array.isArray(slide?.selection_options)||Array.isArray(slide?.riddle_options)||slide?.type==='card_selector'||slide?.type==='animal_compare'||slide?.type==='mood_choice'||slide?.interactive_task==='suitcase'||slide?.interaction_kind==='gift_selector';
@@ -35,11 +49,41 @@ export function tutorAudioTransition(stage:RuntimeStage,status:TutorAudioStatus,
   return {stage:finished?after:stage,sawPlayback:finished?false:observed,finished};
 }
 
-export function tutorAudioWatchdogStage(stage:RuntimeStage,status:TutorAudioStatus,after:RuntimeStage):RuntimeStage{
-  return stage==='AI_SPEAKING'&&!status.playing&&!status.isBuffering?after:stage;
+export function tutorAudioWatchdogStage(stage:RuntimeStage,status:TutorAudioStatus,after:RuntimeStage,hardDeadline=false):RuntimeStage{
+  return stage==='AI_SPEAKING'&&(hardDeadline||(!status.playing&&!status.isBuffering))?after:stage;
 }
 
-export function nextEnabled(stage:RuntimeStage,visualReady=true,voiceAfterActionOptional=false):boolean{return visualReady&&(stage==='COMPLETE'||(voiceAfterActionOptional&&stage==='WAITING_VOICE'))}
+export function isRequiredForMovie(slide:any):boolean{return slide?.requiredForMovie===true||slide?.required_for_movie===true}
+
+export function nextEnabled(stage:RuntimeStage,visualReady=true,policy:NextPolicy={requiredForMovie:true}):boolean{
+  if(!visualReady)return false;
+  if(policy.requiredForMovie!==true)return true;
+  return stage==='COMPLETE'||policy.recoveryAvailable===true;
+}
+
+export function recoveryStageAfterFailure(slide:any,hasSelection=false):RuntimeStage{
+  if(requiresSelection(slide)&&!hasSelection)return 'WAITING_ACTION';
+  if(requiresVoice(slide))return 'WAITING_VOICE';
+  return 'COMPLETE';
+}
+
+export type ProgressiveHint={step:'REPHRASE'|'EXAMPLE'|'STARTER'|'CHOICES';prompt:string};
+
+function sentenceStarter(value:string):string{
+  const words=String(value||'').replace(/[.!?]+$/,'').trim().split(/\s+/).filter(Boolean);
+  return words.slice(0,Math.min(3,Math.max(1,words.length-1))).join(' ')+(words.length>1?'…':'');
+}
+
+export function progressiveHint(slide:any,attempt:number):ProgressiveHint{
+  const question=String(slide?.question||slide?.bot_says_target||'Попробуй ещё раз.').trim();
+  const example=String(slide?.simplified_text||slide?.model_answer_target||question).trim();
+  const labels=(slide?.selection_options||slide?.riddle_options||[]).map((item:any)=>String(item?.label||item?.answer_value_ru||item?.id||'').trim()).filter(Boolean);
+  const step=Math.max(1,Number(attempt)||1);
+  if(step===1)return {step:'REPHRASE',prompt:question};
+  if(step===2)return {step:'EXAMPLE',prompt:`Можно сказать: ${example}`};
+  if(step===3)return {step:'STARTER',prompt:`Начни так: ${sentenceStarter(example)}`};
+  return {step:'CHOICES',prompt:labels.length?`Выбери: ${labels.slice(0,4).join(' или ')}.`:`Попробуй ещё раз. Можно сказать: ${example}`};
+}
 
 export function advanceAfterAssessment(response:{accepted?:boolean;advance_allowed?:boolean;needs_retry?:boolean;tutor_turn?:{follow_up_target?:string}}):'FOLLOW_UP'|'COMPLETE'|'RETRY'{
   if(response.accepted&&String(response.tutor_turn?.follow_up_target||'').trim())return 'FOLLOW_UP';
@@ -107,7 +151,7 @@ export function slideContentBoxes(slide:any):RectTuple[]{
   return boxes;
 }
 
-const DEFAULT_ANCHORS:Record<string,RectTuple>={left:[0.02,0.34,0.22,0.62],right:[0.76,0.34,0.22,0.62],bottom_left:[0.02,0.56,0.2,0.42],bottom_right:[0.78,0.56,0.2,0.42],left_of_mila:[0.04,0.35,0.24,0.61]};
+const DEFAULT_ANCHORS:Record<string,RectTuple>={left:[0.02,0.28,0.26,0.68],right:[0.72,0.28,0.26,0.68],bottom_left:[0.02,0.42,0.27,0.55],bottom_right:[0.71,0.42,0.27,0.55],left_of_mila:[0.30,0.34,0.23,0.61]};
 
 function anchorBox(anchor:string,slide:any,lesson:any):RectTuple|null{
   const authored=tuple(slide?.hero_anchor_boxes?.[anchor]||lesson?.hero_layout?.anchors?.[anchor]);return authored||DEFAULT_ANCHORS[anchor]||null;
@@ -121,7 +165,7 @@ export function computeHeroScale(containerWidth:number,containerHeight:number,au
 
 function scaledAtAnchor(box:RectTuple,scale:number,placement:string):RectTuple{
   const width=Math.min(.96,box[2]*scale);const height=Math.min(.92,box[3]*scale);const bottom=Math.min(.98,box[1]+box[3]);
-  const rightAligned=/(right)/.test(placement)||box[0]>.55;const leftEdge=placement==='left_of_mila'?.005:Math.max(.005,box[0]);const x=rightAligned?Math.min(.995-width,box[0]+box[2]-width):leftEdge;
+  const rightAligned=/(right)/.test(placement)||box[0]>.55;const leftEdge=Math.max(.005,box[0]);const x=rightAligned?Math.min(.995-width,box[0]+box[2]-width):leftEdge;
   return [Math.max(.005,x),Math.max(.005,bottom-height),width,height];
 }
 
@@ -134,8 +178,8 @@ export function heroBox(slide:any,lesson:any,containerWidth=360,containerHeight=
   for(const anchor of anchors){
     const preferredScale=computeHeroScale(containerWidth,containerHeight,anchor.box,Number(slide?.hero_target_visual_height_ratio||lesson?.hero_layout?.target_visual_height_ratio||.9));
     const minimumScale=Math.min(preferredScale,Math.max(1,minimumRatio/anchor.box[3]));
-    for(let scale=preferredScale;scale>=1-.001;scale-=.04){const candidate=scaledAtAnchor(anchor.box,scale,anchor.placement);if(!forbidden.some(box=>rectanglesOverlap(candidate,box)))return candidate}
-    const original=scaledAtAnchor(anchor.box,1,anchor.placement);if(!forbidden.some(box=>rectanglesOverlap(original,box)))return original;
+    for(let scale=preferredScale;scale>=minimumScale-.001;scale-=.04){const candidate=scaledAtAnchor(anchor.box,scale,anchor.placement);if(!forbidden.some(box=>rectanglesOverlap(candidate,box)))return candidate}
+    const minimum=scaledAtAnchor(anchor.box,minimumScale,anchor.placement);if(!forbidden.some(box=>rectanglesOverlap(minimum,box)))return minimum;
   }
   return null;
 }

@@ -37,10 +37,11 @@ def test_final_render_is_bounded_and_nonblocking():
     cfg=json.loads((ROOT/'config/cartoon.json').read_text(encoding='utf-8'))
     assert cfg['generate_missing_animation_during_render'] is False
     assert cfg['ffmpeg_timeout_seconds'] <= 300
-    assert cfg['total_render_timeout_seconds'] <= 330
+    assert cfg['total_render_timeout_seconds'] <= 600
     assert 'asyncio.to_thread(build_timeline_cartoon' in H
     assert 'asyncio.wait_for' in H
-    assert 'allow_generate=allow_generate_during_render' in CART
+    assert 'allow_generate=allow_generate' in CART
+    assert 'TemporaryDirectory' in CART and 'filter_complex_threads", "1"' in CART
     assert 'allow_generate:bool=True' in RUNTIME
 
 

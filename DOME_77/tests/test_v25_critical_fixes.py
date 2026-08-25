@@ -27,10 +27,11 @@ def test_followup_blocks_progression():
     assert 'if data.get("followup_pending")' in handlers
 
 
-def test_render_logs_and_low_resource_mode():
+def test_render_logs_and_disk_backed_low_resource_mode():
     builder = (ROOT / 'app/services/cartoon_builder.py').read_text(encoding='utf-8')
     assert '"-threads", str(render_threads)' in builder
-    assert 'max(1,min(4' in builder
+    assert 'min(2, int(cfg.get("render_threads", 1)))' in builder
     assert '"-preset", "ultrafast"' in builder
-    assert 'log.error("FFmpeg failed' in builder
-    assert 'filters.append("[0:a][voice]amix' in builder
+    assert 'log.error(' in builder and '"FFmpeg failed step=%s code=%s command=%s stderr=%s"' in builder
+    assert 'TemporaryDirectory' in builder and 'video_concat' in builder and 'voice_track' in builder
+    assert 'adelay=' not in builder and 'split=10' not in builder

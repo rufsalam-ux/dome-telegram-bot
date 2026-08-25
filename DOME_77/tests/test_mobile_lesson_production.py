@@ -32,7 +32,7 @@ from app.db.models import (
 from app.services import lesson_access, mobile_lesson_movie
 from app.services.audio_processing import VoiceActivity
 from app.services.conversational_tutor import TutorTurn
-from app.services.cartoon_builder import _probe_video, _resolve_normalized_timeline
+from app.services.cartoon_builder import _probe_video, _render_windows, _resolve_normalized_timeline, _shift_timed_filters
 from app.services.mobile_lesson_movie import (
     MovieRenderInputs,
     build_mobile_lesson_movie,
@@ -96,6 +96,21 @@ def test_normalized_positions_resolve_to_floor_aligned_pixels():
         assert pixels["y"] + pixels["height"] == round(authored["floor_y_norm"] * 1080)
 
 
+def test_movie_renderer_partitions_the_full_timeline_into_bounded_windows():
+    timeline = _resolve_normalized_timeline(load_lesson()["timeline"], 1920, 1080)
+    windows = _render_windows(timeline, 100.0)
+    assert windows[0] == (0.0, 21.0) and windows[-1] == (95.0, 100.0)
+    assert max(
+        sum(float(item["visible_start"]) < end and float(item["end"]) > start for item in timeline)
+        for start, end in windows
+    ) == 1
+    shifted = _shift_timed_filters(["drawbox=enable='between(t,39.0,44.0)'"], 39.0)
+    assert shifted == ["drawbox=enable='between(t,0.000,5.000)'"]
+    builder = (ROOT / "app/services/cartoon_builder.py").read_text(encoding="utf-8")
+    assert "TemporaryDirectory" in builder and "video_concat" in builder
+    assert "adelay=" not in builder and "split=10" not in builder
+
+
 def test_mobile_interactions_cover_selection_suitcase_animals_audio_level_and_mood():
     player = MOBILE_PLAYER.read_text(encoding="utf-8")
     interactions = MOBILE_INTERACTIONS.read_text(encoding="utf-8")
@@ -107,7 +122,7 @@ def test_mobile_interactions_cover_selection_suitcase_animals_audio_level_and_mo
     assert interactions.count("rect:{left:") >= 10
     assert len(by_id["slide_09"]["selection_options"]) == 6
     assert len(by_id["slide_20"]["selection_options"]) == 4
-    assert "selectedCardBranch" in player and "selected_card_id" in player and "card_question_index" in player
+    assert "activeCardQuestion" in player and "selected_card_id" in player and "card_question_index" in player
     assert "DragDropSuitcase" in player and "updateSuitcase" in player and "persistInteraction" in player
     drag = (ROOT.parent / "DOME_MOBILE_77/src/components/DragDropSuitcase.tsx").read_text(encoding="utf-8")
     assert "PanResponder.create" in drag and "onPanResponderMove" in drag and "scrollEnabled={!dragging}" in player
@@ -120,6 +135,8 @@ def test_mobile_interactions_cover_selection_suitcase_animals_audio_level_and_mo
     assert "runtimePrompt(slide,languageLevel,workingDifficulty,'initial')" in player
     assert "correction_target" in player and "advance_allowed" in (ROOT / "app/webapp/mobile_api.py").read_text(encoding="utf-8")
     assert "MOOD_EMOJIS.map" in player and "completed:true" in player
+    assert "Повторить сборку" in player and "completed.movie_error" not in player
+    assert "FFmpeg" not in player and "Railway Logs" not in player
     assert "activeAnimalQuestion" in player and "isGift" in player and "WAITING_ACTION" in player
     assert [row["phrase_id"] for row in by_id["slide_46"]["animal_questions"]] == ["penguin","parrot"]
     assert any(str(value).lower().startswith("спокой") for value in by_id["slide_49"]["mood_options"])
@@ -312,6 +329,20 @@ async def test_interrupted_movie_job_becomes_idempotently_retryable(monkeypatch,
     async with sessions() as db:
         movie = await db.scalar(select(LessonMovie))
         assert movie.status == "FAILED" and "idempotent retry" in movie.error
+    monkeypatch.setattr(mobile_api, "SessionLocal", sessions)
+    monkeypatch.setattr(settings, "mobile_auth_secret", "movie-failure-test-secret-that-is-long-enough")
+    app = web.Application();mobile_api.register_mobile_routes(app);client = TestClient(TestServer(app));await client.start_server()
+    try:
+        response = await client.get(
+            f"/api/mobile/session/{session.id}/movie",
+            headers={"Authorization": f"Bearer {issue_session_token(parent.id)}"},
+        )
+        payload = await response.json()
+        assert response.status == 200 and payload["status"] == "FAILED" and payload["can_retry"] is True
+        assert payload["error"] == mobile_api.MOVIE_RETRY_MESSAGE
+        assert "FFmpeg" not in payload["error"] and "Railway" not in payload["error"] and "exit" not in payload["error"]
+    finally:
+        await client.close()
     await engine.dispose()
 
 

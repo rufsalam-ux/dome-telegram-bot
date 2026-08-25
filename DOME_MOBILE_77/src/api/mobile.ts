@@ -1,6 +1,3 @@
-import * as FileSystem from 'expo-file-system/legacy';
-import * as SecureStore from 'expo-secure-store';
-
 const DEFAULT_BASE='https://dome-telegram-bot-production.up.railway.app';
 const TOKEN_KEY='dome_mobile_token';
 
@@ -11,6 +8,13 @@ type SessionInvalidatedListener=()=>void;
 let cachedToken:string|undefined;
 let invalidationPromise:Promise<void>|null=null;
 const sessionInvalidatedListeners=new Set<SessionInvalidatedListener>();
+
+async function readUriBase64(uri:string):Promise<string>{
+  const FileSystem=await import('expo-file-system/legacy');
+  return FileSystem.readAsStringAsync(uri,{encoding:FileSystem.EncodingType.Base64});
+}
+
+async function secureStore(){return import('expo-secure-store')}
 
 export class MobileApiError extends Error{
   status:number;
@@ -37,6 +41,7 @@ export function onApiSessionInvalidated(listener:SessionInvalidatedListener):()=
 
 export async function restoreApiToken():Promise<string>{
   if(cachedToken===undefined){
+    const SecureStore=await secureStore();
     cachedToken=(await SecureStore.getItemAsync(TOKEN_KEY))||'';
   }
   return cachedToken;
@@ -45,12 +50,14 @@ export async function restoreApiToken():Promise<string>{
 export async function persistApiToken(value:string):Promise<void>{
   const next=String(value||'').trim();
   cachedToken=next;
+  const SecureStore=await secureStore();
   if(next)await SecureStore.setItemAsync(TOKEN_KEY,next);
   else await SecureStore.deleteItemAsync(TOKEN_KEY);
 }
 
 export async function clearApiToken():Promise<void>{
   cachedToken='';
+  const SecureStore=await secureStore();
   await SecureStore.deleteItemAsync(TOKEN_KEY);
 }
 
@@ -159,7 +166,7 @@ export function saveSessionProgress(sessionId:number,currentStep:number){
 }
 
 export async function sendVoice(sessionId:number,uri:string,slideId:string,phraseId:string|undefined,prompt:string,conversationTurn=0){
-  const audio_base64=await FileSystem.readAsStringAsync(uri,{encoding:FileSystem.EncodingType.Base64});
+  const audio_base64=await readUriBase64(uri);
   return request(`/api/mobile/session/${sessionId}/voice`,jsonInit('POST',{audio_base64,slide_id:slideId,phrase_id:phraseId||null,prompt:prompt||'',conversation_turn:conversationTurn}));
 }
 
@@ -195,7 +202,7 @@ export function choosePresetHero(childId:string|number,catalogId:string){
 }
 
 export async function uploadHero(childId:string|number,uri:string){
-  const image_base64=await FileSystem.readAsStringAsync(uri,{encoding:FileSystem.EncodingType.Base64});
+  const image_base64=await readUriBase64(uri);
   return request(`/api/mobile/child/${childId}/hero/upload`,jsonInit('POST',{image_base64,filename:'hero.jpg'}));
 }
 

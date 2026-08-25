@@ -15,5 +15,5 @@ export function catStateForStage(stage:RuntimeStage):CatActivityState{
 export function catProcessingState(elapsedMs:number):CatActivityState{
   if(elapsedMs<1500)return 'thinking';
   if(elapsedMs<4000)return 'idle';
-  return 'playing';
+  return 'waiting';
 }

@@ -4,15 +4,17 @@
   "target_language": "ru",
   "max_voice_seconds": 5.0,
   "revision": 58,
-  "default_hero_placement": "hidden",
+  "default_hero_placement": "right",
   "hero_layout": {
     "anchors": {
-      "left_of_mila": [0.04, 0.35, 0.24, 0.61],
-      "left": [0.02, 0.34, 0.22, 0.62],
-      "right": [0.76, 0.34, 0.22, 0.62]
+      "left_of_mila": [0.30, 0.34, 0.23, 0.61],
+      "left": [0.02, 0.28, 0.26, 0.68],
+      "right": [0.72, 0.28, 0.26, 0.68],
+      "bottom_left": [0.02, 0.42, 0.27, 0.55],
+      "bottom_right": [0.71, 0.42, 0.27, 0.55]
     },
-    "fallback_order": ["left", "right"],
-    "target_visual_height_ratio": 0.9,
+    "fallback_order": ["left", "right", "bottom_left", "bottom_right"],
+    "target_visual_height_ratio": 0.72,
     "min_visual_height_ratio": 0.56
   },
   "slides": [
@@ -24,7 +26,10 @@
       "hero_placement": "bottom_right",
       "hero_anchor": "bottom_right",
       "hero_fallback_anchors": ["bottom_left"],
-      "hero_box": [0.8, 0.52, 0.16, 0.44],
+      "hero_box": [0.70, 0.44, 0.28, 0.54],
+      "hero_facing": "left",
+      "hero_target_visual_height_ratio": 0.54,
+      "hero_min_visual_height_ratio": 0.5,
       "content_boxes": [[0.18, 0.04, 0.64, 0.38]],
       "bot_says_target": "Привет! Я рада тебя видеть. Как ты сегодня себя чувствуешь?",
       "bot_explains_native": "Поздоровайся и коротко скажи, как у тебя дела. По твоим ответам я буду подбирать сложность урока.",
@@ -419,6 +424,13 @@
         0.24,
         0.66
       ],
+      "hero_anchor": "right",
+      "hero_placement": "right",
+      "hero_fallback_anchors": ["right"],
+      "hero_box": [0.43, 0.25, 0.25, 0.66],
+      "hero_facing": "left",
+      "hero_target_visual_height_ratio": 0.66,
+      "hero_min_visual_height_ratio": 0.62,
       "strict_target_language": true,
       "expects_answer": true,
       "simplified_text": "Ему жарко.",
@@ -458,12 +470,10 @@
       "hero_placement": "left_of_mila",
       "hero_anchor": "left_of_mila",
       "hero_fallback_anchors": ["left"],
-      "hero_box": [
-        0.04,
-        0.35,
-        0.24,
-        0.61
-      ],
+      "hero_box": [0.30, 0.34, 0.23, 0.61],
+      "hero_facing": "right",
+      "hero_target_visual_height_ratio": 0.61,
+      "hero_min_visual_height_ratio": 0.58,
       "strict_target_language": true,
       "must_wait_for_answer": true,
       "expects_answer": true,

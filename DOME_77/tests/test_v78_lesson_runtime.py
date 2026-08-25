@@ -136,10 +136,11 @@ def test_demo_definition_contains_original_card_questions_and_declarative_mila_h
     assert questions["A"][0]["text"] == "На завтрак я люблю..."
     assert questions["Е"][2]["text"] == "А куда бы ты хотел отправиться?"
     assert slides["slide_20"]["hero_placement"] == "left_of_mila"
-    assert slides["slide_20"]["hero_box"] == [0.04, 0.35, 0.24, 0.61]
+    assert slides["slide_20"]["hero_box"] == lesson["hero_layout"]["anchors"]["left_of_mila"]
     assert slides["slide_20"]["interaction_kind"] == "gift_selector"
     assert [item["id"] for item in slides["slide_20"]["selection_options"]] == ["teddy", "book", "flowers", "backpack"]
-    assert lesson["default_hero_placement"] == "hidden"
+    assert lesson["default_hero_placement"] == "right"
+    assert lesson["default_hero_placement"] in lesson["hero_layout"]["anchors"]
     expected_states = ["ENTER","AI_SPEAKING","WAITING_ACTION","WAITING_VOICE","PROCESSING","FEEDBACK","FOLLOW_UP","RETRY","COMPLETE"]
     assert all(slide["runtime_state_machine"] == expected_states for slide in lesson["slides"])
 
