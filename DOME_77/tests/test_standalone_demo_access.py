@@ -184,15 +184,17 @@ async def test_mobile_session_auth_resume_progress_translate_and_tts(monkeypatch
         async def fake_translate(text, _source, _target):
             return f"translated:{text}"
 
-        async def fake_synthesize(text, _language, _root, _prefix, _delivery_style="warm"):
+        observed_tts = {}
+        async def fake_synthesize_bilingual(target_text, target_language, native_text, native_language, _root, _prefix, _delivery_style="warm"):
+            observed_tts.update(target_text=target_text,target_language=target_language,native_text=native_text,native_language=native_language)
             audio = tmp_path / "tts.mp3"
-            audio.write_bytes(text.encode("utf-8"))
+            audio.write_bytes((target_text+native_text).encode("utf-8"))
             return audio
 
         monkeypatch.setattr(mobile_api, "SessionLocal", sessions)
         monkeypatch.setattr(lesson_access, "SessionLocal", sessions)
         monkeypatch.setattr(mobile_api, "translate_text", fake_translate)
-        monkeypatch.setattr(mobile_api, "synthesize_speech", fake_synthesize)
+        monkeypatch.setattr(mobile_api, "synthesize_bilingual_speech", fake_synthesize_bilingual)
         monkeypatch.setattr(settings, "mobile_auth_secret", "test-secret-that-is-long-enough-for-mobile-auth")
         token = issue_session_token(parent_id)
         headers = {"Authorization": f"Bearer {token}"}
@@ -256,6 +258,7 @@ async def test_mobile_session_auth_resume_progress_translate_and_tts(monkeypatch
             )
             assert response.status == 200
             await response.read()
+            assert observed_tts == {"target_text":"translated:hello","target_language":"ru","native_text":"","native_language":"ru"}
         finally:
             await client.close()
 

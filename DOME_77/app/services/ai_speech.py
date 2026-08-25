@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
+import secrets
+import subprocess
 from pathlib import Path
 
 import httpx
@@ -115,4 +118,80 @@ async def synthesize_speech(
     if response.status_code >= 400:
         raise AISpeechError(f"Speech API error {response.status_code}: {response.text[:300]}")
     output.write_bytes(response.content)
+    return output
+
+
+async def synthesize_bilingual_speech(
+    target_text: str,
+    target_language: str,
+    native_text: str,
+    native_language: str,
+    cache_dir: Path,
+    purpose: str,
+    delivery_style: str = "warm",
+) -> Path | None:
+    """Synthesize each language with its own voice instructions, then join it.
+
+    Passing a Russian hint through an English TTS request makes the progressive
+    PRE_A1 assistance difficult to understand.  The immutable combined cache is
+    derived from both texts/languages and leaves the two source caches reusable.
+    """
+
+    target_text = str(target_text or "").strip()
+    native_text = str(native_text or "").strip()
+    if not target_text and not native_text:
+        return None
+    if native_text and native_language == target_language and native_text == target_text:
+        native_text = ""
+    target_audio, native_audio = await asyncio.gather(
+        synthesize_speech(target_text, target_language, cache_dir / "target", f"{purpose}_target", delivery_style) if target_text else asyncio.sleep(0, result=None),
+        synthesize_speech(native_text, native_language, cache_dir / "native", f"{purpose}_native", "encouraging") if native_text else asyncio.sleep(0, result=None),
+    )
+    if not target_audio:
+        return native_audio
+    if not native_audio:
+        return target_audio
+    digest = hashlib.sha256(
+        f"DOME_BILINGUAL_TTS_V1|{target_language}|{native_language}|{delivery_style}|{target_text}|{native_text}".encode()
+    ).hexdigest()[:24]
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    output = cache_dir / f"{purpose}_bilingual_{digest}.ogg"
+    if output.exists() and output.stat().st_size > 0:
+        return output
+    temporary = output.with_name(f"{output.stem}.{secrets.token_hex(5)}.tmp.ogg")
+    command = [
+        settings.ffmpeg_bin,
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-i",
+        str(target_audio),
+        "-i",
+        str(native_audio),
+        "-filter_complex",
+        "[0:a]aresample=24000,aformat=sample_fmts=fltp:channel_layouts=mono,asetpts=N/SR/TB[a0];anullsrc=r=24000:cl=mono:d=0.28[s];[1:a]aresample=24000,aformat=sample_fmts=fltp:channel_layouts=mono,asetpts=N/SR/TB[a1];[a0][s][a1]concat=n=3:v=0:a=1[out]",
+        "-map",
+        "[out]",
+        "-c:a",
+        "libopus",
+        "-b:a",
+        "64k",
+        str(temporary),
+    ]
+
+    def _join() -> None:
+        try:
+            result = subprocess.run(command, check=False, capture_output=True, timeout=90)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise AISpeechError(f"Bilingual speech assembly failed: {exc}") from exc
+        if result.returncode != 0 or not temporary.exists() or temporary.stat().st_size == 0:
+            detail = result.stderr.decode("utf-8", errors="replace")[-300:]
+            raise AISpeechError(f"Bilingual speech assembly failed: {detail}")
+        temporary.replace(output)
+
+    try:
+        await asyncio.to_thread(_join)
+    finally:
+        temporary.unlink(missing_ok=True)
     return output

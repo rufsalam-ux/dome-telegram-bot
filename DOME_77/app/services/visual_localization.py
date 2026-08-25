@@ -8,6 +8,7 @@ import secrets
 from pathlib import Path
 
 import httpx
+from PIL import Image
 
 from app.core.config import settings
 from app.core.i18n import language_name
@@ -29,6 +30,22 @@ def _cache_key(source: Path, target_language: str, asset_version: str) -> str:
     source_hash = hashlib.sha256(source.read_bytes()).hexdigest()
     material = f"{source_hash}:{target_language}:{asset_version}:{settings.openai_image_model}"
     return hashlib.sha256(material.encode()).hexdigest()[:32]
+
+
+def _cache_is_healthy(output: Path, manifest: Path, expected: dict[str, str]) -> bool:
+    """Verify immutable cache identity and decodability before serving it."""
+
+    if not output.exists() or not manifest.exists() or output.stat().st_size <= 1000:
+        return False
+    try:
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+        if any(str(payload.get(key) or "") != value for key, value in expected.items()):
+            return False
+        with Image.open(output) as image:
+            image.verify()
+        return True
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return False
 
 
 async def _request_localization_plan(source: Path, target_language: str) -> dict:
@@ -159,12 +176,23 @@ async def localize_embedded_text_image(
     key = _cache_key(source, target_language, str(asset_version or "1"))
     output = output_root / "localized-visuals" / target_language / f"{source.stem}_{key}.png"
     manifest = output.with_suffix(".json")
-    if output.exists() and output.stat().st_size > 1000:
+    source_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+    expected_manifest = {
+        "cache_key": key,
+        "asset_hash": source_hash,
+        "target_language": target_language,
+        "localization_version": str(asset_version or "1"),
+    }
+    if _cache_is_healthy(output, manifest, expected_manifest):
         return output
     lock = _locks.setdefault(key, asyncio.Lock())
     async with lock:
-        if output.exists() and output.stat().st_size > 1000:
+        if _cache_is_healthy(output, manifest, expected_manifest):
             return output
+        # Never serve a stale manifest or a truncated/non-image output under a
+        # valid cache URL. Only cache artifacts are discarded; source is immutable.
+        output.unlink(missing_ok=True)
+        manifest.unlink(missing_ok=True)
         try:
             plan = await _request_localization_plan(source, target_language)
             # A text-free source can be reused as-is only after the OCR stage
@@ -191,7 +219,7 @@ async def localize_embedded_text_image(
             temporary.replace(output)
             manifest_payload = {
                 "cache_key": key,
-                "asset_hash": hashlib.sha256(source.read_bytes()).hexdigest(),
+                "asset_hash": source_hash,
                 "target_language": target_language,
                 "localization_version": str(asset_version or "1"),
                 "pipeline": ["ocr_text_region_detection", "translation", "background_restoration_inpainting", "translated_text_render", "language_verification", "immutable_cache"],

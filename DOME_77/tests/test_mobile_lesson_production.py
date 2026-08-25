@@ -1,5 +1,6 @@
 import hashlib
 import asyncio
+import base64
 import json
 import os
 import shutil
@@ -21,12 +22,15 @@ from app.db.models import (
     Character,
     Child,
     LessonEntitlement,
+    InteractiveResult,
     LessonMovie,
     LessonSession,
     Parent,
     VoiceAttempt,
 )
 from app.services import lesson_access, mobile_lesson_movie
+from app.services.audio_processing import VoiceActivity
+from app.services.conversational_tutor import TutorTurn
 from app.services.cartoon_builder import _probe_video, _resolve_normalized_timeline
 from app.services.mobile_lesson_movie import (
     MovieRenderInputs,
@@ -35,6 +39,7 @@ from app.services.mobile_lesson_movie import (
     select_movie_voice_takes,
 )
 from app.services.mobile_tokens import issue_session_token
+from app.services.speech_pipeline import SpeechAssessment
 from app.webapp import mobile_api
 
 
@@ -215,6 +220,67 @@ async def test_completion_and_movie_job_are_idempotent(monkeypatch, tmp_path):
         assert await db.scalar(select(func.count(LessonSession.id)).where(LessonSession.status == "COMPLETED")) == 1
         entitlement = await db.scalar(select(LessonEntitlement));assert entitlement.completed_runs == 1
     assert len(render_calls) == 1
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_scripted_mobile_demo_traverses_real_endpoints_and_reaches_ready_movie(monkeypatch, tmp_path):
+    """A production-contract QA run: action/voice/progress/complete/movie."""
+    engine=create_async_engine("sqlite+aiosqlite:///:memory:");sessions=async_sessionmaker(engine,expire_on_commit=False)
+    async with engine.begin() as connection:await connection.run_sync(Base.metadata.create_all)
+    hero=tmp_path/"hero.png";Image.new("RGBA",(160,280),(0,0,0,0)).save(hero)
+    async with sessions() as db:
+        parent=Parent(email="scripted-e2e@example.com",password_hash="hash",email_verified=True,email_reports_enabled=False);db.add(parent);await db.flush()
+        child=Child(parent_id=parent.id,display_name="Scripted Child",target_language="en",native_language="ru",language_level="PRE_A1");db.add(child);await db.flush()
+        character=Character(child_id=child.id,original_path=str(hero),processed_path=str(hero),status="READY",source="CATALOG");db.add(character);await db.flush();child.active_character_id=character.id
+        db.add(LessonEntitlement(child_id=child.id,lesson_id="demo_001",course_id="conversation",max_completed_runs=2,completed_runs=0,source="FREE_DEMO"));await db.commit();parent_id,child_id=parent.id,child.id
+
+    def fake_activity(_path):return VoiceActivity(2.0,1.4,0.7,-24.0,-8.0,True,"SPEECH_DETECTED")
+    def fake_prepare(_raw,wav,_max_sec):wav.write_bytes(b"RIFF"+b"child-voice"*200);return wav
+    async def fake_assess(_wav,_target,_native,goal,_accepted,_attempt,*_args,**_kwargs):
+        return SpeechAssessment(transcript=f"answer to {goal}",detected_language="en",confidence=0.99,semantic_match=1.0,status="ACCEPTED_CORRECT",response_target=f"You answered {goal}",tutor_turn=TutorTurn(reaction_target=f"You answered {goal}",emotion="happy",complete=True,reason="accepted"))
+    def fake_render(inputs):inputs.output.parent.mkdir(parents=True,exist_ok=True);inputs.output.write_bytes(b"rendered-from-M-1"*2000);return inputs.output
+
+    monkeypatch.setattr(mobile_api,"SessionLocal",sessions);monkeypatch.setattr(lesson_access,"SessionLocal",sessions)
+    monkeypatch.setattr(mobile_api,"analyze_voice_activity",fake_activity);monkeypatch.setattr(mobile_api,"prepare_child_voice",fake_prepare);monkeypatch.setattr(mobile_api,"assess_speech",fake_assess);monkeypatch.setattr(mobile_api,"build_mobile_lesson_movie",fake_render)
+    monkeypatch.setattr(settings,"storage_root",tmp_path/"storage");monkeypatch.setattr(settings,"mobile_auth_secret","scripted-e2e-secret-that-is-long-enough")
+    token=issue_session_token(parent_id);headers={"Authorization":f"Bearer {token}"};app=web.Application();mobile_api.register_mobile_routes(app);client=TestClient(TestServer(app));await client.start_server()
+    lesson=load_lesson();by_id={slide["slide_id"]:slide for slide in lesson["slides"]};audio=base64.b64encode(b"real-recording"*200).decode()
+    async def post_interactive(session_id,slide_id,task,result):
+        response=await client.post(f"/api/mobile/session/{session_id}/interactive",headers=headers,json={"slide_id":slide_id,"task_type":task,"result":result});assert response.status==200
+    async def post_voice(session_id,slide_id,phrase_id,prompt):
+        response=await client.post(f"/api/mobile/session/{session_id}/voice",headers=headers,json={"audio_base64":audio,"slide_id":slide_id,"phrase_id":phrase_id,"prompt":prompt});assert response.status==200;payload=await response.json();assert payload["accepted"] is True and payload["tutor_turn"]["reason"]=="accepted"
+    try:
+        started=await client.post("/api/mobile/session/start",headers=headers,json={"child_id":child_id,"lesson_id":"demo_001"});assert started.status==200;session_id=(await started.json())["session_id"]
+        await post_interactive(session_id,"slide_09","card_selector",{"selected_card_id":"A","card_question_index":0,"completed":False})
+        for index,question in enumerate(by_id["slide_09"]["card_question_sets"]["A"]):
+            await post_voice(session_id,"slide_09",f"slide_09:A:{question['id']}",question.get("pre_a1_text") or question["text"])
+            await post_interactive(session_id,"slide_09","card_selector",{"selected_card_id":"A","card_question_index":index+1,"completed":index==2})
+        await post_voice(session_id,"slide_19","lesha_clothes","Why are you dressed so warmly?")
+        await post_interactive(session_id,"slide_20","gift_selector",{"selected_gift_id":"book"});await post_voice(session_id,"slide_20","mila_gift","What did Mila bring you?")
+        await post_interactive(session_id,"slide_24","suitcase",{"packed":["jacket","water","camera"],"completed":True});await post_voice(session_id,"slide_24","take_trip","What will you take and why?")
+        await post_voice(session_id,"slide_47","zebra","Tell me about the zebra.")
+        for phrase,prompt in (("penguin","What can a penguin do?"),("parrot","What color is the parrot?")):
+            await post_interactive(session_id,"slide_46","animal_compare",{"selected_animal_id":phrase});await post_voice(session_id,"slide_46",phrase,prompt)
+        for phrase,prompt in (("lion","What can a lion do?"),("slide_51:turtle","What can a turtle do?")):
+            await post_interactive(session_id,"slide_51","animal_compare",{"selected_animal_id":phrase});await post_voice(session_id,"slide_51",phrase,prompt)
+        await post_interactive(session_id,"slide_45","animal_riddle",{"selected_animal_id":"giraffe"});await post_voice(session_id,"slide_45","giraffe","Tell me about the giraffe.")
+        await post_voice(session_id,"slide_42","polar_bear","Tell me about the polar bear.");await post_voice(session_id,"slide_44","parrot","Tell me about the red parrot.");await post_voice(session_id,"slide_16","invite","Invite your friends.")
+        await post_interactive(session_id,"slide_49","mood_choice",{"selected_mood":"happy","completed":True})
+        runtime=[];seen=set();cursor="slide_01"
+        while cursor and cursor in by_id and cursor not in seen:seen.add(cursor);runtime.append(cursor);cursor=by_id[cursor].get("next_slide")
+        for index,_slide_id in enumerate(runtime):
+            progress=await client.post(f"/api/mobile/session/{session_id}/progress",headers=headers,json={"current_step":index});assert progress.status==200
+        completed=await client.post(f"/api/mobile/session/{session_id}/complete",headers=headers,json={});assert completed.status==200;completion=await completed.json();assert completion["missing_voice_phrases"]==[] and completion["movie_status"] in {"PROCESSING","READY"}
+        pending=[task for task in mobile_api._movie_tasks if not task.done()]
+        if pending:await asyncio.wait_for(asyncio.gather(*pending),timeout=10)
+        status=await client.get(f"/api/mobile/session/{session_id}/movie",headers=headers);movie=await status.json();assert movie["status"]=="READY" and movie["url"]
+    finally:await client.close()
+    async with sessions() as db:
+        assert await db.scalar(select(func.count(InteractiveResult.id)))>=10
+        accepted=(await db.scalars(select(VoiceAttempt).where(VoiceAttempt.lesson_session_id==session_id,VoiceAttempt.status=="ACCEPTED_CORRECT"))).all()
+        assert set(required_movie_phrase_ids(lesson)).issubset({attempt.phrase_id for attempt in accepted})
+        assert (await db.get(LessonSession,session_id)).status=="COMPLETED"
     await engine.dispose()
 
 

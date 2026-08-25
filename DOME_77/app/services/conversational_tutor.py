@@ -58,6 +58,19 @@ def _one_question(text: object) -> str:
     return " ".join(output).strip()
 
 
+_GENERIC_PRAISE = {
+    "nice", "nice job", "great", "great job", "good", "good job", "well done",
+    "amazing", "awesome", "excellent", "super", "perfect", "bravo",
+    "молодец", "отлично", "здорово", "хорошо", "супер", "прекрасно",
+}
+
+
+def _is_generic_praise(text: str) -> bool:
+    normalized = re.sub(r"[^\w\s]", "", str(text or "").casefold()).strip()
+    normalized = " ".join(normalized.split())
+    return normalized in _GENERIC_PRAISE
+
+
 def build_assessed_turn(
     result: dict,
     *,
@@ -65,6 +78,7 @@ def build_assessed_turn(
     allow_follow_up: bool,
     follow_up_count: int,
     max_follow_ups: int,
+    answer_text: str = "",
 ) -> TutorTurn:
     """Normalize an AI assessment into the shared runtime contract.
 
@@ -73,6 +87,10 @@ def build_assessed_turn(
     """
 
     reaction = _compact(result.get("reaction_target") or result.get("response_target")).replace("?", ".")
+    if _is_generic_praise(reaction):
+        # A bare "Great!" is not evidence that the tutor listened. Ground a
+        # successful reaction in the actual answer; never praise a failed take.
+        reaction = f"{_compact(answer_text, max_chars=60).rstrip('.!?')}!" if accepted and _compact(answer_text) else ""
     correction = _compact(result.get("corrected_target"))
     follow_up = _one_question(result.get("follow_up_target"))
     can_follow = accepted and allow_follow_up and follow_up_count < max(0, int(max_follow_ups))

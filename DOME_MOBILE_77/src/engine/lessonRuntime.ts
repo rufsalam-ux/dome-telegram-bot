@@ -25,7 +25,21 @@ export function recordEnabled(stage:RuntimeStage,slide:any,hasSelection=false):b
   return stage==='WAITING_VOICE'&&requiresVoice(slide)&&(!requiresSelection(slide)||hasSelection);
 }
 
-export function nextEnabled(stage:RuntimeStage):boolean{return stage==='COMPLETE'}
+export type TutorAudioStatus={playing?:boolean;isBuffering?:boolean;didJustFinish?:boolean};
+export type TutorAudioTransition={stage:RuntimeStage;sawPlayback:boolean;finished:boolean};
+
+export function tutorAudioTransition(stage:RuntimeStage,status:TutorAudioStatus,sawPlayback:boolean,after:RuntimeStage):TutorAudioTransition{
+  if(stage!=='AI_SPEAKING')return {stage,sawPlayback,finished:false};
+  const observed=sawPlayback||Boolean(status.playing)||Boolean(status.isBuffering);
+  const finished=Boolean(status.didJustFinish)||(observed&&!status.playing&&!status.isBuffering);
+  return {stage:finished?after:stage,sawPlayback:finished?false:observed,finished};
+}
+
+export function tutorAudioWatchdogStage(stage:RuntimeStage,status:TutorAudioStatus,after:RuntimeStage):RuntimeStage{
+  return stage==='AI_SPEAKING'&&!status.playing&&!status.isBuffering?after:stage;
+}
+
+export function nextEnabled(stage:RuntimeStage,visualReady=true):boolean{return stage==='COMPLETE'&&visualReady}
 
 export function advanceAfterAssessment(response:{accepted?:boolean;advance_allowed?:boolean;needs_retry?:boolean;tutor_turn?:{follow_up_target?:string}}):'FOLLOW_UP'|'COMPLETE'|'RETRY'{
   if(response.accepted&&String(response.tutor_turn?.follow_up_target||'').trim())return 'FOLLOW_UP';
@@ -45,13 +59,20 @@ export function runtimePrompt(slide:any,_languageLevel='PRE_A1',_difficulty=0.15
   return phase==='retry'&&simplified?simplified:authored;
 }
 
-export type CardQuestion={id:string;text:string};
+export type CardQuestion={id:string;text:string;preA1Text?:string};
 
 export function cardQuestions(slide:any,cardId:string):CardQuestion[]{
   const raw=slide?.card_question_sets?.[cardId];
   if(!Array.isArray(raw))return [];
-  return raw.map((item:any,index:number)=>({id:String(item?.id||`${cardId}${index+1}`),text:String(item?.text||'')})).filter((item:CardQuestion)=>item.text);
+  return raw.map((item:any,index:number)=>({id:String(item?.id||`${cardId}${index+1}`),text:String(item?.text||''),preA1Text:item?.pre_a1_text?String(item.pre_a1_text):undefined})).filter((item:CardQuestion)=>item.text);
 }
+
+export function adaptiveCardQuestionText(question:CardQuestion|undefined,languageLevel='PRE_A1',difficulty=0.15):string{
+  if(!question)return '';
+  return (String(languageLevel||'').toUpperCase()==='PRE_A1'||difficulty<0.25)&&question.preA1Text?question.preA1Text:question.text;
+}
+
+export function cardSelectionAllowed(stage:RuntimeStage,selectedCardId=''):boolean{return stage==='WAITING_ACTION'&&!selectedCardId}
 
 export function cardVoiceKey(slideId:string,cardId:string,question:CardQuestion):string{return `${slideId}:${cardId}:${question.id}`}
 
@@ -64,9 +85,9 @@ export type LayoutPolicy={landscape:boolean;compact:boolean;visualFlex:number;co
 
 export function lessonLayoutPolicy(width:number,height:number,bottomInset=0):LayoutPolicy{
   const landscape=width>height;const compact=Math.min(width,height)<390||height<700;
-  const headerReserve=compact?58:72;const controlReserve=compact?238:276;
+  const headerReserve=compact?50:66;const controlReserve=compact?198:238;
   const visualMaxHeight=landscape?Math.max(220,height-headerReserve):Math.max(150,height-headerReserve-controlReserve-bottomInset);
-  return {landscape,compact,visualFlex:landscape?1.35:1,controlFlex:landscape?1:0,contentPadding:compact?8:14,bottomPadding:Math.max(bottomInset,8),visualMinHeight:Math.min(visualMaxHeight,compact?168:196),visualMaxHeight,controlsPinned:true};
+  return {landscape,compact,visualFlex:landscape?1.35:0,controlFlex:landscape?1:0,contentPadding:compact?8:14,bottomPadding:Math.max(bottomInset,8),visualMinHeight:Math.min(visualMaxHeight,compact?188:216),visualMaxHeight,controlsPinned:true};
 }
 
 function tuple(value:any):RectTuple|null{
@@ -103,4 +124,15 @@ export function heroBox(slide:any,lesson:any):number[]|null{
 export type PixelRect={x:number;y:number;width:number;height:number};
 export function dropInsideTarget(pageX:number,pageY:number,target:PixelRect,padding=0):boolean{
   return pageX>=target.x-padding&&pageX<=target.x+target.width+padding&&pageY>=target.y-padding&&pageY<=target.y+target.height+padding;
+}
+
+export type SuitcaseDropOutcome='PACK'|'UNPACK'|'RETURN';
+export function suitcaseDropOutcome(packed:boolean,inside:boolean):SuitcaseDropOutcome{
+  if(!packed&&inside)return 'PACK';
+  if(packed&&!inside)return 'UNPACK';
+  return 'RETURN';
+}
+
+export function visualRequiredForSlide(slide:any):boolean{
+  return Boolean(slide?.visual_required||slide?.interaction_kind==='gift_selector'||slide?.type==='card_selector'||slide?.type==='animal_compare'||Array.isArray(slide?.selection_options));
 }

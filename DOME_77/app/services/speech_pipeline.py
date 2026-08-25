@@ -315,6 +315,7 @@ async def assess_speech(
         allow_follow_up=allow_follow_up,
         follow_up_count=follow_up_count,
         max_follow_ups=max_follow_ups,
+        answer_text=transcript,
     )
     return SpeechAssessment(
         transcript=transcript,

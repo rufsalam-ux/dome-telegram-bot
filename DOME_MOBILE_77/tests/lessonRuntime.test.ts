@@ -2,8 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  adaptiveCardQuestionText,
   advanceAfterAssessment,
   cardQuestions,
+  cardSelectionAllowed,
   cardVoiceKey,
   dropInsideTarget,
   heroBox,
@@ -17,13 +19,17 @@ import {
   RUNTIME_STAGES,
   runtimePrompt,
   stageAfterTutorSpeech,
+  suitcaseDropOutcome,
+  tutorAudioTransition,
+  tutorAudioWatchdogStage,
+  visualRequiredForSlide,
 } from '../src/engine/lessonRuntime.ts';
 import bundledLesson from '../src/data/botLesson.json' with {type:'json'};
 import {buildRuntimeOrder} from '../src/data/lessonInteractions.ts';
-import {beginVisualAssetLoad,failVisualAsset,useLocalizedVisualAsset,visualAssetSourceForKey} from '../src/engine/visualAsset.ts';
+import {beginVisualAssetLoad,failVisualAsset,loadVisualAssetWithRetry,useLocalizedVisualAsset,visualAssetSourceForKey} from '../src/engine/visualAsset.ts';
 
 const greeting={type:'guided_speaking',answer_mode:'required_voice',adaptive:true,bot_says_target:'Привет! Я рада тебя видеть. Как ты сегодня себя чувствуешь?',simplified_text:'Привет! У меня всё хорошо.'};
-const cards={slide_id:'slide_09',type:'card_selector',answer_mode:'none',card_question_sets:{A:[{id:'A1',text:'Первый?'},{id:'A2',text:'Второй?'},{id:'A3',text:'Третий?'}]}};
+const cards={slide_id:'slide_09',type:'card_selector',answer_mode:'none',card_question_sets:{A:[{id:'A1',text:'Назови три прилагательных.',pre_a1_text:'Ты добрый или весёлый?'},{id:'A2',text:'Второй?'},{id:'A3',text:'Третий?'}]}};
 const mila={slide_id:'slide_20',answer_mode:'required_voice',interaction_kind:'gift_selector',selection_options:[{id:'book'}],hero_placement:'left_of_mila',hero_box:[0.04,0.35,0.24,0.61]};
 
 test('AI speech keeps recording disabled',()=>{
@@ -50,12 +56,21 @@ test('selected card has a deterministic three-question flow and stable voice key
   assert.equal(nextCardQuestion(cards,'A',2).done,true);
 });
 
-test('Mila cannot dead-end: selection leads to voice, completed take leads to NEXT',()=>{
-  assert.equal(stageAfterTutorSpeech(mila,false),'WAITING_ACTION');
-  assert.equal(stageAfterTutorSpeech(mila,true),'WAITING_VOICE');
-  assert.equal(recordEnabled('WAITING_VOICE',mila,true),true);
-  assert.equal(advanceAfterAssessment({accepted:true}),'COMPLETE');
-  assert.equal(nextEnabled('COMPLETE'),true);
+test('Mila cannot dead-end when cached Android audio finishes between status polls',()=>{
+  let stage=stageAfterTutorSpeech(mila,false);assert.equal(stage,'WAITING_ACTION');
+  stage='AI_SPEAKING';assert.equal(recordEnabled(stage,mila,true),false);
+  const transition=tutorAudioTransition(stage,{playing:false,isBuffering:false,didJustFinish:true},false,'WAITING_VOICE');
+  assert.equal(transition.finished,true);stage=transition.stage;
+  assert.equal(stage,'WAITING_VOICE');assert.equal(recordEnabled(stage,mila,true),true);
+  stage='PROCESSING';assert.equal(recordEnabled(stage,mila,true),false);
+  stage=advanceAfterAssessment({accepted:true});assert.equal(stage,'COMPLETE');
+  assert.equal(nextEnabled(stage),true);
+});
+
+test('audio watchdog never unlocks while speech is playing but prevents a missed-status dead end',()=>{
+  assert.equal(tutorAudioWatchdogStage('AI_SPEAKING',{playing:true,isBuffering:false},'WAITING_VOICE'),'AI_SPEAKING');
+  assert.equal(tutorAudioWatchdogStage('AI_SPEAKING',{playing:false,isBuffering:true},'WAITING_VOICE'),'AI_SPEAKING');
+  assert.equal(tutorAudioWatchdogStage('AI_SPEAKING',{playing:false,isBuffering:false},'WAITING_VOICE'),'WAITING_VOICE');
 });
 
 test('third unsupported take advances without being accepted',()=>{
@@ -76,8 +91,17 @@ test('portrait and landscape keep controls pinned and readable',()=>{
   const portrait=lessonLayoutPolicy(360,640,24);const landscape=lessonLayoutPolicy(800,360,10);
   assert.equal(portrait.landscape,false);assert.equal(landscape.landscape,true);
   assert.equal(portrait.controlsPinned,true);assert.equal(landscape.controlsPinned,true);
-  assert.ok(portrait.bottomPadding>=24);assert.ok(landscape.controlFlex>0);
+  assert.ok(portrait.bottomPadding>=24);assert.ok(landscape.controlFlex>0);assert.equal(portrait.visualFlex,0);
   assert.ok(portrait.visualMaxHeight<640);assert.ok(portrait.visualMinHeight>0);assert.ok(portrait.visualMinHeight<=portrait.visualMaxHeight);
+});
+
+test('PRE_A1 cards use one concrete choice and a selected card cannot be replaced mid-flow',()=>{
+  const question=cardQuestions(cards,'A')[0];
+  assert.equal(adaptiveCardQuestionText(question,'PRE_A1',0.15),'Ты добрый или весёлый?');
+  assert.equal(adaptiveCardQuestionText(question,'A2',0.55),'Назови три прилагательных.');
+  assert.equal(cardSelectionAllowed('WAITING_ACTION',''),true);
+  assert.equal(cardSelectionAllowed('WAITING_VOICE','A'),false);
+  assert.equal(cardSelectionAllowed('WAITING_ACTION','A'),false);
 });
 
 test('visual asset shows bundled original immediately and falls back after localized failure',()=>{
@@ -95,6 +119,14 @@ test('visual asset shows bundled original immediately and falls back after local
 test('visual asset without bundled source exposes a non-empty placeholder state',()=>{
   const loading=beginVisualAssetLoad(undefined,true);assert.equal(loading.status,'loading');assert.equal(loading.source,undefined);
   const failed=failVisualAsset(loading,'not found');assert.equal(failed.status,'unavailable');assert.equal(failed.source,undefined);
+});
+
+test('visual preload retries once and critical visuals gate NEXT instead of showing blank content',async()=>{
+  let calls=0;
+  const loaded=await loadVisualAssetWithRetry(async()=>{calls+=1;if(calls===1)throw new Error('slow edge');return 'cached'},2,100,1);
+  assert.equal(loaded,'cached');assert.equal(calls,2);
+  assert.equal(visualRequiredForSlide(mila),true);
+  assert.equal(nextEnabled('COMPLETE',false),false);assert.equal(nextEnabled('COMPLETE',true),true);
 });
 
 test('opening slide has a safe declarative hero placement and bundled source',()=>{
@@ -115,6 +147,9 @@ test('hero collision falls back and drag hit testing uses real target bounds',()
   assert.equal(rectanglesOverlap([0,0,0.2,0.2],[0.1,0.1,0.2,0.2]),true);
   assert.equal(dropInsideTarget(150,130,{x:100,y:100,width:100,height:60}),true);
   assert.equal(dropInsideTarget(40,40,{x:100,y:100,width:100,height:60}),false);
+  assert.equal(suitcaseDropOutcome(false,true),'PACK');
+  assert.equal(suitcaseDropOutcome(true,false),'UNPACK');
+  assert.equal(suitcaseDropOutcome(false,false),'RETURN');
 });
 
 test('programmatic demo flow has no early record, duplicate answer, or dead end',()=>{

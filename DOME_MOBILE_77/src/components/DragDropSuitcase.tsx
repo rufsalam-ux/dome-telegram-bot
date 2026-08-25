@@ -1,7 +1,7 @@
 import React,{useMemo,useRef} from 'react';
 import {Animated,Image,PanResponder,Text,useWindowDimensions,Vibration,View} from 'react-native';
 import {useAudioPlayer} from 'expo-audio';
-import {dropInsideTarget,type PixelRect} from '../engine/lessonRuntime';
+import {dropInsideTarget,suitcaseDropOutcome,type PixelRect} from '../engine/lessonRuntime';
 
 const popSound=require('../../assets/sounds/suitcase-pop.wav');
 const returnSound=require('../../assets/sounds/suitcase-return.wav');
@@ -26,12 +26,12 @@ function Draggable({item,targetRef,packed,onCommit,onDragging,popPlayer,returnPl
     onMoveShouldSetPanResponder:(_event,gesture)=>Math.abs(gesture.dx)+Math.abs(gesture.dy)>2,
     onPanResponderGrant:()=>{onDragging(true);position.setOffset({x:(position.x as any)._value,y:(position.y as any)._value});position.setValue({x:0,y:0})},
     onPanResponderMove:Animated.event([null,{dx:position.x,dy:position.y}],{useNativeDriver:false}),
-    onPanResponderRelease:(_event,gesture)=>{position.flattenOffset();void (async()=>{
+    onPanResponderRelease:(_event,gesture)=>{position.flattenOffset();onDragging(false);void (async()=>{
       const target=await measure(targetRef);const inside=dropInsideTarget(gesture.moveX,gesture.moveY,target,4);
-      const changed=packed?!inside:inside;
-      if(changed){play(popPlayer);Vibration.vibrate(12);await onCommit(item.id,inside)}
+      const outcome=suitcaseDropOutcome(packed,inside);
+      if(outcome!=='RETURN'){play(popPlayer);Vibration.vibrate(12);await onCommit(item.id,inside)}
       else{play(returnPlayer);Vibration.vibrate([0,8,24,8])}
-      Animated.spring(position,{toValue:{x:0,y:0},useNativeDriver:true,speed:22,bounciness:7}).start();onDragging(false)
+      Animated.spring(position,{toValue:{x:0,y:0},useNativeDriver:true,speed:22,bounciness:7}).start()
     })()},
     onPanResponderTerminate:()=>{Animated.spring(position,{toValue:{x:0,y:0},useNativeDriver:true}).start();onDragging(false)},
     onShouldBlockNativeResponder:()=>true,

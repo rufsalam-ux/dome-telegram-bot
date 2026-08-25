@@ -19,7 +19,7 @@ from app.services.lesson_runtime import apply_adaptive_assessment, complexity_su
 from app.services.conversational_tutor import no_speech_turn
 from app.services.mobile_lesson_movie import MovieRenderInputs,build_mobile_lesson_movie,select_movie_voice_takes
 from app.services.email_reports import send_homework_email,_send_with_attachment_sync,send_verification_email,send_password_reset_email
-from app.services.ai_speech import synthesize_speech, translate_text
+from app.services.ai_speech import synthesize_bilingual_speech, translate_text
 from app.services.password_auth import hash_password, hash_verification_code, verify_password, verify_verification_code
 from app.services.standalone_demo_access import ensure_free_demo_entitlement
 from app.services.visual_localization import VisualLocalizationError, localize_embedded_text_image
@@ -419,11 +419,15 @@ async def voice(request:web.Request)->web.Response:
     if str(assessment.status or '')=='NO_SPEECH':
         feedback,_legacy_example=no_speech_feedback(attempt_number,max_attempts,correction_target)
         retry_ru = 'Я тебя не услышала. Попробуй ещё раз.' if attempt_number < max_attempts else 'Я тебя не услышала. Пойдём дальше, а попытку отметим как пропущенную.'
-        native_ru = str(sl.get('bot_explains_native') or sl.get('question') or '')
+        # The client prompt is the exact active card/follow-up question and is
+        # already in the target language.  Falling back to a slide-level hint
+        # here used to explain Q1 while the child was answering Q2/Q3.
+        native_hint_source = goal if str(prompt or '').strip() else str(sl.get('bot_explains_native') or sl.get('question') or '')
+        native_hint_source_language = (c.target_language or 'ru') if str(prompt or '').strip() else 'ru'
         example_ru = correction_target if attempt_number > 1 and attempt_number < max_attempts else ''
         target_retry,native_hint,model_answer=await asyncio.gather(
             translate_text(retry_ru,'ru',c.target_language or 'ru'),
-            translate_text(native_ru,'ru',c.native_language or 'ru') if native_ru else asyncio.sleep(0,result=''),
+            translate_text(native_hint_source,native_hint_source_language,c.native_language or 'ru') if native_hint_source else asyncio.sleep(0,result=''),
             translate_text(example_ru,'ru',c.target_language or 'ru') if example_ru else asyncio.sleep(0,result=''),
         )
         tutor_turn=no_speech_turn(attempt_number,max_attempts,target_retry=target_retry,native_hint=native_hint,model_answer=model_answer)
@@ -474,9 +478,8 @@ async def tts(request:web.Request)->web.StreamResponse:
         spoken_native=await translate_text(native_text,native_source,native) if native_text else ''
     except Exception as exc:raise web.HTTPServiceUnavailable(text=f'Translation unavailable: {exc}')
     translated=time.perf_counter()
-    combined=spoken_target
-    if spoken_native and (native!=target or spoken_native!=spoken_target):combined=(combined+'\n\n'+spoken_native).strip()
-    path=await synthesize_speech(combined,target,settings.storage_root/'tts-cache-mobile','mobile',style)
+    if native==target and spoken_native==spoken_target:spoken_native=''
+    path=await synthesize_bilingual_speech(spoken_target,target,spoken_native,native,settings.storage_root/'tts-cache-mobile','mobile',style)
     if not path:raise web.HTTPServiceUnavailable(text='TTS unavailable')
     ready=time.perf_counter();log.info('MOBILE_TTS_LATENCY source=%s target=%s translate_ms=%d synth_or_cache_ms=%d total_ms=%d',source,target,round((translated-started)*1000),round((ready-translated)*1000),round((ready-started)*1000))
     return web.FileResponse(path)

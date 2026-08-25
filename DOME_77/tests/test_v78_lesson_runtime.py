@@ -1,4 +1,5 @@
 import base64
+from io import BytesIO
 import json
 import math
 import struct
@@ -9,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from PIL import Image
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.config import settings
@@ -19,7 +21,7 @@ from app.services.lesson_loader import load_lesson
 from app.services.lesson_runtime import apply_adaptive_assessment, no_speech_feedback, voice_attempt_outcome
 from app.services.mobile_tokens import issue_session_token
 from app.services.speech_pipeline import SpeechAssessment, _transcription_confidence, is_non_speech_transcript
-from app.services import visual_localization
+from app.services import ai_speech, visual_localization
 from app.webapp import mobile_api
 
 
@@ -81,6 +83,16 @@ def test_conversational_turn_is_bounded_and_progressive():
     assert correction.reason == "retry" and not correction.complete
     assert correction.follow_up_target == "" and correction.model_answer_target == "A parrot can fly."
     assert correction.emotion == "gentle_correction"
+    grounded = build_assessed_turn(
+        {"reaction_target":"Great!"}, accepted=True, allow_follow_up=False,
+        follow_up_count=0, max_follow_ups=0, answer_text="I chose the red kite",
+    )
+    assert grounded.reaction_target == "I chose the red kite!"
+    rejected = build_assessed_turn(
+        {"reaction_target":"Nice!"}, accepted=False, allow_follow_up=False,
+        follow_up_count=0, max_follow_ups=0, answer_text="unrelated",
+    )
+    assert rejected.reaction_target == ""
 
 
 def test_live_adaptation_changes_difficulty_after_current_answer():
@@ -97,6 +109,22 @@ def test_live_adaptation_changes_difficulty_after_current_answer():
     difficulty, level = apply_adaptive_assessment(child, attempt, assessment)
     assert difficulty > 0.15 and child.answers_count == 1 and level == "PRE_A1"
     assert attempt.recommended_difficulty > 0
+
+
+@pytest.mark.asyncio
+async def test_bilingual_tts_synthesizes_each_text_in_its_own_language(monkeypatch, tmp_path):
+    observed=[]
+    async def fake_synthesize(text,language,_cache,purpose,style="warm"):
+        observed.append((text,language,purpose,style));path=tmp_path/f"{purpose}.ogg";path.write_bytes(b"audio");return path
+    def fake_run(command,**_kwargs):
+        Path(command[-1]).write_bytes(b"joined-audio");return SimpleNamespace(returncode=0,stderr=b"")
+    monkeypatch.setattr(ai_speech,"synthesize_speech",fake_synthesize);monkeypatch.setattr(ai_speech.subprocess,"run",fake_run)
+    output=await ai_speech.synthesize_bilingual_speech("What did Mila bring?","en","Что Мила принесла?","ru",tmp_path/"cache","turn","curious")
+    assert output and output.read_bytes()==b"joined-audio"
+    assert observed==[
+        ("What did Mila bring?","en","turn_target","curious"),
+        ("Что Мила принесла?","ru","turn_native","encouraging"),
+    ]
 
 
 def test_demo_definition_contains_original_card_questions_and_declarative_mila_hero():
@@ -118,7 +146,8 @@ def test_demo_definition_contains_original_card_questions_and_declarative_mila_h
 
 @pytest.mark.asyncio
 async def test_localized_visual_is_immutable_cached_and_reused(monkeypatch, tmp_path):
-    source = tmp_path / "slide-01.png"; original = b"russian-source" * 200; source.write_bytes(original)
+    source = tmp_path / "slide-01.png"
+    image = Image.effect_noise((320, 180), 36);stream = BytesIO();image.save(stream, format="PNG");original = stream.getvalue();source.write_bytes(original)
     calls = 0
 
     async def fake_plan(_source, language):
@@ -129,7 +158,7 @@ async def test_localized_visual_is_immutable_cached_and_reused(monkeypatch, tmp_
         nonlocal calls; calls += 1
         assert language == "en"
         assert plan["text_regions"][0]["translated_text"] == "Hello"
-        return b"english-localized" * 200
+        localized = Image.effect_noise((320, 180), 24);output = BytesIO();localized.save(output, format="PNG");return output.getvalue()
 
     monkeypatch.setattr(visual_localization, "_request_localization_plan", fake_plan)
     monkeypatch.setattr(visual_localization, "_request_localized_image", fake_provider)
@@ -137,10 +166,26 @@ async def test_localized_visual_is_immutable_cached_and_reused(monkeypatch, tmp_
     second = await visual_localization.localize_embedded_text_image(source, tmp_path / "cache", "en", asset_version="78")
     assert first == second and first != source and calls == 1
     assert source.read_bytes() == original
-    assert b"english-localized" in first.read_bytes()
+    with Image.open(first) as localized_image:localized_image.verify()
     manifest = json.loads(first.with_suffix(".json").read_text("utf-8"))
     assert manifest["pipeline"] == ["ocr_text_region_detection", "translation", "background_restoration_inpainting", "translated_text_render", "language_verification", "immutable_cache"]
     assert manifest["target_language"] == "en"
+
+
+@pytest.mark.asyncio
+async def test_corrupt_or_wrong_manifest_visual_cache_is_regenerated_once(monkeypatch, tmp_path):
+    source = tmp_path / "slide-01.png";image = Image.effect_noise((320,180),30);source_stream=BytesIO();image.save(source_stream,format="PNG");source.write_bytes(source_stream.getvalue())
+    calls=0
+    async def fake_plan(_source,_language):return {"has_visible_text":True,"has_cyrillic":True,"text_regions":[{"source_text":"Привет","translated_text":"Hello","bbox_norm":[0.1,0.1,0.3,0.1]}]}
+    async def fake_provider(_source,_language,_plan):
+        nonlocal calls;calls+=1;localized=Image.effect_noise((320,180),20);stream=BytesIO();localized.save(stream,format="PNG");return stream.getvalue()
+    monkeypatch.setattr(visual_localization,"_request_localization_plan",fake_plan);monkeypatch.setattr(visual_localization,"_request_localized_image",fake_provider)
+    key=visual_localization._cache_key(source,"en","79");output=tmp_path/"cache"/"localized-visuals"/"en"/f"slide-01_{key}.png";output.parent.mkdir(parents=True);output.write_bytes(b"not-a-png"*200)
+    output.with_suffix(".json").write_text(json.dumps({"cache_key":"wrong"}),encoding="utf-8")
+    first=await visual_localization.localize_embedded_text_image(source,tmp_path/"cache","en",asset_version="79")
+    second=await visual_localization.localize_embedded_text_image(source,tmp_path/"cache","en",asset_version="79")
+    assert first==second and calls==1
+    with Image.open(first) as localized_image:localized_image.verify()
 
 
 @pytest.mark.asyncio
@@ -177,10 +222,15 @@ async def test_mobile_silence_gate_three_attempts_and_resume_selection(monkeypat
     async def forbidden_assessment(*_args, **_kwargs):
         raise AssertionError("ASR must not run for silence")
 
+    translations=[]
+    async def fake_translate(text,source,target):
+        translations.append((text,source,target));return f"{target}:{text}"
+
     monkeypatch.setattr(mobile_api, "SessionLocal", sessions)
     monkeypatch.setattr(mobile_api, "prepare_child_voice", fake_prepare)
     monkeypatch.setattr(mobile_api, "analyze_voice_activity", fake_activity)
     monkeypatch.setattr(mobile_api, "assess_speech", forbidden_assessment)
+    monkeypatch.setattr(mobile_api, "translate_text", fake_translate)
     monkeypatch.setattr(settings, "storage_root", tmp_path / "storage")
     monkeypatch.setattr(settings, "mobile_auth_secret", "runtime-test-secret-that-is-definitely-long-enough")
     token = issue_session_token(parent_id);headers = {"Authorization": f"Bearer {token}"}
@@ -197,6 +247,8 @@ async def test_mobile_silence_gate_three_attempts_and_resume_selection(monkeypat
         assert responses[0]["tutor_turn"]["reason"] == "no_speech_retry"
         assert responses[1]["tutor_turn"]["reason"] == "no_speech_model"
         assert responses[2]["tutor_turn"]["skipped"] is True
+        assert responses[0]["tutor_turn"]["native_hint"] == "ru:How do you feel?"
+        assert ("How do you feel?","en","ru") in translations
         assert "засчитана" in responses[2]["feedback"] and "отлич" not in responses[2]["feedback"].lower()
         async with sessions() as db:
             state,phrases=await mobile_api._mobile_resume_state(db,session_id)
