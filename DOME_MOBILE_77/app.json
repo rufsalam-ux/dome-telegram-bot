@@ -4,11 +4,11 @@
     "slug": "dome-mobile",
     "version": "3.1.0",
     "scheme": "dome",
-    "icon": "./assets/branding/dome-app-icon-v1.png",
+    "icon": "./assets/branding/dome-app-icon-v2.png",
     "orientation": "default",
     "userInterfaceStyle": "automatic",
     "splash": {
-      "image": "./assets/branding/dome-app-icon-v1.png",
+      "image": "./assets/branding/dome-splash-v2.png",
       "resizeMode": "contain",
       "backgroundColor": "#063FC4"
     },
@@ -27,7 +27,7 @@
       "versionCode": 30100,
       "softwareKeyboardLayoutMode": "resize",
       "adaptiveIcon": {
-        "foregroundImage": "./assets/branding/dome-adaptive-foreground-v1.png",
+        "foregroundImage": "./assets/branding/dome-adaptive-foreground-v2.png",
         "backgroundColor": "#063FC4"
       },
       "permissions": [
