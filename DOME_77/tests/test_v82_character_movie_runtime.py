@@ -15,6 +15,7 @@ from app.services.cartoon_text_overlay import cartoon_text_filters, overlay_safe
 from app.services.character_geometry import (
     ANALYSIS_VERSION,
     analyze_character_geometry,
+    confirm_character_geometry,
     geometry_from_json,
     geometry_status,
 )
@@ -49,11 +50,30 @@ async def test_head_left_dinosaur_geometry_is_analyzed_once_and_persistable(tmp_
     assert geometry.headCenterX < geometry.bodyCenterX
     assert geometry.confidence >= 0.7
     assert geometry.analysisVersion == ANALYSIS_VERSION
+    assert payload["sourceWidth"] == 400
+    assert payload["sourceHeight"] == 400
+    assert payload["visibleAspectRatio"] > 0
+    assert payload["headPoint"][0] < payload["bodyCenterX"]
+    assert payload["frontSide"] == "LEFT" and payload["backSide"] == "RIGHT"
+    assert payload["feetAnchor"] == payload["groundAnchor"]
+    assert payload["tailPoint"][0] > payload["headPoint"][0]
     assert geometry_status(geometry) == "READY"
     assert geometry_from_json(json.dumps(payload)) == payload
     assert set(Character.__table__.columns.keys()) >= {
         "visual_metadata_json", "visual_analysis_version", "visual_analysis_status"
     }
+
+    confirmed = confirm_character_geometry(payload, {
+        "headPoint": [.16, .2], "frontPoint": [.04, .25], "backPoint": [.92, .61],
+        "feetAnchor": [.52, .96], "tailPoint": [.91, .57], "facingDirection": "LEFT",
+    })
+    assert confirmed["userConfirmed"] is True
+    assert confirmed["analysisVersion"] == ANALYSIS_VERSION
+    assert confirmed["headCenterX"] == pytest.approx(.16)
+    assert confirmed["groundAnchor"] == [.52, .96]
+    assert confirmed["canonicalFacing"] == "LEFT"
+    assert confirmed["confirmedAt"]
+    assert geometry_status(confirmed) == "CONFIRMED"
 
 
 def test_visible_bbox_drives_scale_baseline_and_source_orientation(tmp_path):
@@ -130,8 +150,10 @@ def test_lyosha_mila_parrot_and_required_movie_contract_remain_authored():
     timeline = {item["phrase_id"]: item for item in lesson["timeline"]}
     assert timeline["lesha_clothes"]["floor_y_norm"] == pytest.approx(.82)
     assert timeline["lesha_clothes"]["placement_side"] == "left"
+    assert timeline["lesha_clothes"]["height_norm"] >= .44
     assert timeline["mila_gift"]["x_norm"] == pytest.approx(.14)
     assert timeline["mila_gift"]["placement_side"] == "left"
+    assert timeline["mila_gift"]["height_norm"] >= .42
     for phrase in ("penguin", "zebra"):
         assert timeline[phrase]["x_norm"] == pytest.approx(.07)
         assert timeline[phrase]["protected_boxes_norm"] == [[.76, .81, .23, .19]]

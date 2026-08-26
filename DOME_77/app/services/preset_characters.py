@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from app.core.config import settings
+from app.services.character_geometry import ANALYSIS_VERSION
 
 
 PRESET_CHARACTERS: list[dict] = [
@@ -38,15 +39,32 @@ def preset_character_geometry(character_id: str) -> dict:
     get_preset_character(character_id)
     return {
         "characterBoundingBox": [0.0, 0.0, 1.0, 1.0],
+        "sourceWidth": 1024,
+        "sourceHeight": 1024,
+        "visibleAspectRatio": 1.0,
         "headCenterX": 0.5,
         "headCenterY": 0.25,
+        "headPoint": [0.5, 0.25],
         "headBoundingBox": [0.24, 0.05, 0.52, 0.38],
         "bodyCenterX": 0.5,
         "bodyCenterY": 0.62,
+        "torsoBoundingBox": [0.23, 0.35, 0.54, 0.5],
+        "frontSide": "FRONT",
+        "backSide": "BACK",
+        "frontPoint": [0.5, 0.28],
+        "backPoint": [0.5, 0.62],
+        "frontLimbs": [],
+        "rearLimbs": [],
+        "feetAnchor": [0.5, 0.98],
+        "groundAnchor": [0.5, 0.98],
+        "tailBoundingBox": None,
+        "tailPoint": None,
         "facingDirection": "FRONT",
+        "canonicalFacing": "FRONT",
         "confidence": 1.0,
         "source": "preset_catalog",
-        "analysisVersion": "character-geometry-v1",
+        "userConfirmed": True,
+        "analysisVersion": ANALYSIS_VERSION,
     }
 
 

@@ -61,21 +61,25 @@ def _probe_video(path: Path) -> tuple[int, int, float]:
             raise CartoonBuildError(f"Не удалось прочитать параметры базового MP4: {path.name}") from (exc or probe_exc)
 
 
-def _resolve_normalized_timeline(timeline: list[dict], frame_width: int, frame_height: int, character_aspect: float = 0.6) -> list[dict]:
-    """Convert authored 0..1 placement into FFmpeg pixels at render time."""
+def _resolve_normalized_timeline(timeline: list[dict], frame_width: int, frame_height: int, character_aspect: float = 0.6, ground_ratio: float = 1.0) -> list[dict]:
+    """Convert authored placement using visible-body size and the saved feet anchor."""
 
     resolved: list[dict] = []
     for source in timeline:
         segment = dict(source)
         if "height_norm" in segment:
-            height_norm=float(segment["height_norm"])
-            max_width_norm=float(segment.get("max_width_norm") or 0.46)
+            authored_height=float(segment["height_norm"])
+            # A horizontal dinosaur should not be made tiny merely because its
+            # silhouette is wide. Preserve comparable perceptual body area,
+            # then apply the authored safe-zone width as a final bound.
+            height_norm=authored_height/(max(1.0,character_aspect)**0.32)
+            max_width_norm=float(segment.get("max_width_norm") or 0.56)
             if character_aspect>0 and height_norm*character_aspect>max_width_norm:
                 height_norm=max_width_norm/character_aspect
             segment["height"] = max(1, round(height_norm * frame_height))
         height = int(segment.get("height", 225))
         if "floor_y_norm" in segment:
-            segment["y"] = round(float(segment["floor_y_norm"]) * frame_height - height)
+            segment["y"] = round(float(segment["floor_y_norm"]) * frame_height - height*max(.65,min(1.15,ground_ratio)))
         if "x_norm" in segment:
             segment["x"] = round(float(segment["x_norm"]) * frame_width)
         if "x_start_norm" in segment:
@@ -427,7 +431,10 @@ def build_timeline_cartoon(base_video: Path, character_png: Path, audio_by_phras
     visible_box=(character_metadata or {}).get("characterBoundingBox") or [0,0,1,1]
     try:character_aspect=(source_width*float(visible_box[2]))/max(1.0,source_height*float(visible_box[3]))
     except (TypeError,ValueError,IndexError):character_aspect=source_width/max(source_height,1)
-    timeline = _resolve_normalized_timeline([dict(item) for item in timeline], frame_width, frame_height, character_aspect)
+    ground_anchor=(character_metadata or {}).get("feetAnchor") or (character_metadata or {}).get("groundAnchor") or []
+    try:ground_ratio=(float(ground_anchor[1])-float(visible_box[1]))/max(.01,float(visible_box[3]))
+    except (TypeError,ValueError,IndexError):ground_ratio=1.0
+    timeline = _resolve_normalized_timeline([dict(item) for item in timeline], frame_width, frame_height, character_aspect,ground_ratio)
     minimum = float(cfg.get("first_child_scene_seconds", 8))
     timeline[0]["end"] = max(float(timeline[0].get("end", 0)), float(timeline[0].get("visible_start", 0)) + minimum)
     timeline_end = max(float(item["end"]) for item in timeline)

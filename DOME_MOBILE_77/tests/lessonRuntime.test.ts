@@ -9,10 +9,12 @@ import {
   cardSelectionAllowed,
   cardVoiceKey,
   childSafeRuntimeMessage,
+  completeHelperLanguage,
   computeHeroScale,
   droppedObjectTutorPrompt,
   dropInsideTarget,
   heroBox,
+  hasCorrectiveFeedback,
   initialBilingualHint,
   isRequiredForMovie,
   LessonRuntimeTimeoutError,
@@ -29,6 +31,7 @@ import {
   requiresVoice,
   RUNTIME_STAGES,
   runtimePrompt,
+  slideContentBoxes,
   stageAfterTutorSpeech,
   suitcaseDropOutcome,
   suitcaseDropAccepted,
@@ -39,7 +42,7 @@ import {
   visualRequiredForSlide,
   withLessonTimeout,
 } from '../src/engine/lessonRuntime.ts';
-import {avatarFacing,avatarScaleX,canonicalChildAvatarUri,lessonAvatarConfig,slideAvatarConfig,sourceAvatarFacing,visibleCharacterBox} from '../src/engine/avatarRuntime.ts';
+import {avatarCanvasStyle,avatarFacing,avatarGroundRatio,avatarScaleX,canonicalChildAvatarUri,lessonAvatarConfig,slideAvatarConfig,sourceAvatarFacing,visibleCharacterAspect,visibleCharacterBox} from '../src/engine/avatarRuntime.ts';
 import {CAT_ACTIVITY_STATES,catProcessingState,catStateForStage} from '../src/engine/catRuntime.ts';
 import {mediaPhaseAfterEnd,normalizeMediaSequence,usesGenericMediaRuntime} from '../src/engine/mediaRuntime.ts';
 import {StartupTimeoutError,startupErrorText,withStartupTimeout} from '../src/engine/startup.ts';
@@ -67,9 +70,10 @@ test('PRE_A1 opening retains the complete authored question',()=>{
   assert.equal(runtimePrompt(greeting,'PRE_A1',0.12,'retry'),'Привет! У меня всё хорошо.');
 });
 
-test('PRE_A1 receives one short immediate home-language duplicate',()=>{
-  assert.equal(initialBilingualHint('Как ты сегодня себя чувствуешь? Потом расскажи подробно.','PRE_A1',0.12),'Как ты сегодня себя чувствуешь?');
+test('PRE_A1 receives one or two complete immediate home-language sentences',()=>{
+  assert.equal(initialBilingualHint('Как ты сегодня себя чувствуешь? Потом расскажи подробно.','PRE_A1',0.12),'Как ты сегодня себя чувствуешь? Потом расскажи подробно.');
   assert.equal(initialBilingualHint('Как ты сегодня себя чувствуешь?','A1',0.45),'Как ты сегодня себя чувствуешь?');
+  assert.equal(completeHelperLanguage('Кот','Кот поможет тебе. Попробуй ещё раз.'),'Кот поможет тебе. Попробуй ещё раз.');
 });
 
 test('selected card has a deterministic three-question flow and stable voice keys',()=>{
@@ -120,11 +124,11 @@ test('third unsupported take advances without being accepted',()=>{
 
 test('Mila hero placement is declarative, scene-sized, and left of Mila',()=>{
   const standalone=heroBox(mila,{default_hero_placement:'hidden'})!;
-  assert.ok(standalone[3]>=.58&&standalone[3]<=.92);
+  assert.ok(standalone[3]>=.48&&standalone[3]<=.92);
   assert.equal(heroBox({}, {default_hero_placement:'hidden'}),null);
-  const authored=(bundledLesson.slides as any[]).find(slide=>slide.slide_id==='slide_20');
-  const resolved=heroBox(authored,bundledLesson) as [number,number,number,number];
-  assert.ok(resolved[3]>=.58,'Mila hero must remain a full-height scene participant');
+  const authored=slideAvatarConfig((bundledLesson.slides as any[]).find(slide=>slide.slide_id==='slide_20'),bundledLesson.lesson_id);
+  const resolved=heroBox(authored,lessonAvatarConfig(bundledLesson),360,203,{visibleAspectRatio:1}) as [number,number,number,number];
+  assert.ok(resolved[3]>=.43,'Mila hero must remain a large scene participant');
   assert.ok(resolved[0]+resolved[2]<Number(authored.character_box[0]));
   assert.ok(Math.abs((resolved[1]+resolved[3])-(authored.character_box[1]+authored.character_box[3]))<.03,'Mila and child must share a baseline');
   for(const item of authored.selection_options)assert.equal(rectanglesOverlap(resolved,item.rect),false);
@@ -173,10 +177,10 @@ test('visual preload retries once and critical visuals gate NEXT instead of show
 });
 
 test('opening slide has a safe declarative hero placement and bundled source',()=>{
-  const opening=(bundledLesson.slides as any[]).find(slide=>slide.slide_id==='slide_01');
+  const opening=slideAvatarConfig((bundledLesson.slides as any[]).find(slide=>slide.slide_id==='slide_01'),bundledLesson.lesson_id);
   assert.equal(opening.image,'lesson-images/slide-01.png');
-  const resolved=heroBox(opening,bundledLesson) as [number,number,number,number];assert.ok(resolved);
-  assert.ok(resolved[3]>Number(opening.hero_box[3]));
+  const resolved=heroBox(opening,lessonAvatarConfig(bundledLesson),360,203,{visibleAspectRatio:1}) as [number,number,number,number];assert.ok(resolved);
+  assert.ok(resolved[3]>=.47);
   for(const box of opening.content_boxes||[])assert.equal(rectanglesOverlap(resolved,box),false);
 });
 
@@ -289,6 +293,7 @@ test('regression: optional tasks expose Next during speech, processing, and voic
 test('regression: requiredForMovie cannot be skipped by exhausting retries',()=>{
   const required={answer_mode:'required_voice',requiredForMovie:true};assert.equal(isRequiredForMovie(required),true);
   assert.equal(nextEnabled('WAITING_VOICE',true,{requiredForMovie:true}),false);
+  assert.equal(nextEnabled('WAITING_VOICE',true,{requiredForMovie:true,hasValidRecording:true}),true);
   assert.equal(nextEnabled('COMPLETE',true,{requiredForMovie:true}),true);
   assert.equal(nextEnabled('RETRY',true,{requiredForMovie:true,recoveryAvailable:true}),false);
   assert.equal(isRequiredForMovie({requiredForMovie:'true'}),false);
@@ -313,9 +318,40 @@ test('regression: Mila selection, voice, feedback, and Next all have an exit',()
 
 test('regression: avatar sizing and orientation are scene-relative for Lyosha and Mila',()=>{
   const lesson=lessonAvatarConfig(bundledLesson);const lyosha=slideAvatarConfig((bundledLesson.slides as any[]).find(slide=>slide.slide_id==='slide_19'),bundledLesson.lesson_id);const milaSlide=slideAvatarConfig((bundledLesson.slides as any[]).find(slide=>slide.slide_id==='slide_20'),bundledLesson.lesson_id);
-  const lyoshaBox=heroBox(lyosha,lesson) as number[];const milaBox=heroBox(milaSlide,lesson) as number[];
-  assert.ok(lyoshaBox[3]>=.64);assert.ok(Math.abs((lyoshaBox[1]+lyoshaBox[3])-(lyosha.character_box[1]+lyosha.character_box[3]))<.03);assert.equal(avatarFacing(lyosha,lesson),'left');assert.equal(avatarScaleX(avatarFacing(lyosha,lesson)),-1);
-  assert.ok(milaBox[3]>=.66);assert.equal(avatarFacing(milaSlide,lesson),'right');assert.equal(avatarScaleX(avatarFacing(milaSlide,lesson)),1);
+  const geometry={facingDirection:'LEFT',visibleAspectRatio:1};const lyoshaBox=heroBox(lyosha,lesson,360,203,geometry) as number[];const milaBox=heroBox(milaSlide,lesson,360,203,geometry) as number[];
+  assert.ok(lyoshaBox[3]>=.43);assert.ok(lyoshaBox[0]+lyoshaBox[2]<lyosha.character_box[0]);assert.ok(Math.abs((lyoshaBox[1]+lyoshaBox[3])-(lyosha.character_box[1]+lyosha.character_box[3]))<.03);assert.equal(avatarFacing(lyosha,lesson),'right');assert.equal(avatarScaleX(avatarFacing(lyosha,lesson),sourceAvatarFacing(geometry)),-1);
+  assert.ok(milaBox[3]>=.43);assert.ok(milaBox[0]+milaBox[2]<milaSlide.character_box[0]);assert.equal(avatarFacing(milaSlide,lesson),'right');assert.equal(avatarScaleX(avatarFacing(milaSlide,lesson),sourceAvatarFacing(geometry)),-1);
+});
+
+test('correction finishes TTS before Answer and preserves the correct Next policy',()=>{
+  const correction={accepted:false,advance_allowed:true,correction_target:'I have a blue book.'};
+  assert.equal(hasCorrectiveFeedback(correction),true);
+  assert.equal(recordEnabled('AI_SPEAKING',greeting,true),false);
+  assert.equal(recordEnabled('WAITING_VOICE',greeting,true),true);
+  assert.equal(nextEnabled('WAITING_VOICE',true,{requiredForMovie:false}),true);
+  assert.equal(nextEnabled('WAITING_VOICE',true,{requiredForMovie:true,hasValidRecording:false}),false);
+  assert.equal(nextEnabled('WAITING_VOICE',true,{requiredForMovie:true,hasValidRecording:true}),true);
+});
+
+test('all 27 demo slides declare avatar visibility and visible placements avoid protected content',()=>{
+  const order=buildRuntimeOrder(bundledLesson.slides as any[]);const lesson=lessonAvatarConfig(bundledLesson);const geometry={visibleAspectRatio:1,facingDirection:'LEFT'};
+  assert.equal(order.length,27);
+  for(const raw of order){
+    const slide=slideAvatarConfig(raw,bundledLesson.lesson_id);assert.ok(['scene','hidden'].includes(String(slide.hero_visibility)),`${slide.slide_id} needs an explicit avatar visibility rule`);
+    const box=heroBox(slide,lesson,360,203,geometry);
+    if(slide.hero_visibility==='hidden'){assert.equal(box,null,`${slide.slide_id} must hide the hero`);continue}
+    assert.ok(box,`${slide.slide_id} needs a collision-free hero box`);
+    for(const protectedBox of slideContentBoxes(slide))assert.equal(rectanglesOverlap(box as any,protectedBox),false,`${slide.slide_id} hero overlaps protected content`);
+  }
+});
+
+test('confirmed geometry drives the same perceptual canvas and ground anchor',()=>{
+  const geometry={characterBoundingBox:[.1,.08,.8,.84],sourceWidth:500,sourceHeight:800,visibleAspectRatio:.595,feetAnchor:[.5,.9]};
+  assert.equal(visibleCharacterAspect(geometry),.595);assert.ok(avatarGroundRatio(geometry)>.95);
+  const style=avatarCanvasStyle(geometry);assert.equal(style.position,'absolute');assert.match(style.left,/^-/);assert.match(style.width,/%$/);
+  const confirmation=readFileSync(new URL('../src/screens/HeroConfirmScreen.tsx',import.meta.url),'utf8');
+  for(const marker of ['ГОЛОВА','ПЕРЕД','ЗАД','НОГИ / ОПОРА'])assert.match(confirmation,new RegExp(marker));
+  assert.match(confirmation,/PanResponder\.create/);assert.match(confirmation,/confirmHeroGeometry/);
 });
 
 test('regression: cat state remains independent from child avatar identity',()=>{

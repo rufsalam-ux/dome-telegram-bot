@@ -210,6 +210,10 @@ export async function uploadHero(childId:string|number,uri:string){
   return request(`/api/mobile/child/${childId}/hero/upload`,jsonInit('POST',{image_base64,filename:'hero.jpg'}));
 }
 
+export function confirmHeroGeometry(childId:string|number,characterId:string|number,metadata:Record<string,unknown>){
+  return request(`/api/mobile/child/${childId}/hero/${characterId}/geometry`,jsonInit('PATCH',metadata));
+}
+
 export function listMovies(childId:string|number){return request(`/api/mobile/child/${childId}/movies`)}
 
 export function getSubscription(childId:string|number,courseId='conversation'){

@@ -1,3 +1,5 @@
+import {visibleCharacterAspect} from './avatarRuntime.ts';
+
 export const RUNTIME_STAGES = [
   'ENTER', 'AI_SPEAKING', 'WAITING_ACTION', 'WAITING_VOICE', 'PROCESSING',
   'FEEDBACK', 'FOLLOW_UP', 'RETRY', 'COMPLETE',
@@ -6,7 +8,7 @@ export const RUNTIME_STAGES = [
 export type RuntimeStage = typeof RUNTIME_STAGES[number];
 export type PromptPhase = 'initial'|'retry';
 export type RectTuple = [number,number,number,number];
-export type NextPolicy={requiredForMovie?:boolean;recoveryAvailable?:boolean};
+export type NextPolicy={requiredForMovie?:boolean;recoveryAvailable?:boolean;hasValidRecording?:boolean};
 
 export const LESSON_OPERATION_TIMEOUT_MS=18_000;
 
@@ -72,7 +74,7 @@ export function isRequiredForMovie(slide:any):boolean{return slide?.requiredForM
 export function nextEnabled(stage:RuntimeStage,visualReady=true,policy:NextPolicy={requiredForMovie:true}):boolean{
   if(!visualReady)return false;
   if(policy.requiredForMovie!==true)return true;
-  return stage==='COMPLETE';
+  return stage==='COMPLETE'||policy.hasValidRecording===true;
 }
 
 export type ChildSafeOperation='lesson'|'recording'|'answer'|'interaction'|'progress'|'completion';
@@ -112,6 +114,11 @@ export function progressiveHint(slide:any,attempt:number):ProgressiveHint{
 export function advanceAfterAssessment(response:{accepted?:boolean;advance_allowed?:boolean;needs_retry?:boolean;tutor_turn?:{follow_up_target?:string}}):'FOLLOW_UP'|'COMPLETE'|'RETRY'{
   if(response.accepted&&String(response.tutor_turn?.follow_up_target||'').trim())return 'FOLLOW_UP';
   return response.accepted||response.advance_allowed?'COMPLETE':'RETRY';
+}
+
+export function hasCorrectiveFeedback(response:any):boolean{
+  const turn=response?.tutor_turn||{};
+  return response?.needs_retry===true||Boolean(turn.model_answer_target||turn.correction_target||response?.correction_target)&&response?.accepted!==true||String(response?.voice_feedback_state||'').toUpperCase()==='PARTIALLY_CORRECT';
 }
 
 export function complexitySupport(difficulty=0.15):string{
@@ -169,13 +176,13 @@ export function rectanglesOverlap(a:RectTuple,b:RectTuple,margin=0.012):boolean{
 
 export function slideContentBoxes(slide:any):RectTuple[]{
   const boxes:RectTuple[]=[];
-  for(const key of ['content_boxes','protected_zones','face_boxes','key_label_boxes','question_card_boxes'])for(const value of slide?.[key]||[]){const box=tuple(value);if(box)boxes.push(box)}
+  for(const key of ['content_boxes','protected_zones','protected_character_boxes','face_boxes','key_label_boxes','question_card_boxes'])for(const value of slide?.[key]||[]){const box=tuple(value);if(box)boxes.push(box)}
   for(const option of slide?.selection_options||[]){const box=tuple(option?.rect);if(box)boxes.push(box)}
   for(const key of ['character_box','question_card_box','prompt_box']){const box=tuple(slide?.[key]);if(box)boxes.push(box)}
   return boxes;
 }
 
-const DEFAULT_ANCHORS:Record<string,RectTuple>={left:[0.02,0.28,0.26,0.68],right:[0.72,0.28,0.26,0.68],bottom_left:[0.02,0.42,0.27,0.55],bottom_right:[0.71,0.42,0.27,0.55],left_of_mila:[0.30,0.34,0.23,0.61]};
+const DEFAULT_ANCHORS:Record<string,RectTuple>={left:[0.02,0.30,0.44,0.66],right:[0.54,0.30,0.44,0.66],bottom_left:[0.02,0.46,0.44,0.50],bottom_right:[0.54,0.46,0.44,0.50],left_of_lyosha:[0.02,0.38,0.39,0.44],left_of_mila:[0.04,0.49,0.50,0.46]};
 
 function anchorBox(anchor:string,slide:any,lesson:any):RectTuple|null{
   const authored=tuple(slide?.hero_anchor_boxes?.[anchor]||lesson?.hero_layout?.anchors?.[anchor]);return authored||DEFAULT_ANCHORS[anchor]||null;
@@ -187,23 +194,21 @@ export function computeHeroScale(containerWidth:number,containerHeight:number,au
   return Math.max(1,Math.min(maxScale,targetPixelHeight/authoredPixelHeight));
 }
 
-function scaledAtAnchor(box:RectTuple,scale:number,placement:string):RectTuple{
-  const width=Math.min(.96,box[2]*scale);const height=Math.min(.92,box[3]*scale);const bottom=Math.min(.98,box[1]+box[3]);
-  const rightAligned=/(right)/.test(placement)||box[0]>.55;const leftEdge=Math.max(.005,box[0]);const x=rightAligned?Math.min(.995-width,box[0]+box[2]-width):leftEdge;
-  return [Math.max(.005,x),Math.max(.005,bottom-height),width,height];
+function fittedAtAnchor(box:RectTuple,height:number,placement:string,visibleAspect:number,containerWidth:number,containerHeight:number):RectTuple{
+  const ratio=Math.max(.05,containerHeight/Math.max(1,containerWidth));const fittedHeight=Math.min(box[3],height,box[2]/Math.max(.01,visibleAspect*ratio));const width=Math.min(box[2],fittedHeight*visibleAspect*ratio);const bottom=Math.min(.99,box[1]+box[3]);
+  const rightAligned=placement.startsWith('left_of_')||/(right)/.test(placement)||box[0]>.55;const x=rightAligned?box[0]+box[2]-width:box[0];
+  return [Math.max(.005,Math.min(.995-width,x)),Math.max(.005,bottom-fittedHeight),width,fittedHeight];
 }
 
-export function heroBox(slide:any,lesson:any,containerWidth=360,containerHeight=203):number[]|null{
+export function heroBox(slide:any,lesson:any,containerWidth=360,containerHeight=203,metadata:any=null):number[]|null{
   const placement=String(slide?.hero_anchor||slide?.hero_placement||lesson?.default_hero_placement||'hidden');if(placement==='hidden')return null;
   const preferred=tuple(slide?.hero_box)||anchorBox(placement,slide,lesson);
   const fallbacks=Array.from(new Set([...(slide?.hero_fallback_anchors||[]),...(lesson?.hero_layout?.fallback_order||[])]));
   const anchors=[{box:preferred,placement},...fallbacks.map(value=>({box:anchorBox(String(value),slide,lesson),placement:String(value)}))].filter(value=>value.box) as {box:RectTuple;placement:string}[];
-  const forbidden=slideContentBoxes(slide);const minimumRatio=Math.max(.44,Math.min(.72,Number(slide?.hero_min_visual_height_ratio||lesson?.hero_layout?.min_visual_height_ratio||.56)));
+  const forbidden=slideContentBoxes(slide);const minimumRatio=Math.max(.28,Math.min(.72,Number(slide?.hero_min_visual_height_ratio||lesson?.hero_layout?.min_visual_height_ratio||.48)));const visibleAspect=visibleCharacterAspect(metadata);
   for(const anchor of anchors){
-    const preferredScale=computeHeroScale(containerWidth,containerHeight,anchor.box,Number(slide?.hero_target_visual_height_ratio||lesson?.hero_layout?.target_visual_height_ratio||.9));
-    const minimumScale=Math.min(preferredScale,Math.max(1,minimumRatio/anchor.box[3]));
-    for(let scale=preferredScale;scale>=minimumScale-.001;scale-=.04){const candidate=scaledAtAnchor(anchor.box,scale,anchor.placement);if(!forbidden.some(box=>rectanglesOverlap(candidate,box)))return candidate}
-    const minimum=scaledAtAnchor(anchor.box,minimumScale,anchor.placement);if(!forbidden.some(box=>rectanglesOverlap(minimum,box)))return minimum;
+    const target=Math.min(anchor.box[3],Number(slide?.hero_target_visual_height_ratio||lesson?.hero_layout?.target_visual_height_ratio||.64));
+    for(let height=target;height>=minimumRatio-.001;height-=.025){const candidate=fittedAtAnchor(anchor.box,height,anchor.placement,visibleAspect,containerWidth,containerHeight);if(candidate[3]>=minimumRatio-.001&&!forbidden.some(box=>rectanglesOverlap(candidate,box)))return candidate}
   }
   return null;
 }
@@ -252,10 +257,16 @@ export function suitcaseTapFallbackAvailable(failedDrags:number,threshold=3):boo
 export function initialBilingualHint(text:string,languageLevel='PRE_A1',difficulty=0.15,maxLength=120):string{
   void languageLevel;void difficulty;
   const compact=String(text||'').replace(/\s+/g,' ').trim();if(!compact)return '';
-  const first=compact.match(/^.*?[.!?](?:\s|$)/)?.[0]?.trim()||compact;
-  if(first.length<=maxLength)return first;
-  const shortened=first.slice(0,Math.max(1,maxLength-1));const boundary=shortened.lastIndexOf(' ');
+  const sentences=compact.match(/[^.!?]+[.!?]?/g)?.map(value=>value.trim()).filter(Boolean).slice(0,2)||[compact];const complete=sentences.join(' ');
+  if(complete.length<=maxLength)return complete;
+  const shortened=complete.slice(0,Math.max(1,maxLength-1));const boundary=shortened.lastIndexOf(' ');
   return `${shortened.slice(0,boundary>maxLength*0.55?boundary:shortened.length).trim()}…`;
+}
+
+export function completeHelperLanguage(authored:string,fallback:string,maxLength=220):string{
+  const clean=(value:string)=>String(value||'').replace(/\s+/g,' ').trim();const primary=clean(authored);const translated=clean(fallback);
+  const words=primary.split(/\s+/).filter(Boolean);const meaningful=primary.length>=14&&words.length>=3;
+  return initialBilingualHint(meaningful?primary:(translated||primary),'PRE_A1',.15,maxLength);
 }
 
 export function droppedObjectTutorPrompt(label:string,currentPrompt:string):string{

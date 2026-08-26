@@ -14,7 +14,7 @@ from app.services.lesson_loader import LessonConfigurationError, load_lesson
 from app.services.lesson_access import can_start,complete_session_once,mark_cartoon_generated
 from app.services.preset_characters import preset_character_geometry,preset_character_path,list_preset_characters
 from app.services.character_processor import process_character
-from app.services.character_geometry import ANALYSIS_VERSION,analyze_character_geometry,geometry_from_json,geometry_status
+from app.services.character_geometry import ANALYSIS_VERSION,analyze_character_geometry,confirm_character_geometry,geometry_from_json,geometry_status
 from app.services.audio_processing import VoiceActivity, analyze_voice_activity, prepare_child_voice
 from app.services.speech_pipeline import SpeechAssessment, assess_speech
 from app.services.lesson_runtime import apply_adaptive_assessment,classify_voice_feedback,complexity_support,correction_for_assessment,no_speech_feedback,voice_attempt_outcome
@@ -97,6 +97,7 @@ def _child_json(request:web.Request,c:Child,character:Character|None=None)->dict
 
 async def _ensure_character_geometry(character:Character)->dict:
     payload=geometry_from_json(character.visual_metadata_json)
+    if payload.get('userConfirmed') is True:return payload
     if payload and character.visual_analysis_version==ANALYSIS_VERSION:return payload
     path=Path(character.processed_path or character.original_path)
     if not path.exists():return {}
@@ -419,6 +420,22 @@ async def hero_upload(request:web.Request)->web.Response:
         ch=Character(child_id=cid,original_path=str(original),processed_path=str(processed),status='READY',source='CHILD_DRAWING',visual_metadata_json=json.dumps(metadata,ensure_ascii=False),visual_analysis_version=ANALYSIS_VERSION,visual_analysis_status=analysis_status);db.add(ch);await db.flush();c=await db.get(Child,cid);c.active_character_id=ch.id;await db.commit();await db.refresh(ch)
     val=f'hero:{cid}:{ch.id}';t=signed_media_token(val)
     return web.json_response({'character_id':ch.id,'hero_url':f'{_base(request)}/api/mobile/hero/file/{cid}/{ch.id}?t={t}','hero_metadata':_character_json(ch)})
+
+async def hero_geometry_confirm(request:web.Request)->web.Response:
+    p=await _parent(request);cid=int(request.match_info['child_id']);character_id=int(request.match_info['character_id']);await _owned_child(p.id,cid)
+    data=await request.json()
+    async with SessionLocal() as db:
+        character=await db.get(Character,character_id)
+        if not character or character.child_id!=cid:raise web.HTTPNotFound(text=json.dumps({'error':'Hero not found'}),content_type='application/json')
+        current=geometry_from_json(character.visual_metadata_json)
+        try:confirmed=confirm_character_geometry(current,data)
+        except ValueError as exc:raise web.HTTPBadRequest(text=json.dumps({'error':str(exc)}),content_type='application/json')
+        character.visual_metadata_json=json.dumps(confirmed,ensure_ascii=False)
+        character.visual_analysis_version=ANALYSIS_VERSION
+        character.visual_analysis_status='CONFIRMED'
+        await db.commit();await db.refresh(character)
+    log.info('CHARACTER_GEOMETRY_CONFIRMED parent_id=%s child_id=%s character_id=%s facing=%s',p.id,cid,character_id,confirmed.get('facingDirection'))
+    return web.json_response({'ok':True,'character_id':character_id,'hero_metadata':_character_json(character)})
 
 async def session_start(request:web.Request)->web.Response:
     p=await _parent(request);data=await request.json();cid=int(data.get('child_id'));lid=str(data.get('lesson_id') or 'demo_001');c=await _owned_child(p.id,cid);lesson_data=_load_mobile_lesson(lid);course=str(lesson_data.get('course_id') or 'conversation')
@@ -874,7 +891,7 @@ async def confirm_password_reset(request:web.Request)->web.Response:
 
 def register_mobile_routes(app:web.Application):
     app.router.add_post('/api/mobile/register',register);app.router.add_post('/api/mobile/verify-email',verify_email);app.router.add_post('/api/mobile/resend-verification',resend_verification);app.router.add_post('/api/mobile/login',login);app.router.add_post('/api/mobile/password-reset/request',request_password_reset);app.router.add_post('/api/mobile/password-reset/confirm',confirm_password_reset);app.router.add_get('/api/mobile/bootstrap',bootstrap);app.router.add_post('/api/mobile/children',create_child);app.router.add_get('/api/mobile/child/{child_id}/lessons',lesson_catalog);app.router.add_get('/api/mobile/lesson/{lesson_id}/visual/{filename}',lesson_visual);app.router.add_get('/api/mobile/lesson/{lesson_id}/media/{filename}',lesson_media);app.router.add_get('/api/mobile/lesson/{lesson_id}',lesson)
-    app.router.add_get('/api/mobile/hero/file/{child_id}/{character_id}',hero_file);app.router.add_post('/api/mobile/child/{child_id}/hero/preset',hero_preset);app.router.add_post('/api/mobile/child/{child_id}/hero/upload',hero_upload)
+    app.router.add_get('/api/mobile/hero/file/{child_id}/{character_id}',hero_file);app.router.add_post('/api/mobile/child/{child_id}/hero/preset',hero_preset);app.router.add_post('/api/mobile/child/{child_id}/hero/upload',hero_upload);app.router.add_patch('/api/mobile/child/{child_id}/hero/{character_id}/geometry',hero_geometry_confirm)
     app.router.add_get('/api/mobile/child/{child_id}/subscription',subscription_overview);app.router.add_post('/api/mobile/child/{child_id}/subscription/plan-change/preview',subscription_plan_change_preview);app.router.add_post('/api/mobile/child/{child_id}/subscription/plan-change',subscription_plan_change_confirm);app.router.add_delete('/api/mobile/child/{child_id}/subscription/plan-change',subscription_plan_change_cancel)
     app.router.add_post('/api/mobile/session/start',session_start);app.router.add_post('/api/mobile/session/{session_id}/progress',session_progress);app.router.add_post('/api/mobile/session/{session_id}/voice',voice);app.router.add_post('/api/mobile/session/{session_id}/interactive',interactive);app.router.add_post('/api/mobile/session/{session_id}/complete',complete);app.router.add_get('/api/mobile/session/{session_id}/movie',movie_status)
     app.router.add_get('/api/mobile/tts',tts);app.router.add_post('/api/mobile/translate',translate);app.router.add_patch('/api/mobile/child/{child_id}/language',update_child_language);app.router.add_get('/api/mobile/child/{child_id}/movies',movies);app.router.add_get('/api/mobile/movie/{child_id}/{filename}',movie_file)

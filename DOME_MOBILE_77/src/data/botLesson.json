@@ -7,15 +7,16 @@
   "default_hero_placement": "right",
   "hero_layout": {
     "anchors": {
-      "left_of_mila": [0.30, 0.34, 0.23, 0.61],
-      "left": [0.02, 0.28, 0.26, 0.68],
-      "right": [0.72, 0.28, 0.26, 0.68],
-      "bottom_left": [0.02, 0.42, 0.27, 0.55],
-      "bottom_right": [0.71, 0.42, 0.27, 0.55]
+      "left_of_lyosha": [0.02, 0.38, 0.39, 0.44],
+      "left_of_mila": [0.04, 0.49, 0.50, 0.46],
+      "left": [0.02, 0.30, 0.44, 0.66],
+      "right": [0.54, 0.30, 0.44, 0.66],
+      "bottom_left": [0.02, 0.46, 0.44, 0.50],
+      "bottom_right": [0.54, 0.46, 0.44, 0.50]
     },
     "fallback_order": ["left", "right", "bottom_left", "bottom_right"],
-    "target_visual_height_ratio": 0.72,
-    "min_visual_height_ratio": 0.56
+    "target_visual_height_ratio": 0.64,
+    "min_visual_height_ratio": 0.32
   },
   "slides": [
     {
@@ -419,18 +420,18 @@
       "prelude_before_required": false,
       "skip_prelude_only": false,
       "character_box": [
-        0.16,
-        0.25,
+        0.42,
+        0.28,
         0.24,
-        0.66
+        0.56
       ],
-      "hero_anchor": "right",
-      "hero_placement": "right",
-      "hero_fallback_anchors": ["right"],
-      "hero_box": [0.43, 0.25, 0.25, 0.66],
-      "hero_facing": "left",
-      "hero_target_visual_height_ratio": 0.66,
-      "hero_min_visual_height_ratio": 0.62,
+      "hero_anchor": "left_of_lyosha",
+      "hero_placement": "left_of_lyosha",
+      "hero_fallback_anchors": [],
+      "hero_box": [0.02, 0.4, 0.386, 0.44],
+      "hero_facing": "right",
+      "hero_target_visual_height_ratio": 0.44,
+      "hero_min_visual_height_ratio": 0.36,
       "strict_target_language": true,
       "expects_answer": true,
       "simplified_text": "Ему жарко.",
@@ -462,18 +463,18 @@
       "allow_help": true,
       "allow_skip": false,
       "character_box": [
-        0.56,
+        0.58,
         0.34,
-        0.23,
+        0.22,
         0.61
       ],
       "hero_placement": "left_of_mila",
       "hero_anchor": "left_of_mila",
-      "hero_fallback_anchors": ["left"],
-      "hero_box": [0.30, 0.34, 0.23, 0.61],
+      "hero_fallback_anchors": [],
+      "hero_box": [0.04, 0.49, 0.50, 0.46],
       "hero_facing": "right",
-      "hero_target_visual_height_ratio": 0.61,
-      "hero_min_visual_height_ratio": 0.58,
+      "hero_target_visual_height_ratio": 0.44,
+      "hero_min_visual_height_ratio": 0.36,
       "strict_target_language": true,
       "must_wait_for_answer": true,
       "expects_answer": true,

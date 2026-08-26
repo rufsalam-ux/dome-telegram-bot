@@ -12,6 +12,7 @@ const LazyPurchaseScreen=React.lazy(()=>import('./PurchaseScreen').then(module=>
 const LazyAdminScreen=React.lazy(()=>import('./AdminScreen').then(module=>({default:module.AdminScreen})));
 const LazyAuthScreen=React.lazy(()=>import('./AuthScreen').then(module=>({default:module.AuthScreen})));
 const LazyHeroScreen=React.lazy(()=>import('./HeroScreen').then(module=>({default:module.HeroScreen})));
+const LazyHeroConfirmScreen=React.lazy(()=>import('./HeroConfirmScreen').then(module=>({default:module.HeroConfirmScreen})));
 const LazyAddChildScreen=React.lazy(()=>import('./AddChildScreen').then(module=>({default:module.AddChildScreen})));
 
 const LANGUAGES=[
@@ -81,6 +82,7 @@ export function RootApp(){
   if(s.screen==='children')return <ScrollView contentContainerStyle={{padding:24,flexGrow:1}}>{visibleChildren.length?<><H1>Кто сегодня занимается?</H1><Body>Выберите ребёнка или добавьте новый профиль.</Body><Button testID='add-child-button' title='＋ Добавить ребёнка' onPress={()=>s.setScreen('add_child')}/>{visibleChildren.map(c=><Card key={c.id}><H2>{c.name}</H2><Body>{c.age?`${c.age} лет · `:''}изучает {c.learningLanguage||'ru'}</Body><Button title='Выбрать' onPress={()=>{s.setSelectedChild(c);s.setScreen(c.activeCharacterId?'home':'hero')}}/></Card>)}</>:<><H1>Добро пожаловать в DOME</H1><Body>Аккаунт подтверждён. Создайте первый профиль ребёнка, чтобы начать занятия.</Body><Button testID='add-child-onboarding-button' title='＋ Добавить ребёнка' onPress={()=>s.setScreen('add_child')}/><Card><H2>Первый шаг</H2><Body>Укажите имя, возраст и языки обучения. После этого вместе выберите героя.</Body></Card></>}<Button secondary title='Выйти из аккаунта' onPress={s.logout}/></ScrollView>;
   if(s.screen==='add_child')return <LazyAddChildScreen/>;
   if(s.screen==='hero')return <LazyHeroScreen/>;
+  if(s.screen==='hero_confirm')return <LazyHeroConfirmScreen/>;
 
   if(s.screen==='language'){
     const c=s.selectedChild;if(!c)return null;

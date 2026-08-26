@@ -2,7 +2,7 @@ import React from 'react';
 import {Animated,View} from 'react-native';
 
 import type {NormalizedRect} from '../data/lessonInteractions';
-import {avatarScaleX,sourceAvatarFacing,visibleCharacterBox,type AvatarFacing} from '../engine/avatarRuntime';
+import {avatarCanvasStyle,avatarScaleX,sourceAvatarFacing,type AvatarFacing} from '../engine/avatarRuntime';
 
 function rectStyle(rect:NormalizedRect|number[]){
   const values=Array.isArray(rect)?{left:rect[0]||0,top:rect[1]||0,width:rect[2]||0,height:rect[3]||0}:rect;
@@ -11,8 +11,7 @@ function rectStyle(rect:NormalizedRect|number[]){
 
 export function ChildAvatarLayer({uri,rect,facing,animation,metadata}:{uri?:string;rect:number[]|null;facing:AvatarFacing;animation:Animated.Value;metadata?:any}){
   if(!uri||!rect)return null;
-  const visible=visibleCharacterBox(metadata);const transparentBottom=Math.max(0,1-(visible[1]+visible[3]));
-  return <View testID='lesson-hero-overlay' accessibilityLabel='Выбранный герой ребёнка' pointerEvents='none' style={[{position:'absolute',zIndex:5,elevation:5},rectStyle(rect)]}>
-    <Animated.Image testID='lesson-child-avatar' source={{uri}} resizeMode='contain' style={{width:'100%',height:'100%',transform:[{translateY:animation.interpolate({inputRange:[0,1],outputRange:[transparentBottom*6,-4+transparentBottom*6]})},{scaleX:avatarScaleX(facing,sourceAvatarFacing(metadata))}]}}/>
+  return <View testID='lesson-hero-overlay' accessibilityLabel='Выбранный герой ребёнка' pointerEvents='none' style={[{position:'absolute',zIndex:5,elevation:5,overflow:'visible'},rectStyle(rect)]}>
+    <Animated.Image testID='lesson-child-avatar' source={{uri}} resizeMode='stretch' style={[avatarCanvasStyle(metadata),{transform:[{translateY:animation.interpolate({inputRange:[0,1],outputRange:[0,-4]})},{scaleX:avatarScaleX(facing,sourceAvatarFacing(metadata))}]}]}/>
   </View>;
 }
