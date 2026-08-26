@@ -25,11 +25,12 @@ def test_required_cartoon_phrase_cannot_be_skipped():
     assert 'slide_now.get("post_required_phrase_id")' in code
 
 
-def test_first_scene_is_higher():
+def test_first_scene_is_aligned_to_lyosha_instead_of_the_frame_bottom():
     lesson = json.loads((ROOT / 'content/lessons/demo_001/lesson.json').read_text(encoding='utf-8'))
     scene = next(x for x in lesson['timeline'] if x['phrase_id'] == 'lesha_clothes')
-    assert scene['floor_y_norm'] >= 0.9
+    assert scene['floor_y_norm'] == 0.82
     assert scene['height_norm'] >= 0.4
+    assert scene['protected_boxes_norm']
 
 
 def test_sms_consent_and_payment_docs_exist():

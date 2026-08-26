@@ -65,6 +65,9 @@ class Character(Base):
     status: Mapped[str] = mapped_column(String(40), default="UPLOADED")
     source: Mapped[str] = mapped_column(String(40), default="CHILD_DRAWING")
     catalog_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    visual_metadata_json: Mapped[str] = mapped_column(Text, default="{}")
+    visual_analysis_version: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    visual_analysis_status: Mapped[str] = mapped_column(String(40), default="PENDING")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 

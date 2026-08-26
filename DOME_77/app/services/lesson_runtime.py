@@ -4,6 +4,8 @@ from dataclasses import dataclass
 
 from app.services.adaptive_learning import level_from_score, score_answer, update_running_average
 
+VOICE_FEEDBACK_STATES={"NO_AUDIO","NO_SPEECH","ASR_FAILED","ANSWER_UNCLEAR","INCORRECT","PARTIALLY_CORRECT","CORRECT"}
+
 
 @dataclass(frozen=True)
 class AttemptOutcome:
@@ -29,6 +31,19 @@ def voice_attempt_outcome(status: str, attempt_number: int, max_attempts: int) -
     return AttemptOutcome(status, False, False, True)
 
 
+def classify_voice_feedback(*,audio_received:bool,has_speech:bool,transcript:str,confidence:float,status:str,semantic_match:float=0.0)->str:
+    """One mutually-exclusive child feedback state for the mobile runtime."""
+    if not audio_received:return "NO_AUDIO"
+    if not has_speech:return "NO_SPEECH"
+    if not str(transcript or "").strip():return "ASR_FAILED"
+    if float(confidence or 0.0)<0.35:return "ANSWER_UNCLEAR"
+    value=str(status or "").upper()
+    if value.startswith("ACCEPTED"):
+        return "CORRECT" if value=="ACCEPTED_CORRECT" and float(semantic_match or 0.0)>=0.8 else "PARTIALLY_CORRECT"
+    if value in {"TECHNICAL_UNCERTAINTY","ANSWER_UNCLEAR"}:return "ANSWER_UNCLEAR"
+    return "INCORRECT"
+
+
 def no_speech_feedback(attempt_number: int, max_attempts: int, example: str = "") -> tuple[str, str]:
     """Return native feedback and target-language correction source text."""
     if attempt_number <= 1:
@@ -41,7 +56,7 @@ def no_speech_feedback(attempt_number: int, max_attempts: int, example: str = ""
 
 def apply_adaptive_assessment(child, voice_attempt, assessment) -> tuple[float, str]:
     """Update the live child profile after each meaningful mobile answer."""
-    if str(assessment.status or "") in {"NO_SPEECH", "TECHNICAL_UNCERTAINTY"} or not assessment.transcript:
+    if str(assessment.status or "") in {"NO_SPEECH", "TECHNICAL_UNCERTAINTY", "ASR_FAILED", "ANSWER_UNCLEAR"} or not assessment.transcript:
         return float(child.working_difficulty or 0.15), str(child.language_level or "PRE_A1")
     adaptive = score_answer(
         semantic_match=assessment.semantic_match,

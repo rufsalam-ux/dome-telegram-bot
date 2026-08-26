@@ -1,4 +1,5 @@
 export type AvatarFacing='left'|'right'|'front';
+export type SourceAvatarFacing='LEFT'|'RIGHT'|'FRONT'|'UNKNOWN';
 
 type AvatarSlideLayout={
   hero_anchor?:string;
@@ -60,4 +61,22 @@ export function avatarFacing(slide:any,lesson:any):AvatarFacing{
   return 'front';
 }
 
-export function avatarScaleX(facing:AvatarFacing):number{return facing==='left'?-1:1}
+export function sourceAvatarFacing(metadata:any):SourceAvatarFacing{
+  const value=String(metadata?.facingDirection||'UNKNOWN').toUpperCase() as SourceAvatarFacing;
+  return ['LEFT','RIGHT','FRONT'].includes(value)?value:'UNKNOWN';
+}
+
+export function avatarScaleX(desired:AvatarFacing,source:SourceAvatarFacing='UNKNOWN'):number{
+  if(desired==='front'||source==='FRONT')return 1;
+  if(source==='LEFT')return desired==='left'?1:-1;
+  if(source==='RIGHT')return desired==='right'?1:-1;
+  return desired==='left'?-1:1;
+}
+
+export function visibleCharacterBox(metadata:any):[number,number,number,number]{
+  const raw=metadata?.characterBoundingBox;const fallback:[number,number,number,number]=[0,0,1,1];
+  if(!Array.isArray(raw)||raw.length!==4)return fallback;
+  const left=Number(raw[0]);const top=Number(raw[1]);const width=Number(raw[2]);const height=Number(raw[3]);
+  if(![left,top,width,height].every(Number.isFinite)||width<=0||height<=0)return fallback;
+  return [Math.max(0,left),Math.max(0,top),Math.min(1,width),Math.min(1,height)];
+}

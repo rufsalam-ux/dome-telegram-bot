@@ -12,12 +12,13 @@ from app.db.models import Parent,Child,Character,LessonSession,VoiceAttempt,Inte
 from app.services.mobile_tokens import issue_session_token,verify_session_token,signed_media_token,verify_media_token
 from app.services.lesson_loader import LessonConfigurationError, load_lesson
 from app.services.lesson_access import can_start,complete_session_once,mark_cartoon_generated
-from app.services.preset_characters import preset_character_path,list_preset_characters
+from app.services.preset_characters import preset_character_geometry,preset_character_path,list_preset_characters
 from app.services.character_processor import process_character
+from app.services.character_geometry import ANALYSIS_VERSION,analyze_character_geometry,geometry_from_json,geometry_status
 from app.services.audio_processing import VoiceActivity, analyze_voice_activity, prepare_child_voice
 from app.services.speech_pipeline import SpeechAssessment, assess_speech
-from app.services.lesson_runtime import apply_adaptive_assessment, complexity_support, correction_for_assessment, no_speech_feedback, voice_attempt_outcome
-from app.services.conversational_tutor import no_speech_turn
+from app.services.lesson_runtime import apply_adaptive_assessment,classify_voice_feedback,complexity_support,correction_for_assessment,no_speech_feedback,voice_attempt_outcome
+from app.services.conversational_tutor import TutorTurn,no_speech_turn
 from app.services.mobile_lesson_movie import MovieContractError,MovieRenderInputs,build_mobile_lesson_movie,ensure_movie_voice_slots,load_movie_contract,movie_take_status,record_movie_voice_slot,resolve_movie_voice_slots,select_movie_voice_takes
 from app.services.email_reports import send_homework_email,_send_with_attachment_sync,send_verification_email,send_password_reset_email
 from app.services.ai_speech import synthesize_bilingual_speech, translate_text
@@ -85,8 +86,38 @@ def _hero_url(request:web.Request,c:Child)->str|None:
     val=f'hero:{c.id}:{c.active_character_id}'; t=signed_media_token(val)
     return f'{_base(request)}/api/mobile/hero/file/{c.id}/{c.active_character_id}?t={t}'
 
-def _child_json(request:web.Request,c:Child)->dict:
-    return {'id':c.id,'name':c.display_name,'age_years':c.age_years,'native_language':c.native_language,'target_language':c.target_language,'language_level':c.language_level,'working_difficulty':c.working_difficulty,'country':c.country,'active_character_id':c.active_character_id,'hero_url':_hero_url(request,c)}
+def _character_json(character:Character|None)->dict|None:
+    if character is None:return None
+    payload=geometry_from_json(character.visual_metadata_json)
+    if not payload:return None
+    return {**payload,'analysisStatus':character.visual_analysis_status,'analysisVersion':character.visual_analysis_version or payload.get('analysisVersion')}
+
+def _child_json(request:web.Request,c:Child,character:Character|None=None)->dict:
+    return {'id':c.id,'name':c.display_name,'age_years':c.age_years,'native_language':c.native_language,'target_language':c.target_language,'language_level':c.language_level,'working_difficulty':c.working_difficulty,'country':c.country,'active_character_id':c.active_character_id,'hero_url':_hero_url(request,c),'hero_metadata':_character_json(character)}
+
+async def _ensure_character_geometry(character:Character)->dict:
+    payload=geometry_from_json(character.visual_metadata_json)
+    if payload and character.visual_analysis_version==ANALYSIS_VERSION:return payload
+    path=Path(character.processed_path or character.original_path)
+    if not path.exists():return {}
+    if character.catalog_id:
+        payload=preset_character_geometry(character.catalog_id)
+    else:
+        payload=(await analyze_character_geometry(path,allow_remote=False)).payload()
+    character.visual_metadata_json=json.dumps(payload,ensure_ascii=False)
+    character.visual_analysis_version=ANALYSIS_VERSION
+    character.visual_analysis_status=geometry_status(payload)
+    return payload
+
+async def _children_json(request:web.Request,db,children:list[Child])->list[dict]:
+    result=[];changed=False
+    for child in children:
+        character=await db.get(Character,child.active_character_id) if child.active_character_id else None
+        if character and (not geometry_from_json(character.visual_metadata_json) or character.visual_analysis_version!=ANALYSIS_VERSION):
+            await _ensure_character_geometry(character);changed=True
+        result.append(_child_json(request,child,character))
+    if changed:await db.commit()
+    return result
 
 
 async def _mobile_resume_state(db, session_id:int)->tuple[dict,list[str]]:
@@ -114,8 +145,9 @@ def _session_payload(sess:LessonSession,ent,child:Child,*,resumed:bool,interacti
 
 async def bootstrap(request:web.Request)->web.Response:
     p=await _parent(request)
-    async with SessionLocal() as db:cs=(await db.scalars(select(Child).where(Child.parent_id==p.id).order_by(Child.id))).all()
-    return web.json_response({'parent':{'id':p.id,'name':p.display_name,'email':p.email,'email_verified':bool(p.email_verified),'phone':p.phone},'children':[_child_json(request,c) for c in cs]})
+    async with SessionLocal() as db:
+        cs=(await db.scalars(select(Child).where(Child.parent_id==p.id).order_by(Child.id))).all();children_payload=await _children_json(request,db,list(cs))
+    return web.json_response({'parent':{'id':p.id,'name':p.display_name,'email':p.email,'email_verified':bool(p.email_verified),'phone':p.phone},'children':children_payload})
 
 
 async def lesson_catalog(request:web.Request)->web.Response:
@@ -355,10 +387,11 @@ async def hero_preset(request:web.Request)->web.Response:
     p=await _parent(request); cid=int(request.match_info['child_id']); c=await _owned_child(p.id,cid); data=await request.json(); catalog=str(data.get('catalog_id',''))
     try:path=preset_character_path(catalog)
     except Exception: raise web.HTTPBadRequest(text=json.dumps({'error':'Unknown hero'}),content_type='application/json')
+    metadata=preset_character_geometry(catalog)
     async with SessionLocal() as db:
-        ch=Character(child_id=cid,original_path=str(path),processed_path=str(path),status='READY',source='CATALOG',catalog_id=catalog);db.add(ch);await db.flush();c2=await db.get(Child,cid);c2.active_character_id=ch.id;await db.commit();await db.refresh(ch)
+        ch=Character(child_id=cid,original_path=str(path),processed_path=str(path),status='READY',source='CATALOG',catalog_id=catalog,visual_metadata_json=json.dumps(metadata,ensure_ascii=False),visual_analysis_version=ANALYSIS_VERSION,visual_analysis_status='READY');db.add(ch);await db.flush();c2=await db.get(Child,cid);c2.active_character_id=ch.id;await db.commit();await db.refresh(ch)
     val=f'hero:{cid}:{ch.id}'; t=signed_media_token(val)
-    return web.json_response({'character_id':ch.id,'hero_url':f'{_base(request)}/api/mobile/hero/file/{cid}/{ch.id}?t={t}'})
+    return web.json_response({'character_id':ch.id,'hero_url':f'{_base(request)}/api/mobile/hero/file/{cid}/{ch.id}?t={t}','hero_metadata':_character_json(ch)})
 
 async def hero_upload(request:web.Request)->web.Response:
     p=await _parent(request);cid=int(request.match_info['child_id']);await _owned_child(p.id,cid)
@@ -379,10 +412,13 @@ async def hero_upload(request:web.Request)->web.Response:
     processed=original.with_suffix('.png')
     try:await asyncio.to_thread(process_character,original,processed)
     except Exception as exc:raise web.HTTPBadRequest(text=json.dumps({'error':f'Не удалось удалить фон: {exc}'}),content_type='application/json')
+    geometry=await analyze_character_geometry(processed,allow_remote=True);metadata=geometry.payload();analysis_status=geometry_status(geometry)
+    if analysis_status!='READY':
+        raise web.HTTPUnprocessableEntity(text=json.dumps({'error':'Не удалось уверенно определить голову и направление героя. Выберите более чёткий рисунок целиком.','code':'CHARACTER_GEOMETRY_UNCERTAIN','hero_metadata':metadata},ensure_ascii=False),content_type='application/json')
     async with SessionLocal() as db:
-        ch=Character(child_id=cid,original_path=str(original),processed_path=str(processed),status='READY',source='CHILD_DRAWING');db.add(ch);await db.flush();c=await db.get(Child,cid);c.active_character_id=ch.id;await db.commit();await db.refresh(ch)
+        ch=Character(child_id=cid,original_path=str(original),processed_path=str(processed),status='READY',source='CHILD_DRAWING',visual_metadata_json=json.dumps(metadata,ensure_ascii=False),visual_analysis_version=ANALYSIS_VERSION,visual_analysis_status=analysis_status);db.add(ch);await db.flush();c=await db.get(Child,cid);c.active_character_id=ch.id;await db.commit();await db.refresh(ch)
     val=f'hero:{cid}:{ch.id}';t=signed_media_token(val)
-    return web.json_response({'character_id':ch.id,'hero_url':f'{_base(request)}/api/mobile/hero/file/{cid}/{ch.id}?t={t}'})
+    return web.json_response({'character_id':ch.id,'hero_url':f'{_base(request)}/api/mobile/hero/file/{cid}/{ch.id}?t={t}','hero_metadata':_character_json(ch)})
 
 async def session_start(request:web.Request)->web.Response:
     p=await _parent(request);data=await request.json();cid=int(data.get('child_id'));lid=str(data.get('lesson_id') or 'demo_001');c=await _owned_child(p.id,cid);lesson_data=_load_mobile_lesson(lid);course=str(lesson_data.get('course_id') or 'conversation')
@@ -452,11 +488,12 @@ async def voice(request:web.Request)->web.Response:
     except (TypeError,ValueError):conversation_turn=0
     lesson_data=_load_mobile_lesson(sess.lesson_id);sl=_slide(lesson_data,slide_id);ph=_phrase(lesson_data,pid or sl.get('required_phrase_id'))
     required_movie_phrase=bool(sl.get('requiredForMovie') is True or sl.get('required_for_movie') is True)
-    if raw.stat().st_size<1000:
+    audio_received=raw.stat().st_size>=1000
+    if not audio_received:
         activity=VoiceActivity(0.0,0.0,0.0,None,None,False,'TOO_SHORT')
     else:
         activity=await asyncio.to_thread(analyze_voice_activity,raw)
-    wav=raw.with_suffix('.wav');max_sec=5 if (pid or sl.get('required_phrase_id')) else 60
+    wav=raw.with_suffix('.wav');max_sec=None
     if activity.has_speech:
         try:await asyncio.to_thread(prepare_child_voice,raw,wav,max_sec)
         except Exception as exc:raise web.HTTPBadRequest(text=json.dumps({'error':f'Не удалось обработать запись: {exc}'}),content_type='application/json')
@@ -481,6 +518,7 @@ async def voice(request:web.Request)->web.Response:
     else:
         assessment=SpeechAssessment(status='NO_SPEECH')
     assessed=time.perf_counter()
+    feedback_state=classify_voice_feedback(audio_received=audio_received,has_speech=activity.has_speech,transcript=assessment.transcript,confidence=assessment.confidence,status=assessment.status,semantic_match=assessment.semantic_match)
     outcome=voice_attempt_outcome(str(assessment.status or 'TECHNICAL_UNCERTAINTY'),attempt_number,max_attempts)
     movie_take_accepted=False
     if required_movie_phrase:
@@ -501,9 +539,9 @@ async def voice(request:web.Request)->web.Response:
     tutor_turn=assessment.tutor_turn
     if tutor_turn and not accepted and correction_target:
         tutor_turn=replace(tutor_turn,correction_target=correction_target,model_answer_target=correction_target)
-    if str(assessment.status or '')=='NO_SPEECH':
+    if feedback_state in {'NO_AUDIO','NO_SPEECH'}:
         feedback,_legacy_example=no_speech_feedback(attempt_number,max_attempts,correction_target)
-        retry_ru = 'Я тебя не услышала. Попробуй ещё раз.' if required_movie_phrase or attempt_number < max_attempts else 'Я тебя не услышала. Пойдём дальше, а попытку отметим как пропущенную.'
+        retry_ru = ('Запись не сохранилась. Нажми на микрофон и попробуй ещё раз.' if feedback_state=='NO_AUDIO' else 'Я тебя не услышала. Попробуй ещё раз.') if required_movie_phrase or attempt_number < max_attempts else 'Я тебя не услышала. Пойдём дальше, а попытку отметим как пропущенную.'
         # The client prompt is the exact active card/follow-up question and is
         # already in the target language.  Falling back to a slide-level hint
         # here used to explain Q1 while the child was answering Q2/Q3.
@@ -517,6 +555,15 @@ async def voice(request:web.Request)->web.Response:
         )
         tutor_turn=no_speech_turn(attempt_number,max(max_attempts,attempt_number+1) if required_movie_phrase else max_attempts,target_retry=target_retry,native_hint=native_hint,model_answer=model_answer)
         correction_target=model_answer
+    elif feedback_state in {'ASR_FAILED','ANSWER_UNCLEAR'} and not accepted:
+        unclear_ru='Я услышала твой голос, но не разобрала слова. Скажи ещё раз чуть медленнее.'
+        target_retry,native_hint=await asyncio.gather(
+            translate_text(unclear_ru,'ru',c.target_language or 'ru'),
+            translate_text(unclear_ru,'ru',c.native_language or 'ru'),
+        )
+        model_answer=correction_target if attempt_number>1 else ''
+        tutor_turn=TutorTurn(reaction_target=target_retry,native_hint=native_hint,model_answer_target=model_answer,emotion='encouraging',complete=False,reason=feedback_state.lower())
+        feedback=native_hint
     async with SessionLocal() as db:
         db_child=await db.get(Child,c.id)
         va=VoiceAttempt(lesson_session_id=sid,phrase_id=storage_phrase_id,attempt_number=attempt_number,audio_path=str(wav),status=status,transcript=assessment.transcript,detected_language=assessment.detected_language,confidence=assessment.confidence,grammar_errors=json.dumps(assessment.grammar_errors,ensure_ascii=False),pronunciation_errors=json.dumps(assessment.pronunciation_errors,ensure_ascii=False),semantic_match=assessment.semantic_match);db.add(va);await db.flush();await record_movie_voice_slot(db,sid,storage_phrase_id,va,lesson_data)
@@ -530,7 +577,7 @@ async def voice(request:web.Request)->web.Response:
         await db.commit()
     saved=time.perf_counter()
     log.info('MOBILE_VOICE_LATENCY session=%s slide=%s phrase=%s upload_ms=%d prepare_ms=%d assess_ms=%d save_ms=%d total_ms=%d attempt=%d status=%s activity=%s speech_ms=%d',sid,slide_id,storage_phrase_id,round((uploaded-started)*1000),round((prepared-uploaded)*1000),round((assessed-prepared)*1000),round((saved-assessed)*1000),round((saved-started)*1000),attempt_number,status,activity.reason,round(activity.speech_seconds*1000))
-    return web.json_response({'status':status,'accepted':accepted,'movie_take_accepted':movie_take_accepted,'advance_allowed':outcome.advance_allowed,'needs_retry':outcome.needs_retry,'attempt_number':attempt_number,'max_attempts':max_attempts,'transcript':assessment.transcript,'feedback':feedback,'feedback_source_language':c.native_language or 'ru','correction_target':correction_target if not accepted else '','correction_source_language':c.target_language or 'ru','response_target':assessment.response_target,'response_native':assessment.response_native,'semantic_match':assessment.semantic_match,'tutor_turn':tutor_turn.payload() if tutor_turn else None,'voice_activity':{'reason':activity.reason,'duration_seconds':activity.duration_seconds,'speech_seconds':activity.speech_seconds,'speech_ratio':activity.speech_ratio,'mean_volume_db':activity.mean_volume_db,'max_volume_db':activity.max_volume_db},'adaptive_profile':{'working_difficulty':working_difficulty,'language_level':language_level,'support':complexity_support(working_difficulty)}})
+    return web.json_response({'status':status,'feedback_state':feedback_state,'accepted':accepted,'movie_take_accepted':movie_take_accepted,'advance_allowed':outcome.advance_allowed,'needs_retry':outcome.needs_retry,'attempt_number':attempt_number,'max_attempts':max_attempts,'transcript':assessment.transcript,'feedback':feedback,'feedback_source_language':c.native_language or 'ru','correction_target':correction_target if not accepted else '','correction_source_language':c.target_language or 'ru','response_target':assessment.response_target,'response_native':assessment.response_native,'semantic_match':assessment.semantic_match,'tutor_turn':tutor_turn.payload() if tutor_turn else None,'voice_activity':{'reason':activity.reason,'duration_seconds':activity.duration_seconds,'speech_seconds':activity.speech_seconds,'speech_ratio':activity.speech_ratio,'mean_volume_db':activity.mean_volume_db,'max_volume_db':activity.max_volume_db},'adaptive_profile':{'working_difficulty':working_difficulty,'language_level':language_level,'support':complexity_support(working_difficulty)}})
 
 async def interactive(request:web.Request)->web.Response:
     p=await _parent(request);sid=int(request.match_info['session_id']);data=await request.json()
@@ -551,8 +598,9 @@ async def update_child_language(request:web.Request)->web.Response:
     p=await _parent(request);cid=int(request.match_info['child_id']);await _owned_child(p.id,cid);data=await request.json();target=str(data.get('target_language') or '').strip().lower();native=str(data.get('native_language') or '').strip().lower();supported={'ru','en','es','de','fr','it','pt','tr','ar','zh'}
     if target not in supported or native not in supported:raise web.HTTPBadRequest(text=json.dumps({'error':'Unsupported language'}),content_type='application/json')
     async with SessionLocal() as db:
-        c=await db.get(Child,cid);c.target_language=target;c.native_language=native;await db.commit();await db.refresh(c)
-    return web.json_response(_child_json(request,c))
+        c=await db.get(Child,cid);c.target_language=target;c.native_language=native;await db.commit();await db.refresh(c);character=await db.get(Character,c.active_character_id) if c.active_character_id else None
+        if character:await _ensure_character_geometry(character);await db.commit()
+    return web.json_response(_child_json(request,c,character))
 
 async def tts(request:web.Request)->web.StreamResponse:
     started=time.perf_counter();await _parent(request)
@@ -583,7 +631,7 @@ async def _render_mobile_movie_job(movie_id:int,inputs:MovieRenderInputs,child_i
             voices=(await db.scalars(select(VoiceAttempt).where(VoiceAttempt.lesson_session_id==session_id).order_by(VoiceAttempt.id))).all()
             lesson_for_movie={**_load_mobile_lesson(lesson_id),'timeline':inputs.timeline}
             resolved,diagnostics=await resolve_movie_voice_slots(db,session_id,voices,lesson_for_movie,inputs.target_language,settings.storage_root/'tts-cache-mobile');await db.commit()
-        inputs=MovieRenderInputs(base_video=inputs.base_video,character=inputs.character,audio_by_phrase=resolved,timeline=inputs.timeline,output=inputs.output,lesson_dir=inputs.lesson_dir,target_language=inputs.target_language,approved_phrase_ids=inputs.approved_phrase_ids,expected_base_sha256=inputs.expected_base_sha256,require_all_phrase_audio=inputs.require_all_phrase_audio)
+        inputs=MovieRenderInputs(base_video=inputs.base_video,character=inputs.character,audio_by_phrase=resolved,timeline=inputs.timeline,output=inputs.output,lesson_dir=inputs.lesson_dir,target_language=inputs.target_language,approved_phrase_ids=inputs.approved_phrase_ids,expected_base_sha256=inputs.expected_base_sha256,require_all_phrase_audio=inputs.require_all_phrase_audio,character_metadata=inputs.character_metadata)
         log.info('MOBILE_MOVIE_VOICE_DIAGNOSTICS session=%s slots=%s',session_id,diagnostics)
         await asyncio.to_thread(build_mobile_lesson_movie,inputs)
         async with SessionLocal() as db:
@@ -647,7 +695,7 @@ async def complete(request:web.Request)->web.Response:
             movie_id=movie.id if movie else None
         if should_render:
             lesson_dir=movie_contract.lesson_dir
-            inputs=MovieRenderInputs(base_video=movie_contract.base_video,character=hero_path,audio_by_phrase=audio_by_phrase,timeline=movie_contract.timeline,output=out,lesson_dir=lesson_dir,target_language=c.target_language or 'ru',approved_phrase_ids=movie_contract.approved_phrase_ids,expected_base_sha256=movie_contract.expected_base_sha256,require_all_phrase_audio=bool(movie_contract.audio_policy.get('require_exact_child_recording',True)))
+            inputs=MovieRenderInputs(base_video=movie_contract.base_video,character=hero_path,audio_by_phrase=audio_by_phrase,timeline=movie_contract.timeline,output=out,lesson_dir=lesson_dir,target_language=c.target_language or 'ru',approved_phrase_ids=movie_contract.approved_phrase_ids,expected_base_sha256=movie_contract.expected_base_sha256,require_all_phrase_audio=bool(movie_contract.audio_policy.get('require_exact_child_recording',True)),character_metadata=geometry_from_json(char.visual_metadata_json) if char else preset_character_geometry('explorer'))
             _spawn_movie_task(_render_mobile_movie_job(movie_id,inputs,c.id,sess.lesson_id,course,par.email if par else None,bool(par and par.email_reports_enabled),run_no,str(lesson_data.get('title') or sess.lesson_id)))
             movie_status='PROCESSING'
         elif movie_status!='READY':
@@ -769,8 +817,8 @@ async def verify_email(request:web.Request)->web.Response:
         parent.email_verified=True;parent.email_verification_code_hash=None;parent.email_verification_expires_at=None
         children=(await db.scalars(select(Child).where(Child.parent_id==parent.id).order_by(Child.id))).all()
         if children:await ensure_free_demo_entitlement(db,parent_id=parent.id,child_id=children[0].id)
-        await db.commit();token=issue_session_token(parent.id)
-        return web.json_response({'token':token,'parent':{'id':parent.id,'name':parent.display_name,'email':parent.email,'email_verified':True,'phone':parent.phone},'children':[_child_json(request,c) for c in children]})
+        await db.commit();token=issue_session_token(parent.id);children_payload=await _children_json(request,db,list(children))
+        return web.json_response({'token':token,'parent':{'id':parent.id,'name':parent.display_name,'email':parent.email,'email_verified':True,'phone':parent.phone},'children':children_payload})
 
 
 async def resend_verification(request:web.Request)->web.Response:
@@ -796,8 +844,8 @@ async def login(request:web.Request)->web.Response:
             raise web.HTTPUnauthorized(text=json.dumps({'error':'Неверный email или пароль'}),content_type='application/json')
         if not bool(parent.email_verified):
             raise web.HTTPForbidden(text=json.dumps({'error':'Сначала подтвердите email','code':'EMAIL_NOT_VERIFIED','verification_required':True,'email':email}),content_type='application/json')
-        children=(await db.scalars(select(Child).where(Child.parent_id==parent.id).order_by(Child.id))).all();token=issue_session_token(parent.id)
-        return web.json_response({'token':token,'parent':{'id':parent.id,'name':parent.display_name,'email':parent.email,'email_verified':True,'phone':parent.phone},'children':[_child_json(request,c) for c in children]})
+        children=(await db.scalars(select(Child).where(Child.parent_id==parent.id).order_by(Child.id))).all();token=issue_session_token(parent.id);children_payload=await _children_json(request,db,list(children))
+        return web.json_response({'token':token,'parent':{'id':parent.id,'name':parent.display_name,'email':parent.email,'email_verified':True,'phone':parent.phone},'children':children_payload})
 
 
 async def request_password_reset(request:web.Request)->web.Response:

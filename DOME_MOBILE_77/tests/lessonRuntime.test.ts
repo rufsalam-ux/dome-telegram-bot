@@ -22,6 +22,7 @@ import {
   nextEnabled,
   progressiveHint,
   recordEnabled,
+  recordingGate,
   recoveryStageAfterFailure,
   rectanglesOverlap,
   requiresSelection,
@@ -38,7 +39,7 @@ import {
   visualRequiredForSlide,
   withLessonTimeout,
 } from '../src/engine/lessonRuntime.ts';
-import {avatarFacing,avatarScaleX,canonicalChildAvatarUri,lessonAvatarConfig,slideAvatarConfig} from '../src/engine/avatarRuntime.ts';
+import {avatarFacing,avatarScaleX,canonicalChildAvatarUri,lessonAvatarConfig,slideAvatarConfig,sourceAvatarFacing,visibleCharacterBox} from '../src/engine/avatarRuntime.ts';
 import {CAT_ACTIVITY_STATES,catProcessingState,catStateForStage} from '../src/engine/catRuntime.ts';
 import {mediaPhaseAfterEnd,normalizeMediaSequence,usesGenericMediaRuntime} from '../src/engine/mediaRuntime.ts';
 import {StartupTimeoutError,startupErrorText,withStartupTimeout} from '../src/engine/startup.ts';
@@ -68,7 +69,7 @@ test('PRE_A1 opening retains the complete authored question',()=>{
 
 test('PRE_A1 receives one short immediate home-language duplicate',()=>{
   assert.equal(initialBilingualHint('Как ты сегодня себя чувствуешь? Потом расскажи подробно.','PRE_A1',0.12),'Как ты сегодня себя чувствуешь?');
-  assert.equal(initialBilingualHint('Как ты сегодня себя чувствуешь?','A1',0.45),'');
+  assert.equal(initialBilingualHint('Как ты сегодня себя чувствуешь?','A1',0.45),'Как ты сегодня себя чувствуешь?');
 });
 
 test('selected card has a deterministic three-question flow and stable voice keys',()=>{
@@ -93,7 +94,23 @@ test('Mila cannot dead-end when cached Android audio finishes between status pol
 test('audio watchdog never unlocks while speech is playing but prevents a missed-status dead end',()=>{
   assert.equal(tutorAudioWatchdogStage('AI_SPEAKING',{playing:true,isBuffering:false},'WAITING_VOICE'),'AI_SPEAKING');
   assert.equal(tutorAudioWatchdogStage('AI_SPEAKING',{playing:false,isBuffering:true},'WAITING_VOICE'),'AI_SPEAKING');
-  assert.equal(tutorAudioWatchdogStage('AI_SPEAKING',{playing:false,isBuffering:false},'WAITING_VOICE'),'WAITING_VOICE');
+  assert.equal(tutorAudioWatchdogStage('AI_SPEAKING',{playing:false,isBuffering:false},'WAITING_VOICE'),'AI_SPEAKING');
+  assert.equal(tutorAudioWatchdogStage('AI_SPEAKING',{playing:false,isBuffering:false},'WAITING_VOICE',true),'WAITING_VOICE');
+});
+
+test('transient Android player idle cannot truncate tutor speech mid-sentence',()=>{
+  const pending=tutorAudioTransition('AI_SPEAKING',{playing:false,isBuffering:false,didJustFinish:false,currentTime:1.2,duration:8},true,'WAITING_VOICE');
+  assert.equal(pending.finished,false);assert.equal(pending.stage,'AI_SPEAKING');
+  const done=tutorAudioTransition('AI_SPEAKING',{playing:false,isBuffering:false,didJustFinish:false,currentTime:7.95,duration:8},true,'WAITING_VOICE');
+  assert.equal(done.finished,true);assert.equal(done.stage,'WAITING_VOICE');
+});
+
+test('recording has no five-second cutoff and stops only after post-speech silence or safety limit',()=>{
+  let gate:any={speechStarted:false,silenceStartedAt:null,stopReason:null};
+  gate=recordingGate(gate,5_500,-34,5_500);assert.equal(gate.stopReason,null);assert.equal(gate.speechStarted,true);
+  gate=recordingGate(gate,6_000,-55,6_000);assert.equal(gate.stopReason,null);
+  gate=recordingGate(gate,7_300,-55,7_300);assert.equal(gate.stopReason,'SPEECH_COMPLETE');
+  const hard=recordingGate({speechStarted:false,silenceStartedAt:null,stopReason:null},25_000,-80,25_000);assert.equal(hard.stopReason,'SAFETY_LIMIT');
 });
 
 test('third unsupported take advances without being accepted',()=>{
@@ -211,7 +228,7 @@ test('DOME cat is an independent companion and reward star stays in its own laye
   assert.equal(catStateForStage('AI_SPEAKING'),'listening');assert.equal(catStateForStage('WAITING_VOICE'),'waiting');
   assert.equal(catProcessingState(1499),'thinking');assert.equal(catProcessingState(1500),'idle');assert.equal(catProcessingState(4000),'waiting');
   const cat=readFileSync(new URL('../src/components/CatActivityLayer.tsx',import.meta.url),'utf8');const reward=readFileSync(new URL('../src/components/RewardEffectLayer.tsx',import.meta.url),'utf8');const player=readFileSync(new URL('../src/screens/LessonPlayer.tsx',import.meta.url),'utf8');
-  assert.doesNotMatch(cat,/star\.png|gameActive|cat-mini-game-star|assets\/heroes\/cat\.png/);assert.match(cat,/dome-splash-v2\.png/);assert.match(cat,/stage!=='AI_SPEAKING'&&stage!=='PROCESSING'/);assert.match(reward,/star\.png/);assert.match(player,/<CatActivityLayer/);
+  assert.doesNotMatch(cat,/star\.png|gameActive|cat-mini-game-star|assets\/heroes\/cat\.png/);assert.match(cat,/dome-splash-v2\.png/);assert.match(cat,/const focused=stage==='AI_SPEAKING'\|\|stage==='PROCESSING'/);assert.doesNotMatch(cat,/return null/);assert.match(reward,/star\.png/);assert.match(player,/<CatActivityLayer/);
   assert.match(player,/droppedObjectTutorPrompt\(labelTarget,targetText\)/);
 });
 
@@ -221,6 +238,15 @@ test('regression: selected child avatar identity persists across slide transitio
   const second=canonicalChildAvatarUri({...child},'https://api.dome.test');
   assert.equal(first,'https://api.dome.test/media/children/7/canonical.png');assert.equal(second,first);
   for(const slide of (bundledLesson.slides as any[]).slice(0,6))assert.ok(slideAvatarConfig(slide,bundledLesson.lesson_id));
+});
+
+test('head-left dinosaur is mirrored only when a scene requires facing right',()=>{
+  const metadata={facingDirection:'LEFT',characterBoundingBox:[.04,.08,.9,.86]};
+  assert.equal(sourceAvatarFacing(metadata),'LEFT');
+  assert.equal(avatarScaleX('left',sourceAvatarFacing(metadata)),1);
+  assert.equal(avatarScaleX('right',sourceAvatarFacing(metadata)),-1);
+  assert.equal(avatarScaleX('front',sourceAvatarFacing(metadata)),1);
+  assert.deepEqual(visibleCharacterBox(metadata),[.04,.08,.9,.86]);
 });
 
 test('regression: AI state changes cannot replace or duplicate the child avatar',()=>{

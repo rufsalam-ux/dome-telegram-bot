@@ -40,18 +40,31 @@ export function recordEnabled(stage:RuntimeStage,slide:any,hasSelection=false):b
   return stage==='WAITING_VOICE'&&requiresVoice(slide)&&(!requiresSelection(slide)||hasSelection);
 }
 
-export type TutorAudioStatus={playing?:boolean;isBuffering?:boolean;didJustFinish?:boolean};
+export type TutorAudioStatus={playing?:boolean;isBuffering?:boolean;didJustFinish?:boolean;currentTime?:number;duration?:number};
 export type TutorAudioTransition={stage:RuntimeStage;sawPlayback:boolean;finished:boolean};
 
 export function tutorAudioTransition(stage:RuntimeStage,status:TutorAudioStatus,sawPlayback:boolean,after:RuntimeStage):TutorAudioTransition{
   if(stage!=='AI_SPEAKING')return {stage,sawPlayback,finished:false};
   const observed=sawPlayback||Boolean(status.playing)||Boolean(status.isBuffering);
-  const finished=Boolean(status.didJustFinish)||(observed&&!status.playing&&!status.isBuffering);
+  const duration=Number(status.duration||0);const current=Number(status.currentTime||0);
+  const reachedEnd=observed&&duration>0&&current>=Math.max(0,duration-.12)&&!status.playing&&!status.isBuffering;
+  const finished=Boolean(status.didJustFinish)||reachedEnd;
   return {stage:finished?after:stage,sawPlayback:finished?false:observed,finished};
 }
 
 export function tutorAudioWatchdogStage(stage:RuntimeStage,status:TutorAudioStatus,after:RuntimeStage,hardDeadline=false):RuntimeStage{
-  return stage==='AI_SPEAKING'&&(hardDeadline||(!status.playing&&!status.isBuffering))?after:stage;
+  return stage==='AI_SPEAKING'&&(hardDeadline||(!status.playing&&!status.isBuffering&&Boolean(status.didJustFinish)))?after:stage;
+}
+
+export type RecordingGateState={speechStarted:boolean;silenceStartedAt:number|null;stopReason:'SPEECH_COMPLETE'|'SAFETY_LIMIT'|null};
+export function recordingGate(previous:RecordingGateState,durationMillis:number,metering:number|undefined,nowMillis:number,hardLimitMillis=25_000,silenceMillis=1_250):RecordingGateState{
+  if(durationMillis>=hardLimitMillis)return {...previous,stopReason:'SAFETY_LIMIT'};
+  if(!Number.isFinite(metering as number))return {...previous,stopReason:null};
+  const speech=Number(metering)>-42;
+  if(speech)return {speechStarted:true,silenceStartedAt:null,stopReason:null};
+  if(!previous.speechStarted)return {...previous,stopReason:null};
+  const silenceStartedAt=previous.silenceStartedAt??nowMillis;
+  return {speechStarted:true,silenceStartedAt,stopReason:durationMillis>=900&&nowMillis-silenceStartedAt>=silenceMillis?'SPEECH_COMPLETE':null};
 }
 
 export function isRequiredForMovie(slide:any):boolean{return slide?.requiredForMovie===true||slide?.required_for_movie===true||Boolean(slide?.required_phrase_id&&slide?.allow_skip===false)}
@@ -237,7 +250,7 @@ export function updatePackedItems(current:string[],itemId:string,outcome:Suitcas
 export function suitcaseTapFallbackAvailable(failedDrags:number,threshold=3):boolean{return failedDrags>=threshold}
 
 export function initialBilingualHint(text:string,languageLevel='PRE_A1',difficulty=0.15,maxLength=120):string{
-  if(String(languageLevel||'').toUpperCase()!=='PRE_A1'&&difficulty>=0.25)return '';
+  void languageLevel;void difficulty;
   const compact=String(text||'').replace(/\s+/g,' ').trim();if(!compact)return '';
   const first=compact.match(/^.*?[.!?](?:\s|$)/)?.[0]?.trim()||compact;
   if(first.length<=maxLength)return first;

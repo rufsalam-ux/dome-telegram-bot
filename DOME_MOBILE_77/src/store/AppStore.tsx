@@ -36,6 +36,7 @@ function childProfile(raw:any,parentId:string):ChildProfile{
     courseId:'conversation',
     activeCharacterId:raw.active_character_id,
     heroUrl:raw.hero_url||null,
+    heroMetadata:raw.hero_metadata||null,
   };
 }
 

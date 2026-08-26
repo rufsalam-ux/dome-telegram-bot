@@ -360,7 +360,19 @@ def test_real_all_exact_child_voices_render_canonical_m1_to_mp4(tmp_path, monkey
         pytest.fail("DOME_FFMPEG_BIN/ffmpeg is required for the movie E2E test")
     monkeypatch.setattr(settings, "ffmpeg_bin", ffmpeg)
     monkeypatch.setattr(settings, "storage_root", tmp_path / "storage")
-    hero = tmp_path / "hero.png";image = Image.new("RGBA", (300, 520), (0, 0, 0, 0));draw = ImageDraw.Draw(image);draw.ellipse((70, 10, 230, 170), fill=(255, 180, 90, 255));draw.rectangle((105, 165, 195, 450), fill=(30, 120, 235, 255));image.save(hero)
+    hero = tmp_path / "hero.png"
+    image = Image.new("RGBA", (400, 520), (0, 0, 0, 0));draw = ImageDraw.Draw(image)
+    draw.ellipse((20, 20, 150, 165), fill=(245, 105, 75, 255))
+    draw.polygon([(20, 85), (2, 110), (45, 120)], fill=(245, 105, 75, 255))
+    draw.rounded_rectangle((145, 145, 285, 455), radius=55, fill=(30, 120, 235, 255))
+    draw.polygon([(260, 240), (392, 305), (270, 335)], fill=(30, 120, 235, 255))
+    image.save(hero)
+    metadata = {
+        "characterBoundingBox": [0.0, 0.038, 0.98, 0.837],
+        "facingDirection": "LEFT",
+        "headCenterX": 0.2, "headCenterY": 0.18,
+        "bodyCenterX": 0.55, "bodyCenterY": 0.58,
+    }
     voices = {};lesson = load_lesson();contract = load_movie_contract("demo_001", lesson)
     for phrase in required_movie_phrase_ids(lesson):
         path = tmp_path / f"{phrase}.wav"
@@ -368,7 +380,7 @@ def test_real_all_exact_child_voices_render_canonical_m1_to_mp4(tmp_path, monkey
             stream.setnchannels(1);stream.setsampwidth(2);stream.setframerate(16_000);stream.writeframes(b"\x00\x00" * 16_000)
         voices[phrase] = path
     output = tmp_path / "happy-path.mp4"
-    result = build_mobile_lesson_movie(MovieRenderInputs(base_video=contract.base_video, character=hero, audio_by_phrase=voices, timeline=contract.timeline, output=output, lesson_dir=contract.lesson_dir, target_language="en", approved_phrase_ids=contract.approved_phrase_ids, expected_base_sha256=contract.expected_base_sha256, require_all_phrase_audio=True))
+    result = build_mobile_lesson_movie(MovieRenderInputs(base_video=contract.base_video, character=hero, audio_by_phrase=voices, timeline=contract.timeline, output=output, lesson_dir=contract.lesson_dir, target_language="en", approved_phrase_ids=contract.approved_phrase_ids, expected_base_sha256=contract.expected_base_sha256, require_all_phrase_audio=True, character_metadata=metadata))
     assert result == output and output.stat().st_size > 100_000
     width,height,duration=_probe_video(output)
     assert (width,height)==(1920,1080) and duration>=99.9

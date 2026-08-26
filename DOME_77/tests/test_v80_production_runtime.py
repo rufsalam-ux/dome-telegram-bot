@@ -47,7 +47,7 @@ def test_adaptive_followups_require_a_strong_independent_answer():
     strong=adaptive_follow_up_policy(authored_enabled=True,authored_max=2,language_level='A2',attempt_number=1,transcript='I would take my camera',confidence=.94,semantic_match=.92)
     weak=adaptive_follow_up_policy(authored_enabled=True,authored_max=2,language_level='A2',attempt_number=2,transcript='camera',confidence=.61,semantic_match=.55)
     pre_a1=adaptive_follow_up_policy(authored_enabled=True,authored_max=2,language_level='PRE_A1',attempt_number=1,transcript='red camera',confidence=.95,semantic_match=.95)
-    assert strong[:2]==(True,2);assert weak[0] is False;assert pre_a1[:2]==(True,1)
+    assert strong[:2]==(True,2);assert weak[0] is False;assert pre_a1[:2]==(True,2)
     assert correction_for_assessment(accepted=False,semantic_match=.2,attempt_number=2,ai_correction='A long unrelated correction',authored_example='A camera.',goal='What will you take?')=='A camera.'
 
 

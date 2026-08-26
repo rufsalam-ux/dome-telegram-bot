@@ -257,7 +257,10 @@ async def assess_speech(
             transcript=transcript,
             detected_language=detected,
             confidence=confidence,
-            status="NO_SPEECH",
+            # Acoustic silence is rejected before this function. Empty/weak
+            # ASR after real speech is technical uncertainty, never "I did not
+            # hear you" when a transcript or audible voice exists.
+            status="TECHNICAL_UNCERTAINTY",
         )
 
     if not settings.openai_api_key:

@@ -10,7 +10,7 @@ def test_lesson_bounds_authored_ai_followups_and_has_current_animal_phrases():
     j=json.loads(Path("content/lessons/demo_001/lesson.json").read_text(encoding="utf-8"))
     followup_slides=[s for s in j["slides"] if s.get("allow_ai_followup")]
     assert [s["slide_id"] for s in followup_slides] == ["slide_01"]
-    assert followup_slides[0]["max_ai_followups"] == 1
+    assert followup_slides[0]["max_ai_followups"] == 2
     assert followup_slides[0]["conversation_goal"]
     ids={x["phrase_id"] for x in j["required_phrases"]}
     assert {"penguin","parrot","lion","giraffe","zebra"} <= ids

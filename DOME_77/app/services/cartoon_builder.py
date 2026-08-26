@@ -8,6 +8,8 @@ import tempfile
 import time
 from pathlib import Path
 
+from PIL import Image
+
 from app.core.config import settings
 from app.services.animation_library import animation_profile, ensure_animation_library
 from app.services.animation_engine.rig_loader import load_character_rig
@@ -59,14 +61,18 @@ def _probe_video(path: Path) -> tuple[int, int, float]:
             raise CartoonBuildError(f"Не удалось прочитать параметры базового MP4: {path.name}") from (exc or probe_exc)
 
 
-def _resolve_normalized_timeline(timeline: list[dict], frame_width: int, frame_height: int) -> list[dict]:
+def _resolve_normalized_timeline(timeline: list[dict], frame_width: int, frame_height: int, character_aspect: float = 0.6) -> list[dict]:
     """Convert authored 0..1 placement into FFmpeg pixels at render time."""
 
     resolved: list[dict] = []
     for source in timeline:
         segment = dict(source)
         if "height_norm" in segment:
-            segment["height"] = max(1, round(float(segment["height_norm"]) * frame_height))
+            height_norm=float(segment["height_norm"])
+            max_width_norm=float(segment.get("max_width_norm") or 0.46)
+            if character_aspect>0 and height_norm*character_aspect>max_width_norm:
+                height_norm=max_width_norm/character_aspect
+            segment["height"] = max(1, round(height_norm * frame_height))
         height = int(segment.get("height", 225))
         if "floor_y_norm" in segment:
             segment["y"] = round(float(segment["floor_y_norm"]) * frame_height - height)
@@ -76,8 +82,54 @@ def _resolve_normalized_timeline(timeline: list[dict], frame_width: int, frame_h
             segment["x_start"] = round(float(segment["x_start_norm"]) * frame_width)
         if "x_end_norm" in segment:
             segment["x_end"] = round(float(segment["x_end_norm"]) * frame_width)
+        hero_width=max(1,round(height*max(character_aspect,0.05)))
+        for key in ("x","x_end"):
+            if key not in segment:continue
+            x=float(segment[key]);hero=[x/frame_width,float(segment.get("y",0))/frame_height,hero_width/frame_width,height/frame_height]
+            for box in segment.get("protected_boxes_norm") or []:
+                if not isinstance(box,list) or len(box)!=4:continue
+                left,top,width,box_height=(float(value) for value in box)
+                overlaps=hero[0]<left+width+.012 and hero[0]+hero[2]+.012>left and hero[1]<top+box_height+.012 and hero[1]+hero[3]+.012>top
+                if overlaps:
+                    side=str(segment.get("placement_side") or "left").lower()
+                    x=(left-hero[2]-.018)*frame_width if side=="left" else (left+width+.018)*frame_width
+                    hero[0]=x/frame_width
+            segment[key]=round(x)
         resolved.append(segment)
     return resolved
+
+
+def _visible_character_asset(source: Path, metadata: dict | None, output: Path) -> tuple[Path,float]:
+    """Crop transparent canvas once so scale and baseline use visible pixels."""
+
+    with Image.open(source) as image:
+        rgba=image.convert("RGBA");width,height=rgba.size
+        raw=(metadata or {}).get("characterBoundingBox") or []
+        if isinstance(raw,list) and len(raw)==4:
+            left=max(0,min(width-1,round(float(raw[0])*width)));top=max(0,min(height-1,round(float(raw[1])*height)))
+            right=max(left+1,min(width,round((float(raw[0])+float(raw[2]))*width)));bottom=max(top+1,min(height,round((float(raw[1])+float(raw[3]))*height)))
+            crop=(left,top,right,bottom)
+        else:
+            crop=rgba.getbbox() or (0,0,width,height)
+        visible=rgba.crop(crop);visible.save(output)
+    return output,visible.width/max(visible.height,1)
+
+
+def _desired_facing(segment: dict) -> str:
+    view=str((segment.get("character_animation") or {}).get("view") or "").lower()
+    if view.endswith("_left"):return "LEFT"
+    if view.endswith("_right"):return "RIGHT"
+    motion=str(segment.get("animation") or segment.get("motion") or "")
+    if "right_to_left" in motion or "from_right" in motion:return "LEFT"
+    if "left_to_right" in motion or "from_left" in motion:return "RIGHT"
+    return "FRONT"
+
+
+def _should_hflip(segment: dict, source_facing: str, legacy_mirror: bool) -> bool:
+    desired=_desired_facing(segment);source=str(source_facing or "UNKNOWN").upper()
+    if desired=="FRONT" or source=="FRONT":return False
+    if source in {"LEFT","RIGHT"} and desired in {"LEFT","RIGHT"}:return source!=desired
+    return legacy_mirror
 
 
 def ensure_telegram_safe_mp4(source_mp4: Path, output_mp4: Path | None = None) -> Path:
@@ -267,6 +319,33 @@ def _has_audio_stream(path: Path) -> bool:
             return False
 
 
+def _audio_duration(path: Path) -> float:
+    ffprobe=settings.ffmpeg_bin.replace("ffmpeg","ffprobe")
+    try:
+        result=subprocess.run([ffprobe,"-v","error","-show_entries","format=duration","-of","default=noprint_wrappers=1:nokey=1",str(path)],check=True,capture_output=True,text=True,timeout=30)
+        return max(0.0,float(result.stdout.strip()))
+    except Exception:
+        try:
+            result=subprocess.run([settings.ffmpeg_bin,"-hide_banner","-i",str(path),"-t","0","-f","null","-"],check=False,capture_output=True,text=True,timeout=30)
+            match=re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)",result.stderr or "")
+            return int(match.group(1))*3600+int(match.group(2))*60+float(match.group(3)) if match else 0.0
+        except Exception:return 0.0
+
+
+def _scheduled_voice_duration(audio_segments: list[dict], authored_duration: float) -> float:
+    cursor=0.0
+    for segment in sorted(audio_segments,key=lambda row:float(row.get("talk_start",row["visible_start"]))):
+        start=max(cursor,float(segment.get("talk_start",segment["visible_start"])))
+        slot=max(0.05,float(segment.get("end",start+5.0))-start)
+        source_duration=max(0.05,_audio_duration(Path(segment["audio_path"])))
+        # A small, pitch-safe acceleration keeps ordinary long child answers in
+        # the authored slot. Longer answers remain complete and extend the
+        # schedule instead of being cut at five seconds.
+        output_duration=slot if source_duration>slot and source_duration/slot<=1.35 else source_duration
+        cursor=start+output_duration
+    return max(authored_duration,cursor)
+
+
 def _build_voice_track(
     audio_segments: list[dict],
     duration: float,
@@ -294,17 +373,21 @@ def _build_voice_track(
             label = f"[silence{index}]"
             filters.append(f"anullsrc=r=48000:cl=stereo:d={start - cursor:.3f},asetpts=PTS-STARTPTS{label}")
             pieces.append(label)
-        end = max(start + 0.05, min(duration, float(segment.get("end", start + 5.0))))
-        slot_duration = min(duration - start, end - start)
+        end = max(start + 0.05, float(segment.get("end", start + 5.0)))
+        slot_duration = max(0.05, end - start)
+        source_duration=max(0.05,_audio_duration(Path(segment["audio_path"])))
+        speed=source_duration/slot_duration if slot_duration else 1.0
+        fit=source_duration>slot_duration and speed<=1.35
+        output_duration=slot_duration if fit else min(source_duration,max(0.05,duration-start))
         label = f"[voice{index}]"
+        tempo=f"atempo={speed:.5f}," if fit else ""
         filters.append(
-            f"[{index}:a]atrim=0:{slot_duration:.3f},asetpts=PTS-STARTPTS,"
+            f"[{index}:a]atrim=0:{source_duration:.3f},asetpts=PTS-STARTPTS,{tempo}"
             "highpass=f=80,acompressor=threshold=-20dB:ratio=3:makeup=3,alimiter=limit=0.891,"
-            f"aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,apad=pad_dur={slot_duration:.3f},"
-            f"atrim=0:{slot_duration:.3f}{label}"
+            f"aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,atrim=0:{output_duration:.3f}{label}"
         )
         pieces.append(label)
-        cursor = start + slot_duration
+        cursor = start + output_duration
     if duration - cursor >= 0.001:
         label = "[silence_final]"
         filters.append(f"anullsrc=r=48000:cl=stereo:d={duration - cursor:.3f},asetpts=PTS-STARTPTS{label}")
@@ -318,7 +401,7 @@ def _build_voice_track(
     return output
 
 
-def build_timeline_cartoon(base_video: Path, character_png: Path, audio_by_phrase: dict[str, Path], timeline: list[dict], output_mp4: Path, base_video_filters: list[str] | None = None) -> Path:
+def build_timeline_cartoon(base_video: Path, character_png: Path, audio_by_phrase: dict[str, Path], timeline: list[dict], output_mp4: Path, base_video_filters: list[str] | None = None, *, character_metadata: dict | None = None) -> Path:
     """Render the authored movie with disk-backed sequential FFmpeg stages.
 
     The former single graph split a 1080p hero stream ten times and kept ten
@@ -339,7 +422,12 @@ def build_timeline_cartoon(base_video: Path, character_png: Path, audio_by_phras
 
     cfg = _cartoon_config()
     frame_width, frame_height, base_duration = _probe_video(base_video)
-    timeline = _resolve_normalized_timeline([dict(item) for item in timeline], frame_width, frame_height)
+    with Image.open(character_png) as source_image:
+        source_width,source_height=source_image.size
+    visible_box=(character_metadata or {}).get("characterBoundingBox") or [0,0,1,1]
+    try:character_aspect=(source_width*float(visible_box[2]))/max(1.0,source_height*float(visible_box[3]))
+    except (TypeError,ValueError,IndexError):character_aspect=source_width/max(source_height,1)
+    timeline = _resolve_normalized_timeline([dict(item) for item in timeline], frame_width, frame_height, character_aspect)
     minimum = float(cfg.get("first_child_scene_seconds", 8))
     timeline[0]["end"] = max(float(timeline[0].get("end", 0)), float(timeline[0].get("visible_start", 0)) + minimum)
     timeline_end = max(float(item["end"]) for item in timeline)
@@ -363,15 +451,23 @@ def build_timeline_cartoon(base_video: Path, character_png: Path, audio_by_phras
 
     with tempfile.TemporaryDirectory(prefix=f"{output_mp4.stem}_render_", dir=output_mp4.parent) as work_value:
         work = Path(work_value)
+        render_character,_visible_aspect=_visible_character_asset(character_png,character_metadata,work/"character-visible.png")
+        source_facing=str((character_metadata or {}).get("facingDirection") or "UNKNOWN").upper()
         ai_clips: list[Path | None] = []
         for index, segment in enumerate(timeline):
             try:
                 phrase_audio = Path(audio_by_phrase[segment["phrase_id"]]) if audio_by_phrase.get(segment["phrase_id"]) else None
-                ai_clips.append(prepare_character_animation(character_png, segment, work / "ai-animation", phrase_audio, allow_generate=allow_generate))
+                ai_clips.append(prepare_character_animation(render_character, segment, work / "ai-animation", phrase_audio, allow_generate=allow_generate))
             except Exception as exc:
                 log.warning("AI animation fallback for scene %s: %s", index, exc)
                 ai_clips.append(None)
 
+        audio_segments=[]
+        for segment in timeline:
+            path=audio_by_phrase.get(segment["phrase_id"])
+            if path and Path(path).exists() and Path(path).stat().st_size>0:
+                audio_segments.append({**segment,"audio_path":Path(path)})
+        render_duration=_scheduled_voice_duration(audio_segments,render_duration)
         segment_files: list[Path] = []
         windows = _render_windows(timeline, render_duration)
         log.info(
@@ -398,7 +494,7 @@ def build_timeline_cartoon(base_video: Path, character_png: Path, audio_by_phras
                 if clip:
                     cmd += ["-stream_loop", "-1", "-i", str(clip)]
                 else:
-                    cmd += ["-loop", "1", "-framerate", "15", "-i", str(character_png)]
+                    cmd += ["-loop", "1", "-framerate", "15", "-i", str(render_character)]
                 input_by_scene[scene_index] = len(input_by_scene) + 1
 
             base_chain = ["setpts=PTS-STARTPTS", *_shift_timed_filters(base_video_filters, window_start)]
@@ -422,7 +518,7 @@ def build_timeline_cartoon(base_video: Path, character_png: Path, audio_by_phras
                     )
                 else:
                     profile = animation_profile(segment.get("animation", "stand_front_talk"), settings.storage_root / "animation-library")
-                    pre = "hflip," if bool(profile.get("mirror", False)) else ""
+                    pre = "hflip," if _should_hflip(segment,source_facing,bool(profile.get("mirror",False))) else ""
                     rotation = float(profile.get("rotation", 0.012))
                     filters.append(
                         f"[{source}:v]setpts=PTS-STARTPTS,{pre}scale=-1:{height},"
@@ -461,11 +557,6 @@ def build_timeline_cartoon(base_video: Path, character_png: Path, audio_by_phras
             timeout=remaining_timeout(),
         )
 
-        audio_segments = []
-        for segment in timeline:
-            path = audio_by_phrase.get(segment["phrase_id"])
-            if path and Path(path).exists() and Path(path).stat().st_size > 0:
-                audio_segments.append({**segment, "audio_path": Path(path)})
         voice_track: Path | None = None
         if audio_segments:
             voice_track = _build_voice_track(

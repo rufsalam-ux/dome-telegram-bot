@@ -40,8 +40,9 @@ def test_old_session_steps_migrate_but_new_runtime_steps_do_not_shift():
     assert normalize_lesson_step(31, 14) == 32
 
 
-def test_first_scene_is_higher():
+def test_first_scene_has_current_lyosha_safe_placement():
     timeline = json.loads((ROOT / 'content/lessons/demo_001/timeline.json').read_text(encoding='utf-8'))
     first = timeline[0] if isinstance(timeline, list) else timeline['scenes'][0]
-    assert first['floor_y_norm'] >= 0.9
+    assert first['floor_y_norm'] == 0.82
     assert first['height_norm'] >= 0.4
+    assert first['x_end_norm'] == 0.36

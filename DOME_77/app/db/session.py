@@ -158,9 +158,14 @@ async def init_db() -> None:
             "new_plan_version_id": "VARCHAR(180)",
         })
         await conn.execute(text("UPDATE subscriptions SET payment_provider='stripe' WHERE (payment_provider IS NULL OR payment_provider='manual') AND provider_subscription_id LIKE 'sub_%'"))
+        # Character geometry is a durable render contract, not a client cache.
+        # Keep the compatibility migration database-agnostic so existing
+        # PostgreSQL and persistent SQLite installations receive it alike.
+        await _add_columns(conn, "characters", {
+            "source": "VARCHAR(40) NOT NULL DEFAULT 'CHILD_DRAWING'", "catalog_id": "VARCHAR(80)",
+            "visual_metadata_json": "TEXT NOT NULL DEFAULT '{}'", "visual_analysis_version": "VARCHAR(80)",
+            "visual_analysis_status": "VARCHAR(40) NOT NULL DEFAULT 'PENDING'"})
         if settings.database_url.startswith("sqlite"):
-            await _add_columns(conn, "characters", {
-                "source": "VARCHAR(40) NOT NULL DEFAULT 'CHILD_DRAWING'", "catalog_id": "VARCHAR(80)"})
             await _add_columns(conn, "children", {
                 "country": "VARCHAR(120)", "language_level": "VARCHAR(20) NOT NULL DEFAULT 'PRE_A1'",
                 "working_difficulty": "FLOAT NOT NULL DEFAULT 0.15", "comprehension_score": "FLOAT NOT NULL DEFAULT 0",

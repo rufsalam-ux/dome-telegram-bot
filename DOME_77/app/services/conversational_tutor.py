@@ -84,7 +84,7 @@ def adaptive_follow_up_policy(
     """Permit harder follow-ups only after an independent, confident answer."""
 
     level = str(language_level or "PRE_A1").upper()
-    level_cap = 1 if level == "PRE_A1" else 2
+    level_cap = 2 if level == "PRE_A1" else 3
     maximum = min(level_cap, max(0, int(authored_max)))
     words = re.findall(r"\w+", str(transcript or ""), flags=re.UNICODE)
     strong = (

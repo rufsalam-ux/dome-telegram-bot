@@ -33,6 +33,7 @@ class MovieRenderInputs:
     approved_phrase_ids: tuple[str, ...] = ()
     expected_base_sha256: str = ""
     require_all_phrase_audio: bool = True
+    character_metadata: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -306,4 +307,5 @@ def build_mobile_lesson_movie(inputs: MovieRenderInputs) -> Path:
         inputs.timeline,
         inputs.output,
         cartoon_text_filters(inputs.lesson_dir,inputs.target_language),
+        character_metadata=inputs.character_metadata,
     )

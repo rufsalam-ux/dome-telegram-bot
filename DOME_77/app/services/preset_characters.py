@@ -32,6 +32,24 @@ def preset_character_path(character_id: str) -> Path:
     return path
 
 
+def preset_character_geometry(character_id: str) -> dict:
+    """Stable one-time geometry for the front-facing authored catalog assets."""
+
+    get_preset_character(character_id)
+    return {
+        "characterBoundingBox": [0.0, 0.0, 1.0, 1.0],
+        "headCenterX": 0.5,
+        "headCenterY": 0.25,
+        "headBoundingBox": [0.24, 0.05, 0.52, 0.38],
+        "bodyCenterX": 0.5,
+        "bodyCenterY": 0.62,
+        "facingDirection": "FRONT",
+        "confidence": 1.0,
+        "source": "preset_catalog",
+        "analysisVersion": "character-geometry-v1",
+    }
+
+
 def preset_collage_path() -> Path:
     path = settings.content_root / "preset-characters" / "all_characters.png"
     if not path.exists():
