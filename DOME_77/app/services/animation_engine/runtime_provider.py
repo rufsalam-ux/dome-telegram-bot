@@ -6,6 +6,7 @@ from pathlib import Path
 from app.core.config import settings
 from .kling_provider import KlingProvider, KlingError, enabled as kling_enabled
 from .character_motion_library import CharacterMotionLibrary, signature
+from .motion_planner import primary_motion_action
 from .quality_check import animation_ok
 
 log=logging.getLogger('dome.character_animation')
@@ -13,19 +14,18 @@ log=logging.getLogger('dome.character_animation')
 
 def prepare_character_animation(character_png:Path, segment:dict, work_root:Path, audio_path:Path|None=None, *, allow_generate:bool=True) -> Path|None:
     """Return cached/generated green-screen character clip or None for PNG fallback."""
-    if not kling_enabled():
+    if not settings.avatar_animation_engine_enabled:
         return None
     block=segment.get('character_animation') or {}
-    description=str(block.get('description_ru') or '').strip()
-    if not description:
-        return None
+    if not isinstance(block,dict):block={}
+    action=primary_motion_action(segment)
+    description=str(block.get('description_ru') or f'Персонаж выполняет действие {action}.').strip()
     duration=max(.5,float(segment.get('end',1))-float(segment.get('visible_start',0)))
     view=str(block.get('view') or segment.get('view') or 'front')
     speaking=bool(block.get('speaking', segment.get('talk_start') is not None))
     reuse=bool(block.get('reuse',True))
     lib=CharacterMotionLibrary(settings.storage_root,character_png)
     sig=signature(description,speaking=speaking,view=view,duration=duration)
-    provider=KlingProvider()
     body_path=None
     body_url=''
     if reuse:
@@ -36,8 +36,13 @@ def prepare_character_animation(character_png:Path, segment:dict, work_root:Path
             # Current library keeps the local reusable body motion. A fresh lip-sync is attempted
             # only when a public Kling URL was created in this render; otherwise the body motion
             # is still reused and FFmpeg mixes the new child voice as a safe fallback.
+    if body_path is not None:
+        return body_path
     if body_path is None and not allow_generate:
         return None
+    if not kling_enabled():
+        return None
+    provider=KlingProvider()
     if body_path is None:
         tries=max(1,int(settings.character_animation_max_retries)+1)
         for attempt in range(tries):

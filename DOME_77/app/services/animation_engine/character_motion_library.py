@@ -73,6 +73,44 @@ class CharacterMotionLibrary:
                 if found:return found
         return None
 
+    def find_parameters(self, animation_key: str, *, direction: str = "front", generation_version: str = "avatar-rig-v1") -> dict | None:
+        for item in (self._load().get("motions") or {}).values():
+            if (str(item.get("animation_key")) == str(animation_key)
+                    and str(item.get("direction") or "front") == str(direction)
+                    and str(item.get("generation_version") or "v1") == str(generation_version)
+                    and isinstance(item.get("rig_parameters"), dict)):
+                return dict(item["rig_parameters"])
+        return None
+
+    def register_parameters(self, animation_key: str, *, rig_parameters: dict,
+                            direction: str = "front", duration: float = 5.0,
+                            generation_version: str = "avatar-rig-v1") -> dict:
+        """Persist reusable local-rig parameters without fabricating a video file."""
+
+        sig = hashlib.sha256(
+            f"local|{animation_key}|{direction}|{generation_version}".encode("utf-8")
+        ).hexdigest()[:24]
+        data = self._load()
+        data.setdefault("motions", {})[sig] = {
+            "avatar_id": self.avatar_id,
+            "source_avatar_hash": self.source_avatar_hash,
+            "animation_key": animation_key,
+            "direction": direction,
+            "description_ru": "local reusable cutout motion",
+            "speaking": animation_key == "talk",
+            "view": f"side_{direction}" if direction in {"left", "right"} else "front",
+            "duration": float(duration),
+            "transparent_background": True,
+            "asset_uri": f"rig://{self.avatar_id}/{animation_key}/{direction}",
+            "rig_parameters": dict(rig_parameters),
+            "generation_version": generation_version,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "provider": "local_cutout",
+            "file": None,
+        }
+        self._save(data)
+        return dict(data["motions"][sig])
+
     def register(self, sig: str, source: Path, *, description_ru: str, speaking: bool,
                  view: str, duration: float, provider: str = "kling", animation_key: str | None = None,
                  direction: str | None = None, transparent_background: bool = True,

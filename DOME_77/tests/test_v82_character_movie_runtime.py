@@ -6,6 +6,8 @@ from PIL import Image, ImageDraw
 
 from app.db.models import Character
 from app.services.cartoon_builder import (
+    MOVIE_AVATAR_PERCEPTUAL_SCALE,
+    _desired_facing,
     _resolve_normalized_timeline,
     _scheduled_voice_duration,
     _should_hflip,
@@ -24,6 +26,9 @@ from app.services.character_geometry import (
 from app.services.preset_characters import preset_character_geometry
 from app.services.lesson_runtime import VOICE_FEEDBACK_STATES, classify_voice_feedback
 from app.services.animation_engine.character_motion_library import CharacterMotionLibrary
+from app.services.animation_engine.local_motion_cache import LOCAL_MOTION_VERSION, ensure_local_motion_cache, local_motion_parameters, safe_fallback_required
+from app.services.animation_engine.motion_planner import SEMANTIC_ACTIONS, normalize_motion_plan, semantic_action
+from app.services.animation_engine.runtime_provider import prepare_character_animation
 from app.services.authored_content import _validate_pre_slide_video
 
 
@@ -150,6 +155,49 @@ def test_avatar_animation_library_is_cache_first_and_versioned(tmp_path):
     assert manifest["version"]==2 and manifest["avatar_id"]=="77"
     for key in ("avatar_id","source_avatar_hash","animation_key","direction","duration","transparent_background","asset_uri","generation_version","created_at"):
         assert key in item
+
+
+def test_semantic_animation_vocabulary_is_complete_and_head_first():
+    required={"idle","blink","talk","listen","walk_left","walk_right","turn_left","turn_right","wave","point","happy","thinking","small_jump","enter_left","enter_right","exit_left","exit_right"}
+    assert required <= SEMANTIC_ACTIONS
+    plan=normalize_motion_plan({"actions":[{"action":"ENTER_LEFT","duration":2},{"action":"TALK","duration":3},{"action":"WAVE","duration":1}]})
+    assert [command.action for command in plan.commands]==["enter_left","talk","wave"]
+    assert semantic_action("WALK_TO_PARTNER")=="walk_right"
+    assert _desired_facing({"actions":[{"action":"ENTER_LEFT"}]})=="RIGHT"
+    assert _desired_facing({"actions":[{"action":"EXIT_LEFT"}]})=="LEFT"
+
+
+def test_local_rig_parameters_are_persistent_cache_first(tmp_path):
+    avatar=tmp_path/"avatar.png";_head_left_dinosaur(avatar)
+    metadata={"confidence":.9,"tailPoint":[.9,.55],"rigMetadata":{"capabilities":{"safeWholeBodyFallback":False}}}
+    library,first_hits,first_created=ensure_local_motion_cache(avatar,tmp_path,metadata,avatar_id=77)
+    again,second_hits,second_created=ensure_local_motion_cache(avatar,tmp_path,metadata,avatar_id=77)
+    assert first_hits==0 and first_created>=len(SEMANTIC_ACTIONS)-1
+    assert second_created==0 and second_hits==first_created
+    talk=again.find_parameters("talk",direction="front",generation_version=LOCAL_MOTION_VERSION)
+    assert talk and talk["mouth_pulse"] is True and talk["whole_body_fallback"] is False
+    manifest=json.loads(library.manifest_path.read_text("utf-8"));assert any(str(item.get("asset_uri","")).startswith("rig://") for item in manifest["motions"].values())
+
+
+def test_low_confidence_rig_uses_non_deforming_motion_fallback(tmp_path):
+    metadata={"confidence":.3,"rigMetadata":{"capabilities":{"safeWholeBodyFallback":True}}}
+    assert safe_fallback_required(metadata) is True
+    wave=local_motion_parameters("wave",tmp_path/"profiles",metadata)
+    assert wave["whole_body_fallback"] is True and wave["gesture"] is None and wave["limb_cycle"] is False
+
+
+def test_animation_feature_flag_preserves_static_png_fallback(monkeypatch,tmp_path):
+    avatar=tmp_path/"avatar.png";_head_left_dinosaur(avatar)
+    monkeypatch.setattr("app.services.animation_engine.runtime_provider.settings.avatar_animation_engine_enabled",False)
+    assert prepare_character_animation(avatar,{"visible_start":0,"end":5,"actions":[{"action":"TALK"}]},tmp_path,allow_generate=False) is None
+
+
+def test_movie_avatar_has_separate_larger_scale_and_preserves_ground_anchor():
+    assert MOVIE_AVATAR_PERCEPTUAL_SCALE>1.12
+    timeline=[{"height_norm":.4,"floor_y_norm":.9,"x_norm":.1,"visible_start":0,"end":5}]
+    placed=_resolve_normalized_timeline(timeline,1000,1000,character_aspect=.6,ground_ratio=.95)[0]
+    assert placed["height"]>round(.4*1000*1.12)
+    assert placed["y"]+round(placed["height"]*.95)==900
 
 
 def test_pre_slide_video_content_contract_is_optional_and_strict():

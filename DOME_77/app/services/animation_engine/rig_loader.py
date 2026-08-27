@@ -4,7 +4,7 @@ from pathlib import Path
 from .models import CharacterRig
 
 
-def load_character_rig(character_png: Path, rig_root: Path) -> CharacterRig:
+def load_character_rig(character_png: Path, rig_root: Path, metadata: dict | None = None) -> CharacterRig:
     """Load a reusable rig if available; otherwise return a safe PNG fallback rig.
 
     A real AI segmenter/rigging service can later populate <rig_root>/<stem>/rig.json
@@ -27,11 +27,15 @@ def load_character_rig(character_png: Path, rig_root: Path) -> CharacterRig:
             )
         except Exception:
             pass
+    rig_metadata=(metadata or {}).get("rigMetadata") if isinstance((metadata or {}).get("rigMetadata"),dict) else {}
+    capabilities=rig_metadata.get("capabilities") if isinstance(rig_metadata.get("capabilities"),dict) else {}
+    enabled={name for name,value in capabilities.items() if value is True}
     return CharacterRig(
         character_id=character_png.stem,
         root=folder,
         views={"front": str(character_png)},
-        capabilities={"translate", "scale", "mirror", "bob"},
-        provider="fallback_png",
+        joints=dict(rig_metadata.get("joints") or {}),
+        capabilities={"translate", "scale", "mirror", "bob", *enabled},
+        provider="metadata_cutout" if rig_metadata else "fallback_png",
         source_png=str(character_png),
     )

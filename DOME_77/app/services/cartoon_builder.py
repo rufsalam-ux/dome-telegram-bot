@@ -13,11 +13,15 @@ from PIL import Image
 from app.core.config import settings
 from app.services.animation_library import animation_profile, ensure_animation_library
 from app.services.animation_engine.rig_loader import load_character_rig
-from app.services.animation_engine.motion_planner import normalize_motion_plan
+from app.services.animation_engine.motion_planner import normalize_motion_plan, primary_motion_action
+from app.services.animation_engine.local_motion_cache import ensure_local_motion_cache
 from app.services.animation_engine.runtime_provider import prepare_character_animation
 
 log = logging.getLogger("dome.cartoon")
-AVATAR_PERCEPTUAL_SCALE = 1.12
+MOVIE_AVATAR_PERCEPTUAL_SCALE = 1.22
+# Backwards-compatible export for existing tools; mobile lesson scale remains
+# independently defined in DOME_MOBILE_77 and is not enlarged by movie policy.
+AVATAR_PERCEPTUAL_SCALE = MOVIE_AVATAR_PERCEPTUAL_SCALE
 
 
 def _cartoon_config() -> dict:
@@ -124,6 +128,11 @@ def _desired_facing(segment: dict) -> str:
     view=str((segment.get("character_animation") or {}).get("view") or "").lower()
     if view.endswith("_left"):return "LEFT"
     if view.endswith("_right"):return "RIGHT"
+    partner=str(segment.get("partner_side") or segment.get("face_partner") or "").upper()
+    if partner in {"LEFT","RIGHT"}:return partner
+    action=primary_motion_action(segment)
+    if action in {"walk_left","turn_left","exit_left","enter_right"}:return "LEFT"
+    if action in {"walk_right","turn_right","exit_right","enter_left"}:return "RIGHT"
     motion=str(segment.get("animation") or segment.get("motion") or "")
     if "right_to_left" in motion or "from_right" in motion:return "LEFT"
     if "left_to_right" in motion or "from_left" in motion:return "RIGHT"
@@ -210,9 +219,10 @@ def _x_expression(segment: dict) -> str:
     talk = float(segment.get("talk_start", start))
     x0 = float(segment.get("x_start", segment.get("x", 180)))
     x1 = float(segment.get("x_end", segment.get("x", x0)))
-    if motion in {"walk_from_left", "walk_left_then_talk"}:
+    action=primary_motion_action(segment)
+    if action in {"enter_left","enter_right"} or motion in {"walk_from_left", "walk_left_then_talk"}:
         return f"if(lt(t,{talk}),{x0}+({x1}-{x0})*(t-{start})/max({talk-start},0.01),{x1})"
-    if motion in {"walk_from_right", "walk_right_to_left_talk", "walk_right_to_left", "walk_left_to_right_talk"}:
+    if action in {"walk_left","walk_right","exit_left","exit_right"} or motion in {"walk_from_right", "walk_right_to_left_talk", "walk_right_to_left", "walk_left_to_right_talk"}:
         return f"{x0}+({x1}-{x0})*(t-{start})/max({end-start},0.01)"
     return str(float(segment.get("x", x1)))
 
@@ -221,12 +231,13 @@ def _y_expression(segment: dict) -> str:
     y = float(segment.get("y", 245))
     start = float(segment["visible_start"])
     motion = segment.get("animation", segment.get("motion", "stand_front_talk"))
-    profile = animation_profile(motion, settings.storage_root / "animation-library")
-    if "walk" in motion:
+    action=primary_motion_action(segment)
+    profile = animation_profile(action, settings.storage_root / "animation-library")
+    if action in {"walk_left","walk_right","enter_left","enter_right","exit_left","exit_right"} or "walk" in motion:
         return f"{y}+{float(profile.get('walk_bob', 4.0))}*abs(sin(8*(t-{start})))"
-    if motion == "happy_jump":
-        return f"{y}-18*abs(sin(5*(t-{start})))"
-    return f"{y}+1.5*sin(2.2*(t-{start}))"
+    if action == "small_jump" or motion == "happy_jump":
+        return f"{y}-{float(profile.get('jump_height',18.0))}*abs(sin(5*(t-{start})))"
+    return f"{y}+{float(profile.get('body_bob',1.5))}*sin(2.2*(t-{start}))"
 
 
 def _tail_text(path: Path, limit: int = 8000) -> str:
@@ -449,8 +460,15 @@ def build_timeline_cartoon(base_video: Path, character_png: Path, audio_by_phras
     render_duration = max(base_duration, timeline_end)
     output_mp4.parent.mkdir(parents=True, exist_ok=True)
     ensure_animation_library(settings.storage_root / "animation-library")
-    _rig = load_character_rig(character_png, settings.storage_root / "character-rigs")
+    _rig = load_character_rig(character_png, settings.storage_root / "character-rigs", character_metadata if settings.avatar_animation_engine_enabled else None)
     _motion_plans = [normalize_motion_plan(item) for item in timeline]
+    if settings.avatar_animation_engine_enabled:
+        try:
+            _library,cache_hits,cache_created=ensure_local_motion_cache(character_png,settings.storage_root,character_metadata)
+            log.info("MOVIE_AVATAR_LOCAL_CACHE avatar=%s hits=%s created=%s provider=%s",_library.avatar_id,cache_hits,cache_created,_rig.provider)
+        except Exception as exc:
+            # The current PNG compositor is the mandatory production fallback.
+            log.warning("Local avatar motion cache unavailable; using static-safe renderer: %s",exc)
 
     allow_generate = bool(cfg.get("generate_missing_animation_during_render", False))
     render_threads = max(1, min(2, int(cfg.get("render_threads", 1))))
@@ -470,9 +488,9 @@ def build_timeline_cartoon(base_video: Path, character_png: Path, audio_by_phras
         source_facing=_source_facing(character_metadata)
         log.info("MOVIE_AVATAR_METADATA source_facing=%s confirmed=%s version=%s",source_facing,(character_metadata or {}).get("userConfirmed") is True,(character_metadata or {}).get("analysisVersion") or "legacy")
         for segment in timeline:
-            desired=_desired_facing(segment);applied_flip=_should_hflip(segment,source_facing,bool(animation_profile(segment.get("animation", "stand_front_talk"), settings.storage_root / "animation-library").get("mirror",False)))
+            action=primary_motion_action(segment);desired=_desired_facing(segment);applied_flip=_should_hflip(segment,source_facing,bool(animation_profile(action, settings.storage_root / "animation-library").get("mirror",False)))
             displayed=("RIGHT" if source_facing=="LEFT" else "LEFT") if applied_flip and source_facing in {"LEFT","RIGHT"} else source_facing
-            log.info("MOVIE_AVATAR_RENDER phrase=%s source=%s desired=%s flip=%s displayed=%s height=%s",segment.get("phrase_id"),source_facing,desired,applied_flip,displayed,segment.get("height"))
+            log.info("MOVIE_AVATAR_RENDER phrase=%s action=%s source=%s desired=%s flip=%s displayed=%s height=%s",segment.get("phrase_id"),action,source_facing,desired,applied_flip,displayed,segment.get("height"))
         ai_clips: list[Path | None] = []
         for index, segment in enumerate(timeline):
             try:
@@ -537,7 +555,7 @@ def build_timeline_cartoon(base_video: Path, character_png: Path, audio_by_phras
                         f"fade=t=out:st={max(start, end - 0.18):.3f}:d=0.18:alpha=1{hero_label}"
                     )
                 else:
-                    profile = animation_profile(segment.get("animation", "stand_front_talk"), settings.storage_root / "animation-library")
+                    profile = animation_profile(primary_motion_action(segment), settings.storage_root / "animation-library")
                     pre = "hflip," if _should_hflip(segment,source_facing,bool(profile.get("mirror",False))) else ""
                     rotation = float(profile.get("rotation", 0.012))
                     filters.append(

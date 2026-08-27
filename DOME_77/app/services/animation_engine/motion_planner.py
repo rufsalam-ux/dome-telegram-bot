@@ -3,19 +3,43 @@ from typing import Any
 from .models import MotionCommand, MotionPlan, SUPPORTED_VIEWS
 
 ALIASES = {
-    "walk_and_talk": "walk",
+    "walk_and_talk": "talk",
     "walk_from_left": "walk",
+    "walk_left_then_talk": "walk",
     "walk_from_right": "walk",
-    "happy_jump": "jump",
-    "turn_to_friend": "turn",
-    "pick_up_object": "pick_up",
+    "walk_right_to_left": "walk_left",
+    "walk_right_to_left_talk": "walk_left",
+    "walk_left_to_right_talk": "walk_right",
+    "happy_jump": "small_jump",
+    "jump": "small_jump",
+    "turn_to_friend": "turn_right",
+    "pick_up_object": "point",
     "talk_excited": "talk",
+    "stand_front_talk": "talk",
+    "stand_front_listen": "listen",
+    "walk_to_partner": "walk_right",
+    "face_partner": "turn_right",
+    "stop": "idle",
+}
+
+SEMANTIC_ACTIONS = {
+    "idle", "blink", "talk", "listen", "walk_left", "walk_right",
+    "turn_left", "turn_right", "wave", "point", "happy", "thinking",
+    "small_jump", "enter_left", "enter_right", "exit_left", "exit_right",
+    "tail_idle", "tail_sway",
+    # v49 public action names remain valid for authored timelines.
+    "turn", "walk", "dance", "pick_up",
 }
 
 
+def semantic_action(value: Any, fallback: str = "idle") -> str:
+    raw = str(value or fallback).strip().lower()
+    action = ALIASES.get(raw, raw)
+    return action if action in SEMANTIC_ACTIONS else fallback
+
+
 def _command(raw: dict[str, Any], default_start: float = 0.0) -> MotionCommand:
-    action = str(raw.get("action") or raw.get("type") or "idle")
-    action = ALIASES.get(action, action)
+    action = semantic_action(raw.get("action") or raw.get("type"))
     view = str(raw.get("view") or "front")
     if view not in SUPPORTED_VIEWS:
         view = "front"
@@ -43,7 +67,7 @@ def normalize_motion_plan(segment: dict[str, Any]) -> MotionPlan:
             cursor = max(cursor, cmd.start + cmd.duration)
     else:
         legacy = str(segment.get("animation") or segment.get("motion") or "stand_front_talk")
-        action = ALIASES.get(legacy, "talk" if "talk" in legacy else "idle")
+        action = semantic_action(legacy, "talk" if "talk" in legacy else "idle")
         commands.append(MotionCommand(
             action=action,
             start=float(segment.get("visible_start", 0.0)),
@@ -57,3 +81,8 @@ def normalize_motion_plan(segment: dict[str, Any]) -> MotionPlan:
         audio_path=segment.get("audio_path"),
         fallback_action=str(segment.get("animation") or "stand_front_talk"),
     )
+
+
+def primary_motion_action(segment: dict[str, Any]) -> str:
+    plan = normalize_motion_plan(segment)
+    return plan.commands[0].action if plan.commands else "idle"
