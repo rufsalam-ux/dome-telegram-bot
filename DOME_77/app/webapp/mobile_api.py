@@ -19,7 +19,8 @@ from app.services.audio_processing import VoiceActivity, analyze_voice_activity,
 from app.services.speech_pipeline import SpeechAssessment, assess_speech
 from app.services.lesson_runtime import apply_adaptive_assessment,classify_voice_feedback,complexity_support,correction_for_assessment,no_speech_feedback,voice_attempt_outcome
 from app.services.conversational_tutor import TutorTurn,no_speech_turn
-from app.services.mobile_lesson_movie import MovieContractError,MovieRenderInputs,build_mobile_lesson_movie,ensure_movie_voice_slots,load_movie_contract,movie_take_status,record_movie_voice_slot,resolve_movie_voice_slots,select_movie_voice_takes
+from app.services.cartoon_builder import CartoonBuildError
+from app.services.mobile_lesson_movie import MOBILE_MOVIE_VERSION,MOVIE_STALL_TIMEOUT_SECONDS,MovieContractError,MovieRenderInputs,build_mobile_lesson_movie,ensure_movie_voice_slots,load_movie_contract,movie_take_status,record_movie_voice_slot,resolve_movie_voice_slots,select_movie_voice_takes
 from app.services.email_reports import send_homework_email,_send_with_attachment_sync,send_verification_email,send_password_reset_email
 from app.services.ai_speech import synthesize_bilingual_speech, translate_text
 from app.services.password_auth import hash_password, hash_verification_code, verify_password, verify_verification_code
@@ -46,6 +47,9 @@ log=logging.getLogger('dome.mobile_api')
 MOBILE_LANGUAGES={'ru','en','es','de','fr','it','pt','tr','ar','zh'}
 _movie_tasks:set[asyncio.Task]=set()
 MOVIE_RETRY_MESSAGE='Мультфильм пока не собрался. Все записи сохранены — попробуйте ещё раз.'
+MOVIE_ACTIVE_STATES={'QUEUED','RUNNING'}
+MOVIE_SUCCESS_STATES={'SUCCEEDED','READY'}
+MOVIE_RETRY_STATES={'FAILED','TIMED_OUT'}
 
 
 def _utcnow() -> datetime:
@@ -675,20 +679,65 @@ def _spawn_movie_task(coro)->asyncio.Task:
     return task
 
 
-async def _render_mobile_movie_job(movie_id:int,inputs:MovieRenderInputs,child_id:int,lesson_id:str,course_id:str,parent_email:str|None,email_enabled:bool,run_no:int,lesson_title:str)->None:
+def _queue_movie_row(movie:LessonMovie,output:Path)->str:
+    now=_utcnow();job_id=secrets.token_hex(16)
+    movie.job_id=job_id;movie.movie_version=MOBILE_MOVIE_VERSION;movie.status='QUEUED';movie.stage='VALIDATING_RECORDINGS';movie.progress=2
+    movie.strategy=None;movie.error=None;movie.error_code=None;movie.error_message=None;movie.output_path=str(output)
+    movie.attempt_count=int(movie.attempt_count or 0)+1;movie.started_at=now;movie.heartbeat_at=now;movie.finished_at=None
+    return job_id
+
+
+async def _update_movie_progress(movie_id:int,job_id:str,stage:str,progress:int,strategy:str|None=None)->None:
+    async with SessionLocal() as db:
+        movie=await db.get(LessonMovie,movie_id)
+        if not movie or movie.job_id!=job_id or movie.status not in MOVIE_ACTIVE_STATES:return
+        movie.status='RUNNING';movie.stage=stage;movie.progress=max(int(movie.progress or 0),max(0,min(99,int(progress))))
+        movie.heartbeat_at=_utcnow()
+        if strategy:movie.strategy=strategy
+        await db.commit()
+
+
+async def _expire_stalled_movie(db,movie:LessonMovie)->bool:
+    if movie.status not in MOVIE_ACTIVE_STATES:return False
+    last=movie.heartbeat_at or movie.started_at or movie.updated_at or movie.created_at
+    if not last or (_utcnow()-last).total_seconds()<=MOVIE_STALL_TIMEOUT_SECONDS:return False
+    movie.status='TIMED_OUT';movie.error_code='MOVIE_JOB_TIMED_OUT';movie.error_message=MOVIE_RETRY_MESSAGE
+    movie.error=f'No movie progress heartbeat for more than {MOVIE_STALL_TIMEOUT_SECONDS}s';movie.finished_at=_utcnow()
+    await db.commit();return True
+
+
+def _movie_failure(exc:Exception)->tuple[str,str,str,str]:
+    if isinstance(exc,CartoonBuildError):
+        return exc.code,exc.stage,MOVIE_RETRY_MESSAGE,exc.technical_message
+    if isinstance(exc,MovieContractError):
+        return 'MOVIE_CONTRACT_INVALID','VALIDATING_RECORDINGS',MOVIE_RETRY_MESSAGE,str(exc)
+    return 'MOVIE_RENDER_FAILED','FINALIZING',MOVIE_RETRY_MESSAGE,f'{type(exc).__name__}: {exc}'
+
+
+async def _render_mobile_movie_job(movie_id:int,job_id:str,inputs:MovieRenderInputs,child_id:int,lesson_id:str,course_id:str,parent_email:str|None,email_enabled:bool,run_no:int,lesson_title:str)->None:
     try:
+        await _update_movie_progress(movie_id,job_id,'VALIDATING_RECORDINGS',5)
         async with SessionLocal() as db:
             movie=await db.get(LessonMovie,movie_id);session_id=movie.lesson_session_id if movie else 0
+            if not movie or movie.job_id!=job_id:return
             voices=(await db.scalars(select(VoiceAttempt).where(VoiceAttempt.lesson_session_id==session_id).order_by(VoiceAttempt.id))).all()
             lesson_for_movie={**_load_mobile_lesson(lesson_id),'timeline':inputs.timeline}
             resolved,diagnostics=await resolve_movie_voice_slots(db,session_id,voices,lesson_for_movie,inputs.target_language,settings.storage_root/'tts-cache-mobile');await db.commit()
-        inputs=MovieRenderInputs(base_video=inputs.base_video,character=inputs.character,audio_by_phrase=resolved,timeline=inputs.timeline,output=inputs.output,lesson_dir=inputs.lesson_dir,target_language=inputs.target_language,approved_phrase_ids=inputs.approved_phrase_ids,expected_base_sha256=inputs.expected_base_sha256,require_all_phrase_audio=inputs.require_all_phrase_audio,character_metadata=inputs.character_metadata)
+        loop=asyncio.get_running_loop()
+        def progress(stage:str,value:int,strategy:str)->None:
+            future=asyncio.run_coroutine_threadsafe(_update_movie_progress(movie_id,job_id,stage,value,strategy),loop)
+            try:future.result(timeout=5)
+            except Exception as progress_exc:log.warning('MOBILE_MOVIE_PROGRESS_UPDATE_FAILED job=%s stage=%s error=%s',job_id,stage,progress_exc)
+        inputs=replace(inputs,audio_by_phrase=resolved,progress_callback=progress)
         log.info('MOBILE_MOVIE_VOICE_DIAGNOSTICS session=%s slots=%s',session_id,diagnostics)
         await asyncio.to_thread(build_mobile_lesson_movie,inputs)
+        committed=False
         async with SessionLocal() as db:
             movie=await db.get(LessonMovie,movie_id)
-            if movie:
-                movie.status='READY';movie.output_path=str(inputs.output);movie.error=None;await db.commit()
+            if movie and movie.job_id==job_id and movie.status in MOVIE_ACTIVE_STATES:
+                movie.status='SUCCEEDED';movie.stage='READY';movie.progress=100;movie.output_path=str(inputs.output);movie.error=None;movie.error_code=None;movie.error_message=None;movie.finished_at=_utcnow();movie.heartbeat_at=_utcnow();await db.commit();committed=True
+            elif not movie or movie.job_id!=job_id:return
+        if not committed:return
         await mark_cartoon_generated(child_id,lesson_id,course_id)
         if email_enabled and parent_email:
             subject=f'DOME — мультфильм после прохождения {run_no}: {lesson_title}'
@@ -696,10 +745,12 @@ async def _render_mobile_movie_job(movie_id:int,inputs:MovieRenderInputs,child_i
             try:await asyncio.to_thread(_send_with_attachment_sync,parent_email,subject,body,str(inputs.output))
             except Exception as exc:log.warning('Mobile movie email failed: %s',exc)
     except Exception as exc:
-        log.exception('Mobile authored movie failed: %s',exc)
+        code,stage,safe_message,technical=_movie_failure(exc)
+        log.exception('MOBILE_MOVIE_JOB_FAILED job=%s code=%s stage=%s detail=%s',job_id,code,stage,technical)
         async with SessionLocal() as db:
             movie=await db.get(LessonMovie,movie_id)
-            if movie:movie.status='FAILED';movie.error=str(exc)[:2000];await db.commit()
+            if movie and movie.job_id==job_id and movie.status in MOVIE_ACTIVE_STATES:
+                movie.status='TIMED_OUT' if code in {'MOVIE_RENDER_TIMED_OUT','MOVIE_JOB_TIMED_OUT'} else 'FAILED';movie.stage=stage;movie.error=technical[:4000];movie.error_code=code;movie.error_message=safe_message;movie.finished_at=_utcnow();movie.heartbeat_at=_utcnow();await db.commit()
 
 async def complete(request:web.Request)->web.Response:
     p=await _parent(request);sid=int(request.match_info['session_id'])
@@ -730,32 +781,42 @@ async def complete(request:web.Request)->web.Response:
         try:detail=json.loads(slot.diagnostics_json or '{}')
         except (TypeError,ValueError,json.JSONDecodeError):detail={}
         voice_diagnostics.append({'required_voice_id':slot.required_voice_id,'status':slot.status,**detail})
-    movie_url=None;movie_configured=movie_contract is not None;movie_status='PROCESSING' if movie_configured else ('FAILED' if movie_contract_error else 'NOT_CONFIGURED')
+    movie_url=None;movie_configured=movie_contract is not None;movie_status='QUEUED' if movie_configured else ('FAILED' if movie_contract_error else 'NOT_CONFIGURED')
     out=settings.storage_root/'children'/str(c.id)/'cartoons'/f'mobile_{sess.lesson_id}_session{sid}.mp4';out.parent.mkdir(parents=True,exist_ok=True)
-    should_render=False;movie_id=None
+    should_render=False;movie_id=None;job_id=None;movie_stage='IDLE';movie_progress=0;movie_error_code=None
     if movie_configured and hero_path.exists():
         async with SessionLocal() as db:
             movie=await db.scalar(select(LessonMovie).where(LessonMovie.lesson_session_id==sid))
             if movie is None:
-                movie=LessonMovie(lesson_session_id=sid,child_id=c.id,lesson_id=sess.lesson_id,run_number=run_no,status='PROCESSING',output_path=str(out));db.add(movie)
+                movie=LessonMovie(lesson_session_id=sid,child_id=c.id,lesson_id=sess.lesson_id,run_number=run_no,status='IDLE',output_path=str(out));job_id=_queue_movie_row(movie,out);db.add(movie)
                 try:await db.commit();await db.refresh(movie);should_render=True
                 except IntegrityError:
-                    await db.rollback();movie=await db.scalar(select(LessonMovie).where(LessonMovie.lesson_session_id==sid))
-            elif movie.status=='READY' and movie.output_path and Path(movie.output_path).exists():
-                out=Path(movie.output_path);movie_status='READY'
-            elif movie.status=='FAILED':
-                movie.status='PROCESSING';movie.error=None;movie.output_path=str(out);await db.commit();should_render=True
+                    await db.rollback();job_id=None;movie=await db.scalar(select(LessonMovie).where(LessonMovie.lesson_session_id==sid))
+                    if movie and movie.status in MOVIE_RETRY_STATES|{'IDLE'}:
+                        job_id=_queue_movie_row(movie,out);await db.commit();should_render=True
+            elif movie.status in MOVIE_SUCCESS_STATES and movie.output_path and Path(movie.output_path).exists():
+                out=Path(movie.output_path);movie_status='SUCCEEDED'
+            elif movie.status in MOVIE_SUCCESS_STATES:
+                movie.error='Persisted movie artifact is missing';movie.error_code='MOVIE_OUTPUT_MISSING';movie.error_message=MOVIE_RETRY_MESSAGE
+                job_id=_queue_movie_row(movie,out);await db.commit();should_render=True
+            elif movie.status in MOVIE_RETRY_STATES or movie.status=='IDLE':
+                job_id=_queue_movie_row(movie,out);await db.commit();should_render=True
+            elif movie.status in MOVIE_ACTIVE_STATES:
+                await _expire_stalled_movie(db,movie)
+                if movie.status=='TIMED_OUT':job_id=_queue_movie_row(movie,out);await db.commit();should_render=True
             movie_id=movie.id if movie else None
+            if movie:
+                job_id=job_id or movie.job_id;movie_status=movie.status;movie_stage=movie.stage or 'IDLE';movie_progress=int(movie.progress or 0);movie_error_code=movie.error_code
         if should_render:
             lesson_dir=movie_contract.lesson_dir
             inputs=MovieRenderInputs(base_video=movie_contract.base_video,character=hero_path,audio_by_phrase=audio_by_phrase,timeline=movie_contract.timeline,output=out,lesson_dir=lesson_dir,target_language=c.target_language or 'ru',approved_phrase_ids=movie_contract.approved_phrase_ids,expected_base_sha256=movie_contract.expected_base_sha256,require_all_phrase_audio=bool(movie_contract.audio_policy.get('require_exact_child_recording',True)),character_metadata=geometry_from_json(char.visual_metadata_json) if char else preset_character_geometry('explorer'))
-            _spawn_movie_task(_render_mobile_movie_job(movie_id,inputs,c.id,sess.lesson_id,course,par.email if par else None,bool(par and par.email_reports_enabled),run_no,str(lesson_data.get('title') or sess.lesson_id)))
-            movie_status='PROCESSING'
-        elif movie_status!='READY':
-            movie_status='PROCESSING'
-        if movie_status=='READY' and out.exists():
+            _spawn_movie_task(_render_mobile_movie_job(movie_id,job_id,inputs,c.id,sess.lesson_id,course,par.email if par else None,bool(par and par.email_reports_enabled),run_no,str(lesson_data.get('title') or sess.lesson_id)))
+            movie_status='QUEUED';movie_stage='VALIDATING_RECORDINGS';movie_progress=max(2,movie_progress)
+        if movie_status in MOVIE_SUCCESS_STATES and out.exists():
             await mark_cartoon_generated(c.id,sess.lesson_id,course)
             val=f'movie:{c.id}:{out.name}';mt=signed_media_token(val,86400*30);movie_url=f'{_base(request)}/api/mobile/movie/{c.id}/{out.name}?t={mt}'
+    elif movie_configured:
+        movie_status='FAILED';movie_stage='LOADING_AVATAR';movie_error_code='MOVIE_AVATAR_MISSING'
     homework_sent=False
     if run_no==1:
         hw=lesson_data.get('homework') or {};body=str(hw.get('instruction_ru') or 'Нарисуй место, куда ты хотел бы отправиться, и назови три вещи, которые возьмёшь с собой.')
@@ -766,7 +827,7 @@ async def complete(request:web.Request)->web.Response:
         if homework_sent and par and par.email_reports_enabled and par.email:
             try:await send_homework_email(par.email,c.display_name,lesson_data.get('title') or sess.lesson_id,body,None)
             except Exception as exc:log.warning('Mobile homework email failed: %s',exc)
-    return web.json_response({'ok':True,'run_number':run_no,'movie_url':movie_url,'movie_status':movie_status,'missing_voice_phrases':missing_exact,'missing_exact_voice_phrases':missing_exact,'movie_voice_diagnostics':voice_diagnostics,'hero_fallback_used':not bool(char),'homework_sent':homework_sent,'completed_runs':ent.completed_runs,'max_runs':ent.max_completed_runs})
+    return web.json_response({'ok':True,'run_number':run_no,'movie_url':movie_url,'movie_status':movie_status,'movie_job_id':job_id,'movie_stage':movie_stage,'movie_progress':movie_progress,'movie_error_code':movie_error_code,'missing_voice_phrases':missing_exact,'missing_exact_voice_phrases':missing_exact,'movie_voice_diagnostics':voice_diagnostics,'hero_fallback_used':not bool(char),'homework_sent':homework_sent,'completed_runs':ent.completed_runs,'max_runs':ent.max_completed_runs})
 
 
 async def movie_status(request:web.Request)->web.Response:
@@ -775,16 +836,24 @@ async def movie_status(request:web.Request)->web.Response:
         sess=await db.get(LessonSession,sid);c=await db.get(Child,sess.child_id) if sess else None
         if not sess or not c or c.parent_id!=p.id:raise web.HTTPForbidden()
         movie=await db.scalar(select(LessonMovie).where(LessonMovie.lesson_session_id==sid));slots=(await db.scalars(select(MovieVoiceSlot).where(MovieVoiceSlot.lesson_session_id==sid).order_by(MovieVoiceSlot.id))).all()
+        if movie:await _expire_stalled_movie(db,movie)
     if not movie:return web.json_response({'status':'NOT_CREATED','url':None})
     url=None;path=Path(movie.output_path) if movie.output_path else None
-    if movie.status=='READY' and path and path.exists():
+    if movie.status in MOVIE_SUCCESS_STATES and path and path.exists():
         value=f'movie:{c.id}:{path.name}';token=signed_media_token(value,86400*30);url=f'{_base(request)}/api/mobile/movie/{c.id}/{path.name}?t={token}'
     diagnostics=[]
     for slot in slots:
         try:detail=json.loads(slot.diagnostics_json or '{}')
         except (TypeError,ValueError,json.JSONDecodeError):detail={}
         diagnostics.append({'required_voice_id':slot.required_voice_id,'status':slot.status,**detail})
-    return web.json_response({'status':movie.status,'url':url,'error':MOVIE_RETRY_MESSAGE if movie.status=='FAILED' else None,'can_retry':movie.status=='FAILED','run_number':movie.run_number,'voice_diagnostics':diagnostics})
+    failed=movie.status in MOVIE_RETRY_STATES
+    return web.json_response({'status':movie.status,'job_id':movie.job_id,'movie_version':movie.movie_version,'stage':movie.stage,'progress':int(movie.progress or 0),'strategy':movie.strategy,'url':url,'error':movie.error_message or (MOVIE_RETRY_MESSAGE if failed else None),'error_code':movie.error_code,'error_message':movie.error_message if failed else None,'can_retry':failed,'run_number':movie.run_number,'attempt_count':int(movie.attempt_count or 0),'voice_diagnostics':diagnostics})
+
+
+async def retry_movie(request:web.Request)->web.Response:
+    """Idempotent in-process retry using the completed attempt's saved voices."""
+    log.info('MOBILE_MOVIE_RETRY_REQUEST session=%s',request.match_info.get('session_id'))
+    return await complete(request)
 
 async def movie_file(request:web.Request)->web.StreamResponse:
     cid=int(request.match_info['child_id']);filename=request.match_info['filename'];val=f'movie:{cid}:{filename}'
@@ -800,9 +869,9 @@ async def movies(request:web.Request)->web.Response:
         rows=(await db.scalars(select(LessonMovie).where(LessonMovie.child_id==cid).order_by(LessonMovie.id.desc()))).all()
     for movie in rows:
         path=Path(movie.output_path) if movie.output_path else None;url=None
-        if movie.status=='READY' and path and path.exists():
+        if movie.status in MOVIE_SUCCESS_STATES and path and path.exists():
             value=f'movie:{cid}:{path.name}';token=signed_media_token(value,86400*30);url=f'{_base(request)}/api/mobile/movie/{cid}/{path.name}?t={token}'
-        items.append({'filename':path.name if path else None,'title':f'{movie.lesson_id} · прохождение {movie.run_number}','created_at':movie.created_at.isoformat() if movie.created_at else '','url':url,'status':movie.status,'session_id':movie.lesson_session_id})
+        items.append({'filename':path.name if path else None,'title':f'{movie.lesson_id} · прохождение {movie.run_number}','created_at':movie.created_at.isoformat() if movie.created_at else '','url':url,'status':movie.status,'job_id':movie.job_id,'stage':movie.stage,'progress':int(movie.progress or 0),'error_code':movie.error_code,'can_retry':movie.status in MOVIE_RETRY_STATES,'session_id':movie.lesson_session_id})
     return web.json_response({'movies':items})
 
 
@@ -929,5 +998,5 @@ def register_mobile_routes(app:web.Application):
     app.router.add_post('/api/mobile/register',register);app.router.add_post('/api/mobile/verify-email',verify_email);app.router.add_post('/api/mobile/resend-verification',resend_verification);app.router.add_post('/api/mobile/login',login);app.router.add_post('/api/mobile/password-reset/request',request_password_reset);app.router.add_post('/api/mobile/password-reset/confirm',confirm_password_reset);app.router.add_get('/api/mobile/bootstrap',bootstrap);app.router.add_post('/api/mobile/children',create_child);app.router.add_get('/api/mobile/child/{child_id}/lessons',lesson_catalog);app.router.add_get('/api/mobile/lesson/{lesson_id}/visual/{filename}',lesson_visual);app.router.add_get('/api/mobile/lesson/{lesson_id}/media/{filename}',lesson_media);app.router.add_get('/api/mobile/lesson/{lesson_id}',lesson)
     app.router.add_get('/api/mobile/hero/file/{child_id}/{character_id}',hero_file);app.router.add_post('/api/mobile/child/{child_id}/hero/preset',hero_preset);app.router.add_post('/api/mobile/child/{child_id}/hero/upload',hero_upload);app.router.add_patch('/api/mobile/child/{child_id}/hero/{character_id}/geometry',hero_geometry_confirm)
     app.router.add_get('/api/mobile/child/{child_id}/subscription',subscription_overview);app.router.add_post('/api/mobile/child/{child_id}/subscription/plan-change/preview',subscription_plan_change_preview);app.router.add_post('/api/mobile/child/{child_id}/subscription/plan-change',subscription_plan_change_confirm);app.router.add_delete('/api/mobile/child/{child_id}/subscription/plan-change',subscription_plan_change_cancel)
-    app.router.add_post('/api/mobile/session/start',session_start);app.router.add_post('/api/mobile/session/{session_id}/progress',session_progress);app.router.add_post('/api/mobile/session/{session_id}/voice',voice);app.router.add_post('/api/mobile/session/{session_id}/interactive',interactive);app.router.add_post('/api/mobile/session/{session_id}/complete',complete);app.router.add_get('/api/mobile/session/{session_id}/movie',movie_status)
+    app.router.add_post('/api/mobile/session/start',session_start);app.router.add_post('/api/mobile/session/{session_id}/progress',session_progress);app.router.add_post('/api/mobile/session/{session_id}/voice',voice);app.router.add_post('/api/mobile/session/{session_id}/interactive',interactive);app.router.add_post('/api/mobile/session/{session_id}/complete',complete);app.router.add_get('/api/mobile/session/{session_id}/movie',movie_status);app.router.add_post('/api/mobile/session/{session_id}/movie/retry',retry_movie)
     app.router.add_get('/api/mobile/tts',tts);app.router.add_post('/api/mobile/translate',translate);app.router.add_patch('/api/mobile/child/{child_id}/language',update_child_language);app.router.add_get('/api/mobile/child/{child_id}/movies',movies);app.router.add_get('/api/mobile/movie/{child_id}/{filename}',movie_file)

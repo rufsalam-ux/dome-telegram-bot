@@ -112,7 +112,7 @@ def test_movie_renderer_partitions_the_full_timeline_into_bounded_windows():
     shifted = _shift_timed_filters(["drawbox=enable='between(t,39.0,44.0)'"], 39.0)
     assert shifted == ["drawbox=enable='between(t,0.000,5.000)'"]
     builder = (ROOT / "app/services/cartoon_builder.py").read_text(encoding="utf-8")
-    assert "TemporaryDirectory" in builder and "video_concat" in builder
+    assert "TemporaryDirectory" in builder and "video_join_" in builder
     assert "adelay=" not in builder and "split=10" not in builder
 
 
@@ -140,7 +140,7 @@ def test_mobile_interactions_cover_selection_suitcase_animals_audio_level_and_mo
     assert "runtimePrompt(slide,languageLevel,workingDifficulty,'initial')" in player
     assert "correction_target" in player and "advance_allowed" in (ROOT / "app/webapp/mobile_api.py").read_text(encoding="utf-8")
     assert "MOOD_EMOJIS.map" in player and "completed:true" in player
-    assert "Повторить сборку" in player and "completed.movie_error" not in player
+    assert "Повторить сборку" in player and "MOVIE JOB:" in player and "MOVIE STAGE:" in player
     assert "FFmpeg" not in player and "Railway Logs" not in player
     assert "activeAnimalQuestion" in player and "isGift" in player and "WAITING_ACTION" in player
     assert [row["phrase_id"] for row in by_id["slide_46"]["animal_questions"]] == ["penguin","parrot"]
@@ -224,7 +224,10 @@ async def test_completion_and_movie_job_are_idempotent(monkeypatch, tmp_path):
     try:
         first = await client.post(f"/api/mobile/session/{session_id}/complete", headers=headers, json={})
         assert first.status == 200
-        first_payload=await first.json();assert first_payload["movie_status"] in {"PROCESSING","READY"}
+        first_payload=await first.json();assert first_payload["movie_status"] in {"QUEUED","RUNNING","SUCCEEDED"}
+        duplicate = await client.post(f"/api/mobile/session/{session_id}/movie/retry", headers=headers, json={})
+        duplicate_payload = await duplicate.json()
+        assert duplicate.status == 200 and duplicate_payload["movie_job_id"] == first_payload["movie_job_id"]
         # Await the registered background job rather than racing the shared
         # Windows executor with an arbitrary wall-clock polling deadline.
         pending=[task for task in mobile_api._movie_tasks if not task.done()]
@@ -233,11 +236,11 @@ async def test_completion_and_movie_job_are_idempotent(monkeypatch, tmp_path):
         for _ in range(20):
             status_response=await client.get(f"/api/mobile/session/{session_id}/movie",headers=headers)
             status_payload=await status_response.json()
-            if status_payload["status"]=="READY":break
+            if status_payload["status"]=="SUCCEEDED":break
             await asyncio.sleep(0.01)
-        assert status_payload["status"]=="READY" and status_payload["url"]
+        assert status_payload["status"]=="SUCCEEDED" and status_payload["url"]
         second = await client.post(f"/api/mobile/session/{session_id}/complete", headers=headers, json={})
-        assert (await second.json())["movie_status"] == "READY"
+        assert (await second.json())["movie_status"] == "SUCCEEDED"
     finally:
         await client.close()
     async with sessions() as db:
@@ -305,10 +308,10 @@ async def test_scripted_mobile_demo_traverses_real_endpoints_and_reaches_ready_m
             progress=await client.post(f"/api/mobile/session/{session_id}/progress",headers=headers,json={"current_step":index});assert progress.status==200
         blocked=await client.post(f"/api/mobile/session/{session_id}/complete",headers=headers,json={});assert blocked.status==409;blocked_payload=await blocked.json();assert blocked_payload["code"]=="REQUIRED_MOVIE_RECORDINGS_MISSING" and blocked_payload["missing_phrase_ids"]==["invite"]
         await post_voice(session_id,"slide_16","invite","Come and visit me!")
-        completed=await client.post(f"/api/mobile/session/{session_id}/complete",headers=headers,json={});assert completed.status==200;completion=await completed.json();assert completion["missing_voice_phrases"]==[] and completion["missing_exact_voice_phrases"]==[] and completion["movie_status"] in {"PROCESSING","READY"}
+        completed=await client.post(f"/api/mobile/session/{session_id}/complete",headers=headers,json={});assert completed.status==200;completion=await completed.json();assert completion["missing_voice_phrases"]==[] and completion["missing_exact_voice_phrases"]==[] and completion["movie_status"] in {"QUEUED","RUNNING","SUCCEEDED"}
         pending=[task for task in mobile_api._movie_tasks if not task.done()]
         if pending:await asyncio.wait_for(asyncio.gather(*pending),timeout=10)
-        status=await client.get(f"/api/mobile/session/{session_id}/movie",headers=headers);movie=await status.json();assert movie["status"]=="READY" and movie["url"]
+        status=await client.get(f"/api/mobile/session/{session_id}/movie",headers=headers);movie=await status.json();assert movie["status"]=="SUCCEEDED" and movie["url"]
         next_attempt=await client.post("/api/mobile/session/start",headers=headers,json={"child_id":child_id,"lesson_id":"demo_001"});next_payload=await next_attempt.json();assert next_attempt.status==200 and next_payload["session_id"]!=session_id
         assert next_payload["pre_slide_video_state"]=={"attempt":[],"ever":[video_key]}
     finally:await client.close()
@@ -340,7 +343,7 @@ async def test_interrupted_movie_job_becomes_idempotently_retryable(monkeypatch,
     assert await mobile_lesson_movie.recover_interrupted_mobile_movie_jobs() == 1
     async with sessions() as db:
         movie = await db.scalar(select(LessonMovie))
-        assert movie.status == "FAILED" and "idempotent retry" in movie.error
+        assert movie.status == "TIMED_OUT" and "recordings preserved" in movie.error
     monkeypatch.setattr(mobile_api, "SessionLocal", sessions)
     monkeypatch.setattr(settings, "mobile_auth_secret", "movie-failure-test-secret-that-is-long-enough")
     app = web.Application();mobile_api.register_mobile_routes(app);client = TestClient(TestServer(app));await client.start_server()
@@ -350,7 +353,7 @@ async def test_interrupted_movie_job_becomes_idempotently_retryable(monkeypatch,
             headers={"Authorization": f"Bearer {issue_session_token(parent.id)}"},
         )
         payload = await response.json()
-        assert response.status == 200 and payload["status"] == "FAILED" and payload["can_retry"] is True
+        assert response.status == 200 and payload["status"] == "TIMED_OUT" and payload["can_retry"] is True
         assert payload["error"] == mobile_api.MOVIE_RETRY_MESSAGE
         assert "FFmpeg" not in payload["error"] and "Railway" not in payload["error"] and "exit" not in payload["error"]
     finally:

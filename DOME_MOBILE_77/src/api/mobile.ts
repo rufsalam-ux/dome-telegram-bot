@@ -181,6 +181,10 @@ export function completeSession(sessionId:number){
 
 export function getMovieStatus(sessionId:number){return request(`/api/mobile/session/${sessionId}/movie`)}
 
+export function retryMovieBuild(sessionId:number){
+  return request(`/api/mobile/session/${sessionId}/movie/retry`,jsonInit('POST',{}));
+}
+
 export async function ttsSource(text:string,targetLanguage='ru',nativeText='',nativeLanguage='ru',sourceLanguage='ru',nativeSourceLanguage=sourceLanguage,style='warm'){
   const query=new URLSearchParams({text,target_language:targetLanguage,native_text:nativeText,native_language:nativeLanguage,source_language:sourceLanguage,native_source_language:nativeSourceLanguage,style});
   return {

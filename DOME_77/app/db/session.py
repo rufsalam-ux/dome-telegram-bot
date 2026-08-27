@@ -165,6 +165,24 @@ async def init_db() -> None:
             "source": "VARCHAR(40) NOT NULL DEFAULT 'CHILD_DRAWING'", "catalog_id": "VARCHAR(80)",
             "visual_metadata_json": "TEXT NOT NULL DEFAULT '{}'", "visual_analysis_version": "VARCHAR(80)",
             "visual_analysis_status": "VARCHAR(40) NOT NULL DEFAULT 'PENDING'"})
+        await _add_columns(conn, "lesson_movies", {
+            "job_id": "VARCHAR(64)",
+            "movie_version": "VARCHAR(80) NOT NULL DEFAULT 'mobile-movie-v1'",
+            "stage": "VARCHAR(50) NOT NULL DEFAULT 'IDLE'",
+            "progress": "INTEGER NOT NULL DEFAULT 0",
+            "strategy": "VARCHAR(30)",
+            "error_code": "VARCHAR(80)",
+            "error_message": "TEXT",
+            "attempt_count": "INTEGER NOT NULL DEFAULT 0",
+            "started_at": "TIMESTAMP",
+            "heartbeat_at": "TIMESTAMP",
+            "finished_at": "TIMESTAMP",
+        })
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_lesson_movies_job_id ON lesson_movies(job_id)"))
+        # One-way compatibility migration to the explicit durable job states.
+        await conn.execute(text("UPDATE lesson_movies SET status='SUCCEEDED', stage='READY', progress=100 WHERE status='READY'"))
+        await conn.execute(text("UPDATE lesson_movies SET status='RUNNING', stage=CASE WHEN stage='IDLE' THEN 'FFMPEG_RENDER' ELSE stage END WHERE status='PROCESSING'"))
+        await conn.execute(text("UPDATE lesson_movies SET movie_version='mobile-movie-v1' WHERE movie_version IS NULL OR movie_version=''"))
         if settings.database_url.startswith("sqlite"):
             await _add_columns(conn, "children", {
                 "country": "VARCHAR(120)", "language_level": "VARCHAR(20) NOT NULL DEFAULT 'PRE_A1'",

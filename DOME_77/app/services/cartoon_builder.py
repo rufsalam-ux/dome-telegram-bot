@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 import logging
 import re
+import shutil
 import subprocess
 import tempfile
 import time
 from pathlib import Path
+from typing import Callable
 
 from PIL import Image
 
@@ -32,11 +34,60 @@ def _cartoon_config() -> dict:
         return {"first_child_scene_seconds":8}
 
 
-class CartoonBuildError(RuntimeError):
-    pass
-
-
 SAFE_MOVIE_ERROR = "Мультфильм пока не удалось собрать. Все записи сохранены — попробуйте ещё раз."
+
+
+class CartoonBuildError(RuntimeError):
+    """A classified render failure whose technical detail stays server-side."""
+
+    def __init__(self, message: str = SAFE_MOVIE_ERROR, *, code: str = "MOVIE_RENDER_FAILED", stage: str = "FFMPEG_RENDER", technical_message: str = ""):
+        super().__init__(message)
+        self.code = code
+        self.stage = stage
+        self.technical_message = technical_message or message
+
+
+MovieProgressCallback = Callable[[str, int, str], None]
+
+
+def _publish_progress(callback: MovieProgressCallback | None, stage: str, progress: int, strategy: str) -> None:
+    if callback:
+        callback(stage, max(0, min(100, int(progress))), strategy)
+
+
+def cleanup_stale_render_dirs(output_mp4: Path) -> tuple[int, int]:
+    """Delete only incomplete work directories belonging to this exact output.
+
+    Child recordings, final MP4 files, avatar metadata and persistent animation
+    caches live outside these directories and are deliberately never touched.
+    """
+
+    output_mp4 = Path(output_mp4)
+    parent = output_mp4.parent.resolve()
+    removed = 0
+    released = 0
+    if not parent.exists():
+        return removed, released
+    for candidate in parent.glob(f"{output_mp4.stem}_render_*"):
+        try:
+            resolved = candidate.resolve()
+            if not candidate.is_dir() or resolved.parent != parent:
+                continue
+            released += sum(item.stat().st_size for item in candidate.rglob("*") if item.is_file())
+            shutil.rmtree(candidate)
+            removed += 1
+        except FileNotFoundError:
+            continue
+        except Exception as exc:
+            log.warning("Unable to remove stale movie work directory path=%s error=%s", candidate, exc)
+    if removed:
+        log.warning("MOBILE_MOVIE_STALE_WORK_CLEANUP output=%s dirs=%s bytes=%s", output_mp4, removed, released)
+    return removed, released
+
+
+def movie_storage_free_bytes(output_mp4: Path) -> int:
+    output_mp4.parent.mkdir(parents=True, exist_ok=True)
+    return int(shutil.disk_usage(output_mp4.parent).free)
 
 
 def _probe_video(path: Path) -> tuple[int, int, float]:
@@ -254,7 +305,14 @@ def _run_ffmpeg_step(cmd: list[str], *, step: str, work: Path, timeout: float) -
 
     command_file = work / f"{step}.command.txt"
     error_file = work / f"{step}.stderr.log"
-    command_file.write_text(" ".join(cmd), encoding="utf-8")
+    try:
+        command_file.write_text(" ".join(cmd), encoding="utf-8")
+    except OSError as exc:
+        raise CartoonBuildError(
+            code="MOVIE_STORAGE_EXHAUSTED" if getattr(exc, "errno", None) == 28 else "MOVIE_RENDER_IO_FAILED",
+            stage="FFMPEG_RENDER",
+            technical_message=f"unable to persist ffmpeg command step={step}: {exc}",
+        ) from exc
     started = time.monotonic()
     log.info("MOBILE_MOVIE_FFMPEG_START step=%s timeout=%.1f", step, timeout)
     try:
@@ -268,19 +326,32 @@ def _run_ffmpeg_step(cmd: list[str], *, step: str, work: Path, timeout: float) -
             )
     except FileNotFoundError as exc:
         log.exception("FFmpeg executable not found step=%s executable=%s", step, settings.ffmpeg_bin)
-        raise CartoonBuildError(SAFE_MOVIE_ERROR) from exc
+        raise CartoonBuildError(code="MOVIE_FFMPEG_UNAVAILABLE", stage="FFMPEG_RENDER", technical_message=f"ffmpeg executable not found: {settings.ffmpeg_bin}") from exc
     except subprocess.TimeoutExpired as exc:
-        log.error("FFmpeg timed out step=%s command=%s stderr=%s", step, command_file, _tail_text(error_file, 4000))
-        raise CartoonBuildError(SAFE_MOVIE_ERROR) from exc
+        detail = _tail_text(error_file, 4000)
+        log.error("FFmpeg timed out step=%s command=%s stderr=%s", step, command_file, detail)
+        raise CartoonBuildError(code="MOVIE_RENDER_TIMED_OUT", stage="FFMPEG_RENDER", technical_message=f"ffmpeg timeout step={step}: {detail[-1200:]}") from exc
     except subprocess.CalledProcessError as exc:
+        detail = _tail_text(error_file)
         log.error(
             "FFmpeg failed step=%s code=%s command=%s stderr=%s",
             step,
             exc.returncode,
             command_file,
-            _tail_text(error_file),
+            detail,
         )
-        raise CartoonBuildError(SAFE_MOVIE_ERROR) from exc
+        disk_full = "No space left on device" in detail or "error code: -28" in detail
+        raise CartoonBuildError(
+            code="MOVIE_STORAGE_EXHAUSTED" if disk_full else "MOVIE_FFMPEG_FAILED",
+            stage="FFMPEG_RENDER",
+            technical_message=f"ffmpeg step={step} exit={exc.returncode}: {detail[-1600:]}",
+        ) from exc
+    except OSError as exc:
+        raise CartoonBuildError(
+            code="MOVIE_STORAGE_EXHAUSTED" if getattr(exc, "errno", None) == 28 else "MOVIE_RENDER_IO_FAILED",
+            stage="FFMPEG_RENDER",
+            technical_message=f"ffmpeg I/O failure step={step}: {exc}",
+        ) from exc
     log.info("MOBILE_MOVIE_FFMPEG_DONE step=%s elapsed=%.2f", step, time.monotonic() - started)
 
 
@@ -424,7 +495,19 @@ def _build_voice_track(
     return output
 
 
-def build_timeline_cartoon(base_video: Path, character_png: Path, audio_by_phrase: dict[str, Path], timeline: list[dict], output_mp4: Path, base_video_filters: list[str] | None = None, *, character_metadata: dict | None = None) -> Path:
+def build_timeline_cartoon(
+    base_video: Path,
+    character_png: Path,
+    audio_by_phrase: dict[str, Path],
+    timeline: list[dict],
+    output_mp4: Path,
+    base_video_filters: list[str] | None = None,
+    *,
+    character_metadata: dict | None = None,
+    render_strategy: str = "rich",
+    progress_callback: MovieProgressCallback | None = None,
+    total_timeout_override: float | None = None,
+) -> Path:
     """Render the authored movie with disk-backed sequential FFmpeg stages.
 
     The former single graph split a 1080p hero stream ten times and kept ten
@@ -443,7 +526,10 @@ def build_timeline_cartoon(base_video: Path, character_png: Path, audio_by_phras
         log.error("Movie timeline is empty")
         raise CartoonBuildError(SAFE_MOVIE_ERROR)
 
+    if render_strategy not in {"rich", "safe", "static"}:
+        raise ValueError(f"Unsupported movie render strategy: {render_strategy}")
     cfg = _cartoon_config()
+    _publish_progress(progress_callback, "LOADING_AVATAR", 12, render_strategy)
     frame_width, frame_height, base_duration = _probe_video(base_video)
     with Image.open(character_png) as source_image:
         source_width,source_height=source_image.size
@@ -462,7 +548,8 @@ def build_timeline_cartoon(base_video: Path, character_png: Path, audio_by_phras
     ensure_animation_library(settings.storage_root / "animation-library")
     _rig = load_character_rig(character_png, settings.storage_root / "character-rigs", character_metadata if settings.avatar_animation_engine_enabled else None)
     _motion_plans = [normalize_motion_plan(item) for item in timeline]
-    if settings.avatar_animation_engine_enabled:
+    _publish_progress(progress_callback, "LOADING_ANIMATION_CACHE", 20, render_strategy)
+    if render_strategy == "rich" and settings.avatar_animation_engine_enabled:
         try:
             _library,cache_hits,cache_created=ensure_local_motion_cache(character_png,settings.storage_root,character_metadata)
             log.info("MOVIE_AVATAR_LOCAL_CACHE avatar=%s hits=%s created=%s provider=%s",_library.avatar_id,cache_hits,cache_created,_rig.provider)
@@ -472,7 +559,8 @@ def build_timeline_cartoon(base_video: Path, character_png: Path, audio_by_phras
 
     allow_generate = bool(cfg.get("generate_missing_animation_during_render", False))
     render_threads = max(1, min(2, int(cfg.get("render_threads", 1))))
-    total_timeout = max(60, int(cfg.get("total_render_timeout_seconds", 600)))
+    configured_timeout = max(60, int(cfg.get("total_render_timeout_seconds", 600)))
+    total_timeout = min(configured_timeout, max(10.0, float(total_timeout_override))) if total_timeout_override is not None else configured_timeout
     step_timeout = max(30, int(cfg.get("ffmpeg_timeout_seconds", 300)))
     render_started = time.monotonic()
 
@@ -484,6 +572,7 @@ def build_timeline_cartoon(base_video: Path, character_png: Path, audio_by_phras
 
     with tempfile.TemporaryDirectory(prefix=f"{output_mp4.stem}_render_", dir=output_mp4.parent) as work_value:
         work = Path(work_value)
+        _publish_progress(progress_callback, "PREPARING_SCENES", 28, render_strategy)
         render_character,_visible_aspect=_visible_character_asset(character_png,character_metadata,work/"character-visible.png")
         source_facing=_source_facing(character_metadata)
         log.info("MOVIE_AVATAR_METADATA source_facing=%s confirmed=%s version=%s",source_facing,(character_metadata or {}).get("userConfirmed") is True,(character_metadata or {}).get("analysisVersion") or "legacy")
@@ -491,8 +580,12 @@ def build_timeline_cartoon(base_video: Path, character_png: Path, audio_by_phras
             action=primary_motion_action(segment);desired=_desired_facing(segment);applied_flip=_should_hflip(segment,source_facing,bool(animation_profile(action, settings.storage_root / "animation-library").get("mirror",False)))
             displayed=("RIGHT" if source_facing=="LEFT" else "LEFT") if applied_flip and source_facing in {"LEFT","RIGHT"} else source_facing
             log.info("MOVIE_AVATAR_RENDER phrase=%s action=%s source=%s desired=%s flip=%s displayed=%s height=%s",segment.get("phrase_id"),action,source_facing,desired,applied_flip,displayed,segment.get("height"))
+        _publish_progress(progress_callback, "RENDERING_AVATAR_MOTION", 42, render_strategy)
         ai_clips: list[Path | None] = []
         for index, segment in enumerate(timeline):
+            if render_strategy != "rich":
+                ai_clips.append(None)
+                continue
             try:
                 phrase_audio = Path(audio_by_phrase[segment["phrase_id"]]) if audio_by_phrase.get(segment["phrase_id"]) else None
                 animation_segment = {**segment, "resolved_facing": _desired_facing(segment).lower()}
@@ -504,13 +597,13 @@ def build_timeline_cartoon(base_video: Path, character_png: Path, audio_by_phras
                 log.warning("AI animation fallback for scene %s: %s", index, exc)
                 ai_clips.append(None)
 
+        _publish_progress(progress_callback, "PREPARING_AUDIO", 50, render_strategy)
         audio_segments=[]
         for segment in timeline:
             path=audio_by_phrase.get(segment["phrase_id"])
             if path and Path(path).exists() and Path(path).stat().st_size>0:
                 audio_segments.append({**segment,"audio_path":Path(path)})
         render_duration=_scheduled_voice_duration(audio_segments,render_duration)
-        segment_files: list[Path] = []
         windows = _render_windows(timeline, render_duration)
         log.info(
             "MOBILE_MOVIE_RENDER_PLAN duration=%.3f windows=%s voices=%s threads=%s",
@@ -519,6 +612,8 @@ def build_timeline_cartoon(base_video: Path, character_png: Path, audio_by_phras
             sum(1 for item in timeline if audio_by_phrase.get(item["phrase_id"])),
             render_threads,
         )
+        _publish_progress(progress_callback, "COMPOSITING", 56, render_strategy)
+        video_only = work / "video_only.mp4"
         for window_index, (window_start, window_end) in enumerate(windows):
             window_duration = window_end - window_start
             active = [
@@ -563,7 +658,7 @@ def build_timeline_cartoon(base_video: Path, character_png: Path, audio_by_phras
                 else:
                     profile = animation_profile(primary_motion_action(segment), settings.storage_root / "animation-library")
                     pre = "hflip," if _should_hflip(segment,source_facing,bool(profile.get("mirror",False))) else ""
-                    rotation = float(profile.get("rotation", 0.012))
+                    rotation = 0.0 if render_strategy == "static" else float(profile.get("rotation", 0.012))
                     filters.append(
                         f"[{source}:v]setpts=PTS-STARTPTS,{pre}scale=-1:{height},"
                         f"rotate='{rotation}*sin(3.2*(t-{start:.3f}))':ow=rotw(iw):oh=roth(ih):c=none,"
@@ -571,8 +666,9 @@ def build_timeline_cartoon(base_video: Path, character_png: Path, audio_by_phras
                         f"fade=t=out:st={max(start, end - 0.18):.3f}:d=0.18:alpha=1{hero_label}"
                     )
                 out = f"[overlay{local_index}]"
+                y_expression = str(float(segment.get("y", 245))) if render_strategy == "static" else _y_expression(segment)
                 filters.append(
-                    f"{previous}{hero_label}overlay=x='{_x_expression(segment)}':y='{_y_expression(segment)}':"
+                    f"{previous}{hero_label}overlay=x='{_x_expression(segment)}':y='{y_expression}':"
                     f"enable='between(t,{start:.3f},{end:.3f})':eof_action=pass{out}"
                 )
                 previous = out
@@ -585,21 +681,27 @@ def build_timeline_cartoon(base_video: Path, character_png: Path, audio_by_phras
                 "-t", f"{window_duration:.3f}", str(segment_path),
             ]
             _run_ffmpeg_step(cmd, step=f"video_{window_index:03d}", work=work, timeout=remaining_timeout())
-            segment_files.append(segment_path)
-
-        concat_list = work / "video_segments.txt"
-        concat_list.write_text("\n".join(_concat_line(path) for path in segment_files) + "\n", encoding="utf-8")
-        video_only = work / "video_only.mp4"
-        _run_ffmpeg_step(
-            [
-                settings.ffmpeg_bin, "-y", "-hide_banner", "-loglevel", "warning",
-                "-threads", str(render_threads), "-f", "concat", "-safe", "0", "-i", str(concat_list),
-                "-map", "0:v:0", "-c:v", "copy", "-an", str(video_only),
-            ],
-            step="video_concat",
-            work=work,
-            timeout=remaining_timeout(),
-        )
+            if not video_only.exists():
+                segment_path.replace(video_only)
+            else:
+                concat_list = work / f"video_join_{window_index:03d}.txt"
+                concat_list.write_text("\n".join((_concat_line(video_only), _concat_line(segment_path))) + "\n", encoding="utf-8")
+                joined = work / f"video_join_{window_index:03d}.mp4"
+                _run_ffmpeg_step(
+                    [
+                        settings.ffmpeg_bin, "-y", "-hide_banner", "-loglevel", "warning",
+                        "-threads", str(render_threads), "-f", "concat", "-safe", "0", "-i", str(concat_list),
+                        "-map", "0:v:0", "-c:v", "copy", "-an", str(joined),
+                    ],
+                    step=f"video_join_{window_index:03d}",
+                    work=work,
+                    timeout=remaining_timeout(),
+                )
+                video_only.unlink(missing_ok=True)
+                segment_path.unlink(missing_ok=True)
+                joined.replace(video_only)
+            progress = 56 + round(22 * ((window_index + 1) / max(1, len(windows))))
+            _publish_progress(progress_callback, "COMPOSITING", progress, render_strategy)
 
         voice_track: Path | None = None
         if audio_segments:
@@ -612,6 +714,7 @@ def build_timeline_cartoon(base_video: Path, character_png: Path, audio_by_phras
                 remaining_timeout(),
             )
 
+        _publish_progress(progress_callback, "FFMPEG_RENDER", 82, render_strategy)
         final_tmp = work / "final.mp4"
         base_has_audio = _has_audio_stream(base_video)
         final_cmd = [
@@ -637,15 +740,20 @@ def build_timeline_cartoon(base_video: Path, character_png: Path, audio_by_phras
         else:
             final_cmd += ["-map", "0:v:0", "-an"]
         final_cmd += ["-c:v", "copy", "-movflags", "+faststart", "-t", f"{render_duration:.3f}", str(final_tmp)]
+        _publish_progress(progress_callback, "ENCODING", 90, render_strategy)
         _run_ffmpeg_step(final_cmd, step="final_mux", work=work, timeout=remaining_timeout())
 
         if not final_tmp.exists() or final_tmp.stat().st_size < 10_000:
             log.error("Final movie artifact is missing or empty: %s", final_tmp)
             raise CartoonBuildError(SAFE_MOVIE_ERROR)
+        _publish_progress(progress_callback, "UPLOADING", 96, render_strategy)
         final_tmp.replace(output_mp4)
 
+    _publish_progress(progress_callback, "FINALIZING", 98, render_strategy)
     log.info("Cartoon ready: %s bytes=%s", output_mp4, output_mp4.stat().st_size)
-    return ensure_telegram_safe_mp4(output_mp4)
+    result = ensure_telegram_safe_mp4(output_mp4)
+    _publish_progress(progress_callback, "READY", 100, render_strategy)
+    return result
 
 
 def build_simple_cartoon(character_png: Path, audio_files: list[Path], output_mp4: Path) -> Path:

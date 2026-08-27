@@ -3,22 +3,29 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import time
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 from sqlalchemy import select
 
 from app.core.config import settings
 from app.db.models import LessonMovie, MovieVoiceSlot
 from app.db.session import SessionLocal
-from app.services.cartoon_builder import _probe_video, build_timeline_cartoon
+from app.services.cartoon_builder import CartoonBuildError, _probe_video, build_timeline_cartoon, cleanup_stale_render_dirs, movie_storage_free_bytes
 from app.services.cartoon_text_overlay import cartoon_text_filters
 from app.services.lesson_loader import load_lesson
 
 
 log = logging.getLogger("dome.mobile_movie")
+MOBILE_MOVIE_VERSION = "mobile-movie-v2"
+MOVIE_JOB_TIMEOUT_SECONDS = 720
+MOVIE_STALL_TIMEOUT_SECONDS = 360
+MOVIE_MIN_FREE_BYTES = 48_000_000
+MOVIE_RICH_MIN_FREE_BYTES = 220_000_000
+MovieProgressCallback = Callable[[str, int, str], None]
 
 
 @dataclass(frozen=True)
@@ -34,6 +41,7 @@ class MovieRenderInputs:
     expected_base_sha256: str = ""
     require_all_phrase_audio: bool = True
     character_metadata: dict | None = None
+    progress_callback: MovieProgressCallback | None = None
 
 
 @dataclass(frozen=True)
@@ -52,6 +60,7 @@ class MovieContractError(RuntimeError):
 
 
 SAFE_MOVIE_CONTRACT_ERROR = "Мультфильм пока не удалось подготовить. Все записи сохранены — попробуйте ещё раз позже."
+SAFE_MOVIE_RETRY_ERROR = "Мультфильм пока не собрался. Все записи сохранены — попробуйте ещё раз."
 
 
 @lru_cache(maxsize=32)
@@ -138,7 +147,7 @@ async def recover_interrupted_mobile_movie_jobs() -> int:
 
     recovered = 0
     async with SessionLocal() as db:
-        movies = (await db.scalars(select(LessonMovie).where(LessonMovie.status == "PROCESSING"))).all()
+        movies = (await db.scalars(select(LessonMovie).where(LessonMovie.status.in_(("PROCESSING", "QUEUED", "RUNNING"))))).all()
         for movie in movies:
             output = Path(movie.output_path) if movie.output_path else None
             complete = False
@@ -151,11 +160,19 @@ async def recover_interrupted_mobile_movie_jobs() -> int:
                 except Exception:
                     complete = False
             if complete:
-                movie.status = "READY"
+                movie.status = "SUCCEEDED"
+                movie.stage = "READY"
+                movie.progress = 100
+                movie.finished_at = movie.updated_at
                 movie.error = None
+                movie.error_code = None
+                movie.error_message = None
             else:
-                movie.status = "FAILED"
-                movie.error = "Render interrupted by application restart; queued for idempotent retry"
+                movie.status = "TIMED_OUT"
+                movie.stage = movie.stage or "FFMPEG_RENDER"
+                movie.error_code = "MOVIE_JOB_INTERRUPTED"
+                movie.error_message = SAFE_MOVIE_RETRY_ERROR
+                movie.error = "Render interrupted by application restart; recordings preserved for idempotent retry"
             recovered += 1
         if recovered:
             await db.commit()
@@ -300,12 +317,59 @@ def build_mobile_lesson_movie(inputs: MovieRenderInputs) -> Path:
         inputs.target_language,
         inputs.output,
     )
-    return build_timeline_cartoon(
-        inputs.base_video,
-        inputs.character,
-        inputs.audio_by_phrase,
-        inputs.timeline,
-        inputs.output,
-        cartoon_text_filters(inputs.lesson_dir,inputs.target_language),
-        character_metadata=inputs.character_metadata,
-    )
+    cleanup_stale_render_dirs(inputs.output)
+    free_bytes = movie_storage_free_bytes(inputs.output)
+    if free_bytes < MOVIE_MIN_FREE_BYTES:
+        raise CartoonBuildError(
+            code="MOVIE_STORAGE_EXHAUSTED",
+            stage="VALIDATING_RECORDINGS",
+            technical_message=f"insufficient movie storage before render: free={free_bytes}",
+        )
+
+    strategies = ["rich", "safe", "static"]
+    if free_bytes < MOVIE_RICH_MIN_FREE_BYTES:
+        strategies.remove("rich")
+        log.warning("MOBILE_MOVIE_RICH_SKIPPED_LOW_STORAGE free=%s threshold=%s", free_bytes, MOVIE_RICH_MIN_FREE_BYTES)
+    deadline = time.monotonic() + MOVIE_JOB_TIMEOUT_SECONDS
+    last_error: CartoonBuildError | None = None
+    filters = cartoon_text_filters(inputs.lesson_dir,inputs.target_language)
+    for strategy in strategies:
+        remaining = deadline - time.monotonic()
+        if remaining <= 10:
+            raise CartoonBuildError(code="MOVIE_RENDER_TIMED_OUT", stage="FFMPEG_RENDER", technical_message="movie fallback budget exhausted")
+        cleanup_stale_render_dirs(inputs.output)
+        log.info("MOBILE_MOVIE_STRATEGY_START strategy=%s remaining=%.1f free=%s", strategy, remaining, movie_storage_free_bytes(inputs.output))
+        try:
+            return build_timeline_cartoon(
+                inputs.base_video,
+                inputs.character,
+                inputs.audio_by_phrase,
+                inputs.timeline,
+                inputs.output,
+                filters,
+                character_metadata=inputs.character_metadata,
+                render_strategy=strategy,
+                progress_callback=inputs.progress_callback,
+                total_timeout_override=remaining,
+            )
+        except CartoonBuildError as exc:
+            last_error = exc
+            cleanup_stale_render_dirs(inputs.output)
+            log.warning(
+                "MOBILE_MOVIE_STRATEGY_FAILED strategy=%s code=%s stage=%s detail=%s",
+                strategy,
+                exc.code,
+                exc.stage,
+                exc.technical_message,
+            )
+            if exc.code in {"MOVIE_FFMPEG_UNAVAILABLE", "MOVIE_RENDER_TIMED_OUT"}:
+                break
+        except OSError as exc:
+            cleanup_stale_render_dirs(inputs.output)
+            last_error = CartoonBuildError(
+                code="MOVIE_STORAGE_EXHAUSTED" if getattr(exc, "errno", None) == 28 else "MOVIE_RENDER_IO_FAILED",
+                stage="FFMPEG_RENDER",
+                technical_message=f"movie render I/O failure: {exc}",
+            )
+            log.exception("MOBILE_MOVIE_STRATEGY_IO_FAILED strategy=%s", strategy)
+    raise last_error or CartoonBuildError()
