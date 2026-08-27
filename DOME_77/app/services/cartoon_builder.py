@@ -17,6 +17,7 @@ from app.services.animation_engine.motion_planner import normalize_motion_plan
 from app.services.animation_engine.runtime_provider import prepare_character_animation
 
 log = logging.getLogger("dome.cartoon")
+AVATAR_PERCEPTUAL_SCALE = 1.12
 
 
 def _cartoon_config() -> dict:
@@ -68,7 +69,7 @@ def _resolve_normalized_timeline(timeline: list[dict], frame_width: int, frame_h
     for source in timeline:
         segment = dict(source)
         if "height_norm" in segment:
-            authored_height=float(segment["height_norm"])
+            authored_height=float(segment["height_norm"])*AVATAR_PERCEPTUAL_SCALE
             # A horizontal dinosaur should not be made tiny merely because its
             # silhouette is wide. Preserve comparable perceptual body area,
             # then apply the authored safe-zone width as a final bound.
@@ -134,6 +135,13 @@ def _should_hflip(segment: dict, source_facing: str, legacy_mirror: bool) -> boo
     if desired=="FRONT" or source=="FRONT":return False
     if source in {"LEFT","RIGHT"} and desired in {"LEFT","RIGHT"}:return source!=desired
     return legacy_mirror
+
+
+def _source_facing(metadata: dict | None) -> str:
+    payload=metadata or {}
+    canonical=str(payload.get("canonicalFacing") or "UNKNOWN").upper();saved=str(payload.get("facingDirection") or "UNKNOWN").upper()
+    value=canonical if canonical in {"LEFT","RIGHT","FRONT"} else saved
+    return value if value in {"LEFT","RIGHT","FRONT"} else "UNKNOWN"
 
 
 def ensure_telegram_safe_mp4(source_mp4: Path, output_mp4: Path | None = None) -> Path:
@@ -459,7 +467,12 @@ def build_timeline_cartoon(base_video: Path, character_png: Path, audio_by_phras
     with tempfile.TemporaryDirectory(prefix=f"{output_mp4.stem}_render_", dir=output_mp4.parent) as work_value:
         work = Path(work_value)
         render_character,_visible_aspect=_visible_character_asset(character_png,character_metadata,work/"character-visible.png")
-        source_facing=str((character_metadata or {}).get("facingDirection") or "UNKNOWN").upper()
+        source_facing=_source_facing(character_metadata)
+        log.info("MOVIE_AVATAR_METADATA source_facing=%s confirmed=%s version=%s",source_facing,(character_metadata or {}).get("userConfirmed") is True,(character_metadata or {}).get("analysisVersion") or "legacy")
+        for segment in timeline:
+            desired=_desired_facing(segment);applied_flip=_should_hflip(segment,source_facing,bool(animation_profile(segment.get("animation", "stand_front_talk"), settings.storage_root / "animation-library").get("mirror",False)))
+            displayed=("RIGHT" if source_facing=="LEFT" else "LEFT") if applied_flip and source_facing in {"LEFT","RIGHT"} else source_facing
+            log.info("MOVIE_AVATAR_RENDER phrase=%s source=%s desired=%s flip=%s displayed=%s height=%s",segment.get("phrase_id"),source_facing,desired,applied_flip,displayed,segment.get("height"))
         ai_clips: list[Path | None] = []
         for index, segment in enumerate(timeline):
             try:

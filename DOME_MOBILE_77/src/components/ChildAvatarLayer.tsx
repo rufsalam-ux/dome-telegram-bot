@@ -1,8 +1,8 @@
-import React from 'react';
+import React,{useEffect} from 'react';
 import {Animated,View} from 'react-native';
 
 import type {NormalizedRect} from '../data/lessonInteractions';
-import {avatarCanvasStyle,avatarScaleX,sourceAvatarFacing,type AvatarFacing} from '../engine/avatarRuntime';
+import {avatarCanvasStyle,avatarRenderTrace,avatarScaleX,sourceAvatarFacing,type AvatarFacing} from '../engine/avatarRuntime';
 
 function rectStyle(rect:NormalizedRect|number[]){
   const values=Array.isArray(rect)?{left:rect[0]||0,top:rect[1]||0,width:rect[2]||0,height:rect[3]||0}:rect;
@@ -10,6 +10,8 @@ function rectStyle(rect:NormalizedRect|number[]){
 }
 
 export function ChildAvatarLayer({uri,rect,facing,animation,metadata}:{uri?:string;rect:number[]|null;facing:AvatarFacing;animation:Animated.Value;metadata?:any}){
+  const trace=avatarRenderTrace(metadata,facing);
+  useEffect(()=>{if(uri&&rect)console.info('[DOME_AVATAR_RENDER]',JSON.stringify({...trace,rect}))},[uri,rect?.join(','),trace.sourceFacing,trace.desiredFacing,trace.appliedFlip,trace.confirmed,trace.analysisVersion]);
   if(!uri||!rect)return null;
   return <View testID='lesson-hero-overlay' accessibilityLabel='Выбранный герой ребёнка' pointerEvents='none' style={[{position:'absolute',zIndex:5,elevation:5,overflow:'visible'},rectStyle(rect)]}>
     <Animated.Image testID='lesson-child-avatar' source={{uri}} resizeMode='stretch' style={[avatarCanvasStyle(metadata),{transform:[{translateY:animation.interpolate({inputRange:[0,1],outputRange:[0,-4]})},{scaleX:avatarScaleX(facing,sourceAvatarFacing(metadata))}]}]}/>

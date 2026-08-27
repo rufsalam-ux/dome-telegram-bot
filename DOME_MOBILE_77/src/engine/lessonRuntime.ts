@@ -1,5 +1,7 @@
 import {visibleCharacterAspect} from './avatarRuntime.ts';
 
+export const AVATAR_PERCEPTUAL_SCALE=1.12;
+
 export const RUNTIME_STAGES = [
   'ENTER', 'AI_SPEAKING', 'WAITING_ACTION', 'WAITING_VOICE', 'PROCESSING',
   'FEEDBACK', 'FOLLOW_UP', 'RETRY', 'COMPLETE',
@@ -40,6 +42,13 @@ export function stageAfterTutorSpeech(slide:any,hasSelection=false):RuntimeStage
 
 export function recordEnabled(stage:RuntimeStage,slide:any,hasSelection=false):boolean{
   return stage==='WAITING_VOICE'&&requiresVoice(slide)&&(!requiresSelection(slide)||hasSelection);
+}
+
+export function answerEnabled(stage:RuntimeStage,slide:any,hasSelection=false,busy=false,recording=false):boolean{
+  if(busy||recording||!requiresVoice(slide)||requiresSelection(slide)&&!hasSelection)return false;
+  // FEEDBACK/RETRY/FOLLOW_UP are accepted as recoverable post-TTS states. This
+  // prevents a stale non-playing stage from disabling Answer forever.
+  return ['WAITING_VOICE','FEEDBACK','RETRY','FOLLOW_UP'].includes(stage);
 }
 
 export type TutorAudioStatus={playing?:boolean;isBuffering?:boolean;didJustFinish?:boolean;currentTime?:number;duration?:number};
@@ -109,6 +118,12 @@ export function progressiveHint(slide:any,attempt:number):ProgressiveHint{
   if(step===2)return {step:'EXAMPLE',prompt:`Можно сказать: ${example}`};
   if(step===3)return {step:'STARTER',prompt:`Начни так: ${sentenceStarter(example)}`};
   return {step:'CHOICES',prompt:labels.length?`Выбери: ${labels.slice(0,4).join(' или ')}.`:`Попробуй ещё раз. Можно сказать: ${example}`};
+}
+
+export function adaptiveModelPhrase(slide:any,languageLevel='PRE_A1',difficulty=.15):string{
+  const simple=String(slide?.simplified_text||slide?.model_answer_target||slide?.question||'').trim();
+  const richer=String(slide?.richer_model_text||slide?.model_answer_richer||'').trim();
+  return richer&&String(languageLevel).toUpperCase()!=='PRE_A1'&&difficulty>=.45?richer:simple;
 }
 
 export function advanceAfterAssessment(response:{accepted?:boolean;advance_allowed?:boolean;needs_retry?:boolean;tutor_turn?:{follow_up_target?:string}}):'FOLLOW_UP'|'COMPLETE'|'RETRY'{
@@ -182,7 +197,7 @@ export function slideContentBoxes(slide:any):RectTuple[]{
   return boxes;
 }
 
-const DEFAULT_ANCHORS:Record<string,RectTuple>={left:[0.02,0.30,0.44,0.66],right:[0.54,0.30,0.44,0.66],bottom_left:[0.02,0.46,0.44,0.50],bottom_right:[0.54,0.46,0.44,0.50],left_of_lyosha:[0.02,0.38,0.39,0.44],left_of_mila:[0.04,0.49,0.50,0.46]};
+const DEFAULT_ANCHORS:Record<string,RectTuple>={left:[0.01,0.27,0.48,0.69],right:[0.51,0.27,0.48,0.69],bottom_left:[0.01,0.42,0.48,0.54],bottom_right:[0.51,0.42,0.48,0.54],left_of_lyosha:[0.005,0.32,0.397,0.52],left_of_mila:[0.01,0.40,0.548,0.55]};
 
 function anchorBox(anchor:string,slide:any,lesson:any):RectTuple|null{
   const authored=tuple(slide?.hero_anchor_boxes?.[anchor]||lesson?.hero_layout?.anchors?.[anchor]);return authored||DEFAULT_ANCHORS[anchor]||null;
@@ -203,14 +218,21 @@ function fittedAtAnchor(box:RectTuple,height:number,placement:string,visibleAspe
 export function heroBox(slide:any,lesson:any,containerWidth=360,containerHeight=203,metadata:any=null):number[]|null{
   const placement=String(slide?.hero_anchor||slide?.hero_placement||lesson?.default_hero_placement||'hidden');if(placement==='hidden')return null;
   const preferred=tuple(slide?.hero_box)||anchorBox(placement,slide,lesson);
-  const fallbacks=Array.from(new Set([...(slide?.hero_fallback_anchors||[]),...(lesson?.hero_layout?.fallback_order||[])]));
+  // An explicitly authored array is authoritative, including []. Partner-side
+  // scenes must never jump across the partner merely because the other side is roomier.
+  const fallbackSource=Array.isArray(slide?.hero_fallback_anchors)?slide.hero_fallback_anchors:(lesson?.hero_layout?.fallback_order||[]);
+  const fallbacks=Array.from(new Set(fallbackSource));
   const anchors=[{box:preferred,placement},...fallbacks.map(value=>({box:anchorBox(String(value),slide,lesson),placement:String(value)}))].filter(value=>value.box) as {box:RectTuple;placement:string}[];
   const forbidden=slideContentBoxes(slide);const minimumRatio=Math.max(.28,Math.min(.72,Number(slide?.hero_min_visual_height_ratio||lesson?.hero_layout?.min_visual_height_ratio||.48)));const visibleAspect=visibleCharacterAspect(metadata);
   for(const anchor of anchors){
-    const target=Math.min(anchor.box[3],Number(slide?.hero_target_visual_height_ratio||lesson?.hero_layout?.target_visual_height_ratio||.64));
+    const target=Math.min(anchor.box[3],Number(slide?.hero_target_visual_height_ratio||lesson?.hero_layout?.target_visual_height_ratio||.64)*AVATAR_PERCEPTUAL_SCALE);
     for(let height=target;height>=minimumRatio-.001;height-=.025){const candidate=fittedAtAnchor(anchor.box,height,anchor.placement,visibleAspect,containerWidth,containerHeight);if(candidate[3]>=minimumRatio-.001&&!forbidden.some(box=>rectanglesOverlap(candidate,box)))return candidate}
   }
   return null;
+}
+
+export function renderedPerceptualHeightRatio(child:RectTuple,partner:RectTuple,visibleAspect=1):number{
+  return child[3]/Math.max(.01,partner[3])*Math.max(1,Number(visibleAspect)||1)**.32;
 }
 
 export type PixelRect={x:number;y:number;width:number;height:number};
@@ -267,6 +289,15 @@ export function completeHelperLanguage(authored:string,fallback:string,maxLength
   const clean=(value:string)=>String(value||'').replace(/\s+/g,' ').trim();const primary=clean(authored);const translated=clean(fallback);
   const words=primary.split(/\s+/).filter(Boolean);const meaningful=primary.length>=14&&words.length>=3;
   return initialBilingualHint(meaningful?primary:(translated||primary),'PRE_A1',.15,maxLength);
+}
+
+export function interactionGuidance(slide:any):string{
+  const explicit=String(slide?.interaction_prompt_native||slide?.tap_instruction_native||'').trim();if(explicit)return explicit;
+  if(slide?.interaction_kind==='gift_selector')return 'Выбери подарок — нажми на одну из картинок выше.';
+  if(slide?.interactive_task==='suitcase')return 'Перетащи нужный предмет в чемодан.';
+  if(slide?.type==='card_selector'||slide?.interaction_kind==='card_question_sequence')return 'Выбери карточку — нажми на одну картинку выше.';
+  if(slide?.type==='animal_compare')return 'Выбери животное — нажми на его картинку.';
+  return 'Выбери ответ — нажми на подходящий предмет или картинку.';
 }
 
 export function droppedObjectTutorPrompt(label:string,currentPrompt:string):string{

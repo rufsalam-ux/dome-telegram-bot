@@ -4,7 +4,9 @@ import test from 'node:test';
 
 import {
   adaptiveCardQuestionText,
+  adaptiveModelPhrase,
   advanceAfterAssessment,
+  answerEnabled,
   cardQuestions,
   cardSelectionAllowed,
   cardVoiceKey,
@@ -16,6 +18,7 @@ import {
   heroBox,
   hasCorrectiveFeedback,
   initialBilingualHint,
+  interactionGuidance,
   isRequiredForMovie,
   LessonRuntimeTimeoutError,
   lessonLayoutPolicy,
@@ -24,6 +27,7 @@ import {
   nextEnabled,
   progressiveHint,
   recordEnabled,
+  renderedPerceptualHeightRatio,
   recordingGate,
   recoveryStageAfterFailure,
   rectanglesOverlap,
@@ -42,13 +46,14 @@ import {
   visualRequiredForSlide,
   withLessonTimeout,
 } from '../src/engine/lessonRuntime.ts';
-import {avatarCanvasStyle,avatarFacing,avatarGroundRatio,avatarScaleX,canonicalChildAvatarUri,lessonAvatarConfig,slideAvatarConfig,sourceAvatarFacing,visibleCharacterAspect,visibleCharacterBox} from '../src/engine/avatarRuntime.ts';
+import {avatarCanvasStyle,avatarFacing,avatarGroundRatio,avatarRenderTrace,avatarScaleX,canonicalChildAvatarUri,lessonAvatarConfig,slideAvatarConfig,sourceAvatarFacing,visibleCharacterAspect,visibleCharacterBox} from '../src/engine/avatarRuntime.ts';
 import {CAT_ACTIVITY_STATES,catProcessingState,catStateForStage} from '../src/engine/catRuntime.ts';
 import {mediaPhaseAfterEnd,normalizeMediaSequence,usesGenericMediaRuntime} from '../src/engine/mediaRuntime.ts';
 import {StartupTimeoutError,startupErrorText,withStartupTimeout} from '../src/engine/startup.ts';
 import bundledLesson from '../src/data/botLesson.json' with {type:'json'};
 import {buildRuntimeOrder} from '../src/data/lessonInteractions.ts';
 import {beginVisualAssetLoad,failVisualAsset,loadVisualAssetWithRetry,useLocalizedVisualAsset,visualAssetSourceForKey} from '../src/engine/visualAsset.ts';
+import {markPreSlideVideoShown,normalizePreSlideVideo,preSlideVideoKey,preSlideVideoTargetIndex,shouldShowPreSlideVideo} from '../src/engine/preSlideVideo.ts';
 
 const greeting={type:'guided_speaking',answer_mode:'required_voice',adaptive:true,bot_says_target:'Привет! Я рада тебя видеть. Как ты сегодня себя чувствуешь?',simplified_text:'Привет! У меня всё хорошо.'};
 const cards={slide_id:'slide_09',type:'card_selector',answer_mode:'none',card_question_sets:{A:[{id:'A1',text:'Назови три прилагательных.',pre_a1_text:'Ты добрый или весёлый?'},{id:'A2',text:'Второй?'},{id:'A3',text:'Третий?'}]}};
@@ -323,11 +328,19 @@ test('regression: avatar sizing and orientation are scene-relative for Lyosha an
   assert.ok(milaBox[3]>=.43);assert.ok(milaBox[0]+milaBox[2]<milaSlide.character_box[0]);assert.equal(avatarFacing(milaSlide,lesson),'right');assert.equal(avatarScaleX(avatarFacing(milaSlide,lesson),sourceAvatarFacing(geometry)),-1);
 });
 
+test('wide dinosaur is visibly large, remains left of Lyosha/Mila, and confirmed head side wins',()=>{
+  const lesson=lessonAvatarConfig(bundledLesson);const geometry={userConfirmed:true,canonicalFacing:'LEFT',facingDirection:'RIGHT',visibleAspectRatio:1.85,analysisVersion:'character-geometry-v3'};
+  for(const [slideId,minimum] of [['slide_19',.75],['slide_20',.75]] as const){const slide=slideAvatarConfig((bundledLesson.slides as any[]).find(item=>item.slide_id===slideId),bundledLesson.lesson_id);const box=heroBox(slide,lesson,360,203,geometry) as [number,number,number,number];const partner=slide.character_box as [number,number,number,number];assert.ok(box);assert.ok(box[0]+box[2]+.01<partner[0],`${slideId} must keep a visible left gap`);assert.ok(renderedPerceptualHeightRatio(box,partner,geometry.visibleAspectRatio)>=minimum,`${slideId} rendered silhouette is still too small`);assert.ok(Math.abs((box[1]+box[3])-(partner[1]+partner[3]))<.035,`${slideId} ground lines differ`);const trace=avatarRenderTrace(geometry,'right');assert.equal(trace.sourceFacing,'LEFT');assert.equal(trace.appliedFlip,true);assert.equal(trace.displayedFacing,'RIGHT')}
+  assert.equal(sourceAvatarFacing({userConfirmed:true,canonicalFacing:'UNKNOWN',facingDirection:'LEFT'}),'LEFT');
+});
+
 test('correction finishes TTS before Answer and preserves the correct Next policy',()=>{
   const correction={accepted:false,advance_allowed:true,correction_target:'I have a blue book.'};
   assert.equal(hasCorrectiveFeedback(correction),true);
   assert.equal(recordEnabled('AI_SPEAKING',greeting,true),false);
   assert.equal(recordEnabled('WAITING_VOICE',greeting,true),true);
+  for(const postTts of ['WAITING_VOICE','FEEDBACK','RETRY','FOLLOW_UP'] as const)assert.equal(answerEnabled(postTts,greeting,true,false,false),true);
+  assert.equal(answerEnabled('AI_SPEAKING',greeting,true,false,false),false);assert.equal(answerEnabled('WAITING_VOICE',greeting,true,true,false),false);
   assert.equal(nextEnabled('WAITING_VOICE',true,{requiredForMovie:false}),true);
   assert.equal(nextEnabled('WAITING_VOICE',true,{requiredForMovie:true,hasValidRecording:false}),false);
   assert.equal(nextEnabled('WAITING_VOICE',true,{requiredForMovie:true,hasValidRecording:true}),true);
@@ -350,8 +363,29 @@ test('confirmed geometry drives the same perceptual canvas and ground anchor',()
   assert.equal(visibleCharacterAspect(geometry),.595);assert.ok(avatarGroundRatio(geometry)>.95);
   const style=avatarCanvasStyle(geometry);assert.equal(style.position,'absolute');assert.match(style.left,/^-/);assert.match(style.width,/%$/);
   const confirmation=readFileSync(new URL('../src/screens/HeroConfirmScreen.tsx',import.meta.url),'utf8');
-  for(const marker of ['ГОЛОВА','ПЕРЕД','ЗАД','НОГИ / ОПОРА'])assert.match(confirmation,new RegExp(marker));
+  for(const marker of ['ГОЛОВА','ПЕРЕД','ЗАД','ЛЕВАЯ ЛАПА','ПРАВАЯ ЛАПА','НОГИ / ОПОРА'])assert.match(confirmation,new RegExp(marker));
   assert.match(confirmation,/PanResponder\.create/);assert.match(confirmation,/confirmHeroGeometry/);
+});
+
+test('My Hero flow is React Native safe and never calls browser reload APIs',()=>{
+  const sources=['../src/screens/HeroScreen.tsx','../src/screens/HeroConfirmScreen.tsx','../src/screens/RootApp.tsx'].map(path=>readFileSync(new URL(path,import.meta.url),'utf8')).join('\n');
+  assert.doesNotMatch(sources,/window\.|document\.|location\.reload|\.reload\s*\(/);assert.match(sources,/setScreen\('hero_confirm'\)/);assert.match(sources,/updateChild/);assert.match(sources,/setScreen\('home'\)/);
+});
+
+test('interaction waits explain the physical action and provide a highlighted target layer',()=>{
+  assert.match(interactionGuidance(mila),/подарок.*нажми/i);assert.match(interactionGuidance({interactive_task:'suitcase'}),/Перетащи/i);
+  const player=readFileSync(new URL('../src/screens/LessonPlayer.tsx',import.meta.url),'utf8');assert.match(player,/interaction-guidance/);assert.match(player,/interactionAttention/);
+});
+
+test('parrot remains movie-required and receives an adaptive natural target model',()=>{
+  const parrot=(bundledLesson.slides as any[]).find(slide=>slide.slide_id==='slide_44');assert.equal(parrot.requiredForMovie,true);assert.equal(isRequiredForMovie(parrot),true);assert.equal(nextEnabled('WAITING_VOICE',true,{requiredForMovie:true,hasValidRecording:false}),false);assert.equal(answerEnabled('RETRY',parrot,true,false,false),true);assert.match(adaptiveModelPhrase(parrot,'PRE_A1',.15),/Попугай.+красный.+красивый/);assert.match(adaptiveModelPhrase(parrot,'A2',.6),/живёт в тёплом месте/);
+});
+
+test('pre-slide video is a presentation hook and never changes the 27-step order',()=>{
+  const order=buildRuntimeOrder(bundledLesson.slides as any[]);const slides=order.map(item=>({...item}));slides[10]={...slides[10],preSlideVideo:{enabled:true,uri:'media/intro-11.mp4',skippable:true,showPolicy:'once_ever',autoplay:true}};
+  const state={attempt:[],ever:[]};const transition=preSlideVideoTargetIndex(9,slides,state);assert.equal(slides.length,27);assert.equal(transition.nextIndex,10);assert.equal(transition.video?.uri,'media/intro-11.mp4');assert.equal(shouldShowPreSlideVideo(slides[10],state),true);
+  const key=preSlideVideoKey(slides[10],normalizePreSlideVideo(slides[10])!);const shown=markPreSlideVideoShown(state,key);assert.equal(shouldShowPreSlideVideo(slides[10],shown),false);assert.equal(preSlideVideoTargetIndex(9,slides,shown).video,null);
+  assert.equal(normalizePreSlideVideo({preSlideVideo:{enabled:true,uri:''}}),null);const component=readFileSync(new URL('../src/components/PreSlideVideoStage.tsx',import.meta.url),'utf8');const api=readFileSync(new URL('../src/api/mobile.ts',import.meta.url),'utf8');assert.match(component,/contentFit='contain'/);assert.match(component,/finish\('failed'\)/);assert.match(component,/lessonMediaSource/);assert.ok((api.match(/useCaching:true/g)||[]).length>=2);
 });
 
 test('regression: cat state remains independent from child avatar identity',()=>{

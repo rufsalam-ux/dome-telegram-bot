@@ -32,7 +32,7 @@ from app.db.models import (
 from app.services import lesson_access, mobile_lesson_movie
 from app.services.audio_processing import VoiceActivity
 from app.services.conversational_tutor import TutorTurn
-from app.services.cartoon_builder import _probe_video, _render_windows, _resolve_normalized_timeline, _shift_timed_filters
+from app.services.cartoon_builder import AVATAR_PERCEPTUAL_SCALE, _probe_video, _render_windows, _resolve_normalized_timeline, _shift_timed_filters
 from app.services.mobile_lesson_movie import (
     MovieRenderInputs,
     build_mobile_lesson_movie,
@@ -97,7 +97,7 @@ def test_normalized_positions_resolve_to_floor_aligned_pixels():
     timeline = load_lesson()["timeline"]
     resolved = _resolve_normalized_timeline(timeline, 1920, 1080)
     for authored, pixels in zip(timeline, resolved):
-        assert pixels["height"] == round(authored["height_norm"] * 1080)
+        assert pixels["height"] == round(authored["height_norm"] * AVATAR_PERCEPTUAL_SCALE * 1080)
         assert pixels["y"] + pixels["height"] == round(authored["floor_y_norm"] * 1080)
 
 
@@ -285,9 +285,12 @@ async def test_scripted_mobile_demo_traverses_real_endpoints_and_reaches_ready_m
         await post_interactive(session_id,"slide_20","gift_selector",{"selected_gift_id":"book"});await post_voice(session_id,"slide_20","mila_gift","What did Mila bring you?")
         packed_items=["jacket","water","camera"]
         await post_interactive(session_id,"slide_24","suitcase",{"packed_items":packed_items,"selected":packed_items,"completed":True});await post_voice(session_id,"slide_24","take_trip","What will you take and why?")
+        video_key="slide_20:media/mila-intro.mp4";await post_interactive(session_id,"slide_20","pre_slide_video",{"video_key":video_key,"outcome":"ended","completed":True})
         resumed=await client.post("/api/mobile/session/start",headers=headers,json={"child_id":child_id,"lesson_id":"demo_001"});assert resumed.status==200
         resumed_payload=await resumed.json();assert resumed_payload["session_id"]==session_id and resumed_payload["resumed"] is True
         resumed_state=resumed_payload["interactive_state"]["slide_24"];assert resumed_state["packed_items"]==packed_items and resumed_state["selected"]==packed_items
+        assert resumed_payload["interactive_state"]["slide_20"]["selected_gift_id"]=="book"
+        assert resumed_payload["pre_slide_video_state"]=={"attempt":[video_key],"ever":[video_key]}
         await post_voice(session_id,"slide_47","zebra","Tell me about the zebra.")
         for phrase,prompt in (("penguin","What can a penguin do?"),("parrot","What color is the parrot?")):
             await post_interactive(session_id,"slide_46","animal_compare",{"selected_animal_id":phrase});await post_voice(session_id,"slide_46",phrase,prompt)
@@ -306,6 +309,8 @@ async def test_scripted_mobile_demo_traverses_real_endpoints_and_reaches_ready_m
         pending=[task for task in mobile_api._movie_tasks if not task.done()]
         if pending:await asyncio.wait_for(asyncio.gather(*pending),timeout=10)
         status=await client.get(f"/api/mobile/session/{session_id}/movie",headers=headers);movie=await status.json();assert movie["status"]=="READY" and movie["url"]
+        next_attempt=await client.post("/api/mobile/session/start",headers=headers,json={"child_id":child_id,"lesson_id":"demo_001"});next_payload=await next_attempt.json();assert next_attempt.status==200 and next_payload["session_id"]!=session_id
+        assert next_payload["pre_slide_video_state"]=={"attempt":[],"ever":[video_key]}
     finally:await client.close()
     async with sessions() as db:
         assert await db.scalar(select(func.count(InteractiveResult.id)))>=10

@@ -15,7 +15,7 @@ from app.core.config import settings
 
 
 log = logging.getLogger("dome.character_geometry")
-ANALYSIS_VERSION = "character-geometry-v2"
+ANALYSIS_VERSION = "character-geometry-v3"
 FACING_DIRECTIONS = {"LEFT", "RIGHT", "FRONT", "UNKNOWN"}
 
 
@@ -38,6 +38,12 @@ class CharacterGeometry:
     backPoint: list[float]
     frontLimbs: list[list[float]]
     rearLimbs: list[list[float]]
+    leftArmOrFrontLimb: list[float] | None
+    rightArmOrFrontLimb: list[float] | None
+    leftHandOrFrontPaw: list[float] | None
+    rightHandOrFrontPaw: list[float] | None
+    leftLegOrRearLimb: list[float] | None
+    rightLegOrRearLimb: list[float] | None
     feetAnchor: list[float]
     groundAnchor: list[float]
     tailBoundingBox: list[float] | None
@@ -91,6 +97,25 @@ def _boxes(value: object) -> list[list[float]]:
         if isinstance(item, list) and len(item) == 4:
             result.append(_box(item, [0.0, 0.0, 1.0, 1.0]))
     return result
+
+
+def _box_center(value: object) -> list[float] | None:
+    if not isinstance(value, list) or len(value) != 4:
+        return None
+    left, top, width, height = _box(value, [0.0, 0.0, 1.0, 1.0])
+    return [round(left + width / 2, 6), round(top + height / 2, 6)]
+
+
+def _limb_points(bbox: list[float], body_y: float, feet_y: float) -> tuple[list[float], list[float], list[float], list[float], list[float], list[float]]:
+    """Return conservative editable marker estimates, never render-time guesses."""
+
+    left, _top, width, height = bbox
+    arm_y = _clamp(body_y + height * 0.05)
+    paw_y = _clamp(body_y + height * 0.22)
+    leg_y = _clamp(feet_y - height * 0.08)
+    left_x = _clamp(left + width * 0.32)
+    right_x = _clamp(left + width * 0.68)
+    return ([left_x, arm_y], [right_x, arm_y], [left_x, paw_y], [right_x, paw_y], [left_x, leg_y], [right_x, leg_y])
 
 
 def _facing_sides(facing: str) -> tuple[str, str]:
@@ -165,6 +190,7 @@ def _alpha_geometry(path: Path) -> CharacterGeometry:
             ty1, ty2 = int(tail_y.min()), int(tail_y.max()) + 1
             tail_box = [tx1 / image_w, ty1 / image_h, (tx2 - tx1) / image_w, (ty2 - ty1) / image_h]
     tail_point = [back_x, body_cy] if tail_box else None
+    left_arm, right_arm, left_paw, right_paw, left_leg, right_leg = _limb_points(bbox, body_cy, feet_y_norm)
     return CharacterGeometry(
         characterBoundingBox=[round(item, 6) for item in bbox],
         sourceWidth=image_w,
@@ -183,6 +209,12 @@ def _alpha_geometry(path: Path) -> CharacterGeometry:
         backPoint=[round(back_x, 6), round(body_cy, 6)],
         frontLimbs=[],
         rearLimbs=[],
+        leftArmOrFrontLimb=left_arm,
+        rightArmOrFrontLimb=right_arm,
+        leftHandOrFrontPaw=left_paw,
+        rightHandOrFrontPaw=right_paw,
+        leftLegOrRearLimb=left_leg,
+        rightLegOrRearLimb=right_leg,
         feetAnchor=[round(feet_cx, 6), round(feet_y_norm, 6)],
         groundAnchor=[round(feet_cx, 6), round(feet_y_norm, 6)],
         tailBoundingBox=[round(item, 6) for item in tail_box] if tail_box else None,
@@ -208,6 +240,14 @@ def _normalized_provider_geometry(data: dict, fallback: CharacterGeometry) -> Ch
     source_width = max(1, int(data.get("sourceWidth") or fallback.sourceWidth))
     source_height = max(1, int(data.get("sourceHeight") or fallback.sourceHeight))
     visible_aspect = float(data.get("visibleAspectRatio") or ((source_width * bbox[2]) / max(1.0, source_height * bbox[3])))
+    front_limbs = _boxes(data.get("frontLimbs") or data.get("front_limbs")) or fallback.frontLimbs
+    rear_limbs = _boxes(data.get("rearLimbs") or data.get("rear_limbs")) or fallback.rearLimbs
+    left_arm = _point(data.get("leftArmOrFrontLimb") or data.get("left_arm_or_front_limb"), fallback.leftArmOrFrontLimb or fallback.frontPoint)
+    right_arm = _point(data.get("rightArmOrFrontLimb") or data.get("right_arm_or_front_limb"), fallback.rightArmOrFrontLimb or fallback.frontPoint)
+    left_paw = _point(data.get("leftHandOrFrontPaw") or data.get("left_hand_or_front_paw"), _box_center(front_limbs[0]) if front_limbs else fallback.leftHandOrFrontPaw or left_arm)
+    right_paw = _point(data.get("rightHandOrFrontPaw") or data.get("right_hand_or_front_paw"), _box_center(front_limbs[1]) if len(front_limbs) > 1 else fallback.rightHandOrFrontPaw or right_arm)
+    left_leg = _point(data.get("leftLegOrRearLimb") or data.get("left_leg_or_rear_limb"), _box_center(rear_limbs[0]) if rear_limbs else fallback.leftLegOrRearLimb or fallback.feetAnchor)
+    right_leg = _point(data.get("rightLegOrRearLimb") or data.get("right_leg_or_rear_limb"), _box_center(rear_limbs[1]) if len(rear_limbs) > 1 else fallback.rightLegOrRearLimb or fallback.feetAnchor)
     return CharacterGeometry(
         characterBoundingBox=bbox,
         sourceWidth=source_width,
@@ -224,8 +264,14 @@ def _normalized_provider_geometry(data: dict, fallback: CharacterGeometry) -> Ch
         backSide=str(data.get("backSide") or back_side).upper(),
         frontPoint=_point(data.get("frontPoint") or data.get("front_point"), fallback.frontPoint),
         backPoint=_point(data.get("backPoint") or data.get("back_point"), fallback.backPoint),
-        frontLimbs=_boxes(data.get("frontLimbs") or data.get("front_limbs")) or fallback.frontLimbs,
-        rearLimbs=_boxes(data.get("rearLimbs") or data.get("rear_limbs")) or fallback.rearLimbs,
+        frontLimbs=front_limbs,
+        rearLimbs=rear_limbs,
+        leftArmOrFrontLimb=left_arm,
+        rightArmOrFrontLimb=right_arm,
+        leftHandOrFrontPaw=left_paw,
+        rightHandOrFrontPaw=right_paw,
+        leftLegOrRearLimb=left_leg,
+        rightLegOrRearLimb=right_leg,
         feetAnchor=feet_anchor,
         groundAnchor=ground_anchor,
         tailBoundingBox=_optional_box(data.get("tailBoundingBox") or data.get("tail_bbox"), fallback.tailBoundingBox),
@@ -248,7 +294,9 @@ async def _vision_pass(path: Path, *, verification: bool = False) -> dict:
         + "Analyze exactly one transparent full-body child character. Return JSON only with: "
         "characterBoundingBox [left,top,width,height], headPoint, headBoundingBox, torsoBoundingBox, "
         "frontPoint, backPoint, feetAnchor, groundAnchor, optional tailBoundingBox and tailPoint, "
-        "frontLimbs and rearLimbs as arrays of boxes, facingDirection LEFT/RIGHT/FRONT/UNKNOWN, confidence 0..1. "
+        "frontLimbs and rearLimbs as arrays of boxes; leftArmOrFrontLimb, rightArmOrFrontLimb, "
+        "optional leftHandOrFrontPaw, rightHandOrFrontPaw, leftLegOrRearLimb and rightLegOrRearLimb as points; "
+        "facingDirection LEFT/RIGHT/FRONT/UNKNOWN, confidence 0..1. "
         "All coordinates are normalized to the complete image. LEFT means the character's head/nose points left; "
         "RIGHT means it points right. A side-profile dinosaur with head on the left and tail on the right is LEFT."
     )
@@ -298,12 +346,57 @@ def geometry_from_json(value: object) -> dict:
     return payload if isinstance(payload, dict) else {}
 
 
+def upgrade_character_geometry_payload(payload: dict) -> dict:
+    """Migrate legacy geometry without overwriting confirmed user truth."""
+
+    if not payload:
+        return {}
+    result = dict(payload)
+    bbox = _box(result.get("characterBoundingBox"), [0.0, 0.0, 1.0, 1.0])
+    head = _point(result.get("headPoint"), [result.get("headCenterX", bbox[0] + bbox[2] / 2), result.get("headCenterY", bbox[1] + bbox[3] * 0.25)])
+    feet = _point(result.get("feetAnchor") or result.get("groundAnchor"), [bbox[0] + bbox[2] / 2, bbox[1] + bbox[3]])
+    front_limbs = _boxes(result.get("frontLimbs") or result.get("front_limbs"))
+    rear_limbs = _boxes(result.get("rearLimbs") or result.get("rear_limbs"))
+    estimates = _limb_points(bbox, _clamp(result.get("bodyCenterY"), bbox[1] + bbox[3] * 0.58), feet[1])
+    tail = result.get("tailPoint")
+    canonical = str(result.get("canonicalFacing") or "UNKNOWN").upper()
+    saved_facing = str(result.get("facingDirection") or "UNKNOWN").upper()
+    facing = canonical if canonical in FACING_DIRECTIONS - {"UNKNOWN"} else saved_facing
+    if facing not in FACING_DIRECTIONS - {"UNKNOWN"}:
+        # Preserve the known truth of legacy side-profile drawings: head left
+        # and tail right means the source faces LEFT (and vice versa).
+        if isinstance(tail, (list, tuple)) and len(tail) == 2 and abs(float(tail[0]) - head[0]) > bbox[2] * 0.12:
+            facing = "LEFT" if head[0] < float(tail[0]) else "RIGHT"
+        else:
+            front = result.get("frontPoint")
+            back = result.get("backPoint")
+            if isinstance(front, (list, tuple)) and isinstance(back, (list, tuple)) and len(front) == len(back) == 2 and abs(float(front[0]) - float(back[0])) > bbox[2] * 0.12:
+                facing = "LEFT" if float(front[0]) < float(back[0]) else "RIGHT"
+            else:
+                facing = "FRONT"
+    result.update({
+        "headPoint": head, "headCenterX": head[0], "headCenterY": head[1],
+        "feetAnchor": feet, "groundAnchor": feet,
+        "frontLimbs": front_limbs, "rearLimbs": rear_limbs,
+        "leftArmOrFrontLimb": _point(result.get("leftArmOrFrontLimb") or result.get("left_arm_or_front_limb"), _box_center(front_limbs[0]) if front_limbs else estimates[0]),
+        "rightArmOrFrontLimb": _point(result.get("rightArmOrFrontLimb") or result.get("right_arm_or_front_limb"), _box_center(front_limbs[1]) if len(front_limbs) > 1 else estimates[1]),
+        "leftHandOrFrontPaw": _point(result.get("leftHandOrFrontPaw") or result.get("left_hand_or_front_paw"), estimates[2]),
+        "rightHandOrFrontPaw": _point(result.get("rightHandOrFrontPaw") or result.get("right_hand_or_front_paw"), estimates[3]),
+        "leftLegOrRearLimb": _point(result.get("leftLegOrRearLimb") or result.get("left_leg_or_rear_limb"), _box_center(rear_limbs[0]) if rear_limbs else estimates[4]),
+        "rightLegOrRearLimb": _point(result.get("rightLegOrRearLimb") or result.get("right_leg_or_rear_limb"), _box_center(rear_limbs[1]) if len(rear_limbs) > 1 else estimates[5]),
+        "facingDirection": facing, "canonicalFacing": facing,
+        "frontSide": _facing_sides(facing)[0], "backSide": _facing_sides(facing)[1],
+        "analysisVersion": ANALYSIS_VERSION,
+    })
+    return result
+
+
 def confirm_character_geometry(current: dict, submitted: dict) -> dict:
     """Merge bounded user marker corrections into the durable render contract."""
 
     if not current:
         raise ValueError("Character geometry is not available")
-    result = dict(current)
+    result = upgrade_character_geometry_payload(current)
     facing = str(submitted.get("facingDirection") or submitted.get("canonicalFacing") or current.get("facingDirection") or "UNKNOWN").upper()
     if facing not in FACING_DIRECTIONS - {"UNKNOWN"}:
         raise ValueError("facingDirection must be LEFT, RIGHT or FRONT")
@@ -322,6 +415,9 @@ def confirm_character_geometry(current: dict, submitted: dict) -> dict:
         "confirmedAt": datetime.now(timezone.utc).isoformat(),
         "analysisVersion": ANALYSIS_VERSION,
     })
+    for key in ("leftArmOrFrontLimb", "rightArmOrFrontLimb", "leftHandOrFrontPaw", "rightHandOrFrontPaw", "leftLegOrRearLimb", "rightLegOrRearLimb"):
+        if key in submitted:
+            result[key] = _point(submitted.get(key), result.get(key) or feet)
     if "tailPoint" in submitted:
         result["tailPoint"] = _point(submitted.get("tailPoint"), current.get("tailPoint") or back)
     return result

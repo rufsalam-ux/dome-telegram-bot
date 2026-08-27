@@ -18,8 +18,11 @@ from app.services.character_geometry import (
     confirm_character_geometry,
     geometry_from_json,
     geometry_status,
+    upgrade_character_geometry_payload,
 )
 from app.services.lesson_runtime import VOICE_FEEDBACK_STATES, classify_voice_feedback
+from app.services.animation_engine.character_motion_library import CharacterMotionLibrary
+from app.services.authored_content import _validate_pre_slide_video
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -57,6 +60,9 @@ async def test_head_left_dinosaur_geometry_is_analyzed_once_and_persistable(tmp_
     assert payload["frontSide"] == "LEFT" and payload["backSide"] == "RIGHT"
     assert payload["feetAnchor"] == payload["groundAnchor"]
     assert payload["tailPoint"][0] > payload["headPoint"][0]
+    assert payload["leftArmOrFrontLimb"] and payload["rightArmOrFrontLimb"]
+    assert payload["leftHandOrFrontPaw"] and payload["rightHandOrFrontPaw"]
+    assert payload["leftLegOrRearLimb"] and payload["rightLegOrRearLimb"]
     assert geometry_status(geometry) == "READY"
     assert geometry_from_json(json.dumps(payload)) == payload
     assert set(Character.__table__.columns.keys()) >= {
@@ -74,6 +80,16 @@ async def test_head_left_dinosaur_geometry_is_analyzed_once_and_persistable(tmp_
     assert confirmed["canonicalFacing"] == "LEFT"
     assert confirmed["confirmedAt"]
     assert geometry_status(confirmed) == "CONFIRMED"
+
+
+def test_confirmed_legacy_metadata_migrates_without_losing_head_left_truth():
+    legacy={"analysisVersion":"character-geometry-v2","userConfirmed":True,"characterBoundingBox":[0,.05,.98,.9],"headPoint":[.15,.2],"tailPoint":[.9,.55],"feetAnchor":[.5,.95],"facingDirection":"UNKNOWN","confidence":.91}
+    upgraded=upgrade_character_geometry_payload(legacy)
+    assert upgraded["analysisVersion"]==ANALYSIS_VERSION
+    assert upgraded["userConfirmed"] is True
+    assert upgraded["canonicalFacing"]==upgraded["facingDirection"]=="LEFT"
+    for key in ("leftArmOrFrontLimb","rightArmOrFrontLimb","leftHandOrFrontPaw","rightHandOrFrontPaw","leftLegOrRearLimb","rightLegOrRearLimb"):
+        assert len(upgraded[key])==2
 
 
 def test_visible_bbox_drives_scale_baseline_and_source_orientation(tmp_path):
@@ -103,6 +119,26 @@ def test_visible_bbox_drives_scale_baseline_and_source_orientation(tmp_path):
     assert placed["height"] <= 200
     assert placed["y"] + placed["height"] == 900
     assert placed["x"] + round(placed["height"] * aspect) < 450
+
+
+def test_avatar_animation_library_is_cache_first_and_versioned(tmp_path):
+    avatar=tmp_path/"avatar.png";_head_left_dinosaur(avatar);clip=tmp_path/"talk.mp4";clip.write_bytes(b"x"*12000)
+    library=CharacterMotionLibrary(tmp_path,avatar,avatar_id=77)
+    saved=library.register("sig",clip,description_ru="Говорит",speaking=True,view="side_right",duration=5,animation_key="talk",direction="right",generation_version="avatar-motion-v1")
+    assert saved.exists() and saved.stat().st_size==12000
+    assert library.find_compatible("talk",direction="right",duration=5,generation_version="avatar-motion-v1")==saved
+    manifest=json.loads(library.manifest_path.read_text("utf-8"));item=manifest["motions"]["sig"]
+    assert manifest["version"]==2 and manifest["avatar_id"]=="77"
+    for key in ("avatar_id","source_avatar_hash","animation_key","direction","duration","transparent_background","asset_uri","generation_version","created_at"):
+        assert key in item
+
+
+def test_pre_slide_video_content_contract_is_optional_and_strict():
+    assert _validate_pre_slide_video({},"slide 1")==[]
+    good={"preSlideVideo":{"enabled":True,"uri":"media/intro.mp4","skippable":True,"showPolicy":"once_ever","autoplay":True}}
+    assert _validate_pre_slide_video(good,"slide 1")==[]
+    assert any("needs uri" in error for error in _validate_pre_slide_video({"preSlideVideo":{"enabled":True}},"slide 1"))
+    assert any("showPolicy" in error for error in _validate_pre_slide_video({"preSlideVideo":{"uri":"x.mp4","showPolicy":"sometimes"}},"slide 1"))
 
 
 def test_voice_feedback_states_are_mutually_exclusive_and_never_accept_silence():
@@ -161,6 +197,7 @@ def test_lyosha_mila_parrot_and_required_movie_contract_remain_authored():
     assert "parrot" in required
     parrot_slide = next(item for item in lesson["slides"] if item["slide_id"] == "slide_44")
     assert parrot_slide["required_phrase_id"] == "parrot"
+    assert parrot_slide["requiredForMovie"] is True
     assert parrot_slide["allow_skip"] is False
     animal_flow = next(item for item in lesson["slides"] if item["slide_id"] == "slide_46")
     assert "parrot" in {item["phrase_id"] for item in animal_flow["animal_questions"]}

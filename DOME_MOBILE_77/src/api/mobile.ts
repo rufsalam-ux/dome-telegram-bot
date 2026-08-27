@@ -152,7 +152,7 @@ export async function lessonVisualSource(lessonId:string,imagePath:string,childI
 
 export async function lessonMediaSource(lessonId:string,mediaPath:string){
   const value=String(mediaPath||'').trim();
-  if(/^https?:\/\//i.test(value))return {uri:value};
+  if(/^https?:\/\//i.test(value))return {uri:value,useCaching:true};
   const filename=value.split('/').pop()||'';
   return {
     uri:`${API_BASE}/api/mobile/lesson/${encodeURIComponent(lessonId)}/media/${encodeURIComponent(filename)}`,

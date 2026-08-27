@@ -19,16 +19,16 @@ const DEMO_001_LAYOUT:{lesson:any;slides:Record<string,AvatarSlideLayout>}={
     default_hero_placement:'right',
     hero_layout:{
       anchors:{
-        left:[0.02,0.30,0.44,0.66],
-        right:[0.54,0.30,0.44,0.66],
-        bottom_left:[0.02,0.46,0.44,0.50],
-        bottom_right:[0.54,0.46,0.44,0.50],
-        left_of_lyosha:[0.02,0.38,0.39,0.44],
-        left_of_mila:[0.04,0.49,0.50,0.46],
+        left:[0.01,0.27,0.48,0.69],
+        right:[0.51,0.27,0.48,0.69],
+        bottom_left:[0.01,0.42,0.48,0.54],
+        bottom_right:[0.51,0.42,0.48,0.54],
+        left_of_lyosha:[0.005,0.32,0.397,0.52],
+        left_of_mila:[0.01,0.40,0.548,0.55],
       },
       fallback_order:['left','right','bottom_left','bottom_right'],
-      target_visual_height_ratio:.64,
-      min_visual_height_ratio:.32,
+      target_visual_height_ratio:.69,
+      min_visual_height_ratio:.36,
     },
   },
   slides:{
@@ -41,8 +41,8 @@ const DEMO_001_LAYOUT:{lesson:any;slides:Record<string,AvatarSlideLayout>}={
     slide_08:{hero_visibility:'hidden'},
     slide_17:{hero_visibility:'scene',hero_anchor:'right',hero_box:[0.76,0.38,0.22,0.56],hero_facing:'left',protected_character_boxes:[[0.22,0.22,0.55,0.66]]},
     slide_18:{hero_visibility:'hidden'},
-    slide_19:{hero_visibility:'scene',hero_anchor:'left_of_lyosha',hero_box:[0.02,0.40,0.386,0.44],hero_fallback_anchors:[],hero_facing:'right',hero_target_visual_height_ratio:.44,hero_min_visual_height_ratio:.36,protected_character_boxes:[[0.42,0.28,0.24,0.56]]},
-    slide_20:{hero_visibility:'scene',hero_anchor:'left_of_mila',hero_box:[0.04,0.49,0.50,0.46],hero_fallback_anchors:[],hero_facing:'right',hero_target_visual_height_ratio:.44,hero_min_visual_height_ratio:.36,protected_character_boxes:[[0.58,0.34,0.22,0.61]]},
+    slide_19:{hero_visibility:'scene',hero_anchor:'left_of_lyosha',hero_box:[0.005,0.32,0.397,0.52],hero_fallback_anchors:[],hero_facing:'right',hero_target_visual_height_ratio:.52,hero_min_visual_height_ratio:.38,protected_character_boxes:[[0.42,0.28,0.24,0.56]]},
+    slide_20:{hero_visibility:'scene',hero_anchor:'left_of_mila',hero_box:[0.01,0.40,0.548,0.55],hero_fallback_anchors:[],hero_facing:'right',hero_target_visual_height_ratio:.55,hero_min_visual_height_ratio:.40,protected_character_boxes:[[0.58,0.34,0.22,0.61]]},
     slide_21:{hero_visibility:'scene',hero_anchor:'right',hero_box:[0.74,0.43,0.24,0.51],hero_facing:'left',protected_character_boxes:[[0.26,0.38,0.46,0.56]],content_boxes:[[0.16,0.03,0.66,0.30]]},
     slide_22:{hero_visibility:'hidden'},
     slide_23:{hero_visibility:'hidden'},
@@ -91,7 +91,8 @@ export function avatarFacing(slide:any,lesson:any):AvatarFacing{
 }
 
 export function sourceAvatarFacing(metadata:any):SourceAvatarFacing{
-  const value=String(metadata?.facingDirection||'UNKNOWN').toUpperCase() as SourceAvatarFacing;
+  const canonical=String(metadata?.canonicalFacing||'UNKNOWN').toUpperCase() as SourceAvatarFacing;const saved=String(metadata?.facingDirection||'UNKNOWN').toUpperCase() as SourceAvatarFacing;
+  const value=(['LEFT','RIGHT','FRONT'].includes(canonical)?canonical:saved) as SourceAvatarFacing;
   return ['LEFT','RIGHT','FRONT'].includes(value)?value:'UNKNOWN';
 }
 
@@ -100,6 +101,13 @@ export function avatarScaleX(desired:AvatarFacing,source:SourceAvatarFacing='UNK
   if(source==='LEFT')return desired==='left'?1:-1;
   if(source==='RIGHT')return desired==='right'?1:-1;
   return desired==='left'?-1:1;
+}
+
+export type AvatarRenderTrace={sourceFacing:SourceAvatarFacing;desiredFacing:AvatarFacing;appliedFlip:boolean;displayedFacing:SourceAvatarFacing;confirmed:boolean;analysisVersion:string};
+export function avatarRenderTrace(metadata:any,desiredFacing:AvatarFacing):AvatarRenderTrace{
+  const sourceFacing=sourceAvatarFacing(metadata);const scaleX=avatarScaleX(desiredFacing,sourceFacing);let displayedFacing=sourceFacing;
+  if(scaleX<0&&sourceFacing==='LEFT')displayedFacing='RIGHT';else if(scaleX<0&&sourceFacing==='RIGHT')displayedFacing='LEFT';
+  return {sourceFacing,desiredFacing,appliedFlip:scaleX<0,displayedFacing,confirmed:metadata?.userConfirmed===true,analysisVersion:String(metadata?.analysisVersion||'legacy')};
 }
 
 export function visibleCharacterBox(metadata:any):[number,number,number,number]{

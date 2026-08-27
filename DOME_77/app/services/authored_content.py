@@ -115,6 +115,19 @@ def _validate_media_sequence(slide: dict[str, Any], label: str) -> list[str]:
     return errors
 
 
+def _validate_pre_slide_video(slide: dict[str, Any], label: str) -> list[str]:
+    raw=slide.get("preSlideVideo",slide.get("pre_slide_video"))
+    if raw is None:return []
+    if not isinstance(raw,dict):return [f"{label}: preSlideVideo must be an object"]
+    errors=[];uri=str(raw.get("uri") or raw.get("src") or raw.get("url") or "").strip()
+    if raw.get("enabled") is not False and not uri:errors.append(f"{label}: enabled preSlideVideo needs uri/src/url")
+    policy=str(raw.get("showPolicy") or raw.get("show_policy") or "once_per_attempt")
+    if policy not in {"every_attempt","once_per_attempt","once_ever"}:errors.append(f"{label}: unsupported preSlideVideo showPolicy {policy}")
+    for key in ("enabled","skippable","autoplay"):
+        if key in raw and not isinstance(raw[key],bool):errors.append(f"{label}: preSlideVideo {key} must be boolean")
+    return errors
+
+
 def bundled_lessons_root() -> Path:
     return settings.content_root / "lessons"
 
@@ -237,6 +250,7 @@ def _validate_slide(slide: dict[str, Any], i: int, prefix: str = "slide") -> lis
     if kind not in SUPPORTED_CONTENT_TYPES:
         return [f"{label}: unsupported type {kind}"]
     errors.extend(_validate_media_sequence(slide, label))
+    errors.extend(_validate_pre_slide_video(slide,label))
     required_for_movie = slide.get("requiredForMovie") is True or slide.get("required_for_movie") is True
     if required_for_movie and not str(slide.get("moviePhraseId") or slide.get("required_phrase_id") or "").strip():
         errors.append(f"{label}: requiredForMovie needs moviePhraseId/required_phrase_id")

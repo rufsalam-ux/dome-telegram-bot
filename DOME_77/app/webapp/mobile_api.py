@@ -14,7 +14,7 @@ from app.services.lesson_loader import LessonConfigurationError, load_lesson
 from app.services.lesson_access import can_start,complete_session_once,mark_cartoon_generated
 from app.services.preset_characters import preset_character_geometry,preset_character_path,list_preset_characters
 from app.services.character_processor import process_character
-from app.services.character_geometry import ANALYSIS_VERSION,analyze_character_geometry,confirm_character_geometry,geometry_from_json,geometry_status
+from app.services.character_geometry import ANALYSIS_VERSION,analyze_character_geometry,confirm_character_geometry,geometry_from_json,geometry_status,upgrade_character_geometry_payload
 from app.services.audio_processing import VoiceActivity, analyze_voice_activity, prepare_child_voice
 from app.services.speech_pipeline import SpeechAssessment, assess_speech
 from app.services.lesson_runtime import apply_adaptive_assessment,classify_voice_feedback,complexity_support,correction_for_assessment,no_speech_feedback,voice_attempt_outcome
@@ -97,14 +97,25 @@ def _child_json(request:web.Request,c:Child,character:Character|None=None)->dict
 
 async def _ensure_character_geometry(character:Character)->dict:
     payload=geometry_from_json(character.visual_metadata_json)
-    if payload.get('userConfirmed') is True:return payload
+    if payload.get('userConfirmed') is True:
+        upgraded=upgrade_character_geometry_payload(payload)
+        if upgraded!=payload or character.visual_analysis_version!=ANALYSIS_VERSION:
+            character.visual_metadata_json=json.dumps(upgraded,ensure_ascii=False)
+            character.visual_analysis_version=ANALYSIS_VERSION
+            character.visual_analysis_status='CONFIRMED'
+        return upgraded
     if payload and character.visual_analysis_version==ANALYSIS_VERSION:return payload
     path=Path(character.processed_path or character.original_path)
     if not path.exists():return {}
     if character.catalog_id:
         payload=preset_character_geometry(character.catalog_id)
     else:
-        payload=(await analyze_character_geometry(path,allow_remote=False)).payload()
+        try:payload=(await analyze_character_geometry(path,allow_remote=False)).payload()
+        except Exception as exc:
+            log.warning('CHARACTER_GEOMETRY_BACKFILL_FAILED character_id=%s error=%s',character.id,exc)
+            character.visual_analysis_status='NEEDS_REVIEW'
+            return payload
+    payload=upgrade_character_geometry_payload(payload)
     character.visual_metadata_json=json.dumps(payload,ensure_ascii=False)
     character.visual_analysis_version=ANALYSIS_VERSION
     character.visual_analysis_status=geometry_status(payload)
@@ -125,6 +136,7 @@ async def _mobile_resume_state(db, session_id:int)->tuple[dict,list[str]]:
     rows=(await db.scalars(select(InteractiveResult).where(InteractiveResult.lesson_session_id==session_id).order_by(InteractiveResult.id))).all()
     state={}
     for row in rows:
+        if row.task_type=='pre_slide_video':continue
         try:state[row.slide_id]=json.loads(row.result_json or '{}')
         except (TypeError,ValueError,json.JSONDecodeError):continue
     voices=(await db.scalars(select(VoiceAttempt).where(VoiceAttempt.lesson_session_id==session_id).order_by(VoiceAttempt.id))).all()
@@ -134,11 +146,24 @@ async def _mobile_resume_state(db, session_id:int)->tuple[dict,list[str]]:
     return state,accepted
 
 
-def _session_payload(sess:LessonSession,ent,child:Child,*,resumed:bool,interactive_state:dict,recorded_phrases:list[str])->dict:
+async def _mobile_pre_slide_video_state(db,child_id:int,lesson_id:str,current_session_id:int)->dict:
+    rows=(await db.execute(select(InteractiveResult,LessonSession).join(LessonSession,LessonSession.id==InteractiveResult.lesson_session_id).where(LessonSession.child_id==child_id,LessonSession.lesson_id==lesson_id,InteractiveResult.task_type=='pre_slide_video').order_by(InteractiveResult.id))).all()
+    attempt=[];ever=[]
+    for row,session in rows:
+        try:payload=json.loads(row.result_json or '{}')
+        except (TypeError,ValueError,json.JSONDecodeError):continue
+        key=str(payload.get('video_key') or '').strip()
+        if not key:continue
+        if key not in ever:ever.append(key)
+        if session.id==current_session_id and key not in attempt:attempt.append(key)
+    return {'attempt':attempt,'ever':ever}
+
+
+def _session_payload(sess:LessonSession,ent,child:Child,*,resumed:bool,interactive_state:dict,recorded_phrases:list[str],pre_slide_video_state:dict|None=None)->dict:
     return {
         'session_id':sess.id,'run_number':int(ent.completed_runs or 0)+1,'lesson_id':sess.lesson_id,
         'current_step':int(sess.current_step or 0),'resumed':resumed,'interactive_state':interactive_state,
-        'recorded_phrases':recorded_phrases,'adaptive_profile':{
+        'recorded_phrases':recorded_phrases,'pre_slide_video_state':pre_slide_video_state or {'attempt':[],'ever':[]},'adaptive_profile':{
             'language_level':child.language_level or 'PRE_A1',
             'working_difficulty':float(child.working_difficulty or 0.15),
         },
@@ -366,6 +391,10 @@ async def lesson_media(request:web.Request)->web.StreamResponse:
             source=str(item.get('src') or item.get('url') or '')
             if source and not source.lower().startswith(('http://','https://')):
                 references[Path(source).name]=source
+        presentation=slide.get('preSlideVideo') or slide.get('pre_slide_video') or {}
+        if isinstance(presentation,dict) and presentation.get('enabled') is not False:
+            source=str(presentation.get('uri') or presentation.get('src') or presentation.get('url') or '')
+            if source and not source.lower().startswith(('http://','https://')):references[Path(source).name]=source
     relative=references.get(filename)
     if not relative:raise web.HTTPNotFound()
     base=((settings.storage_root/'authored-content'/'lessons'/lid) if data.get('content_source')=='persistent' else (settings.content_root/'lessons'/lid)).resolve();path=(base/relative).resolve()
@@ -446,9 +475,11 @@ async def session_start(request:web.Request)->web.Response:
         if existing:
             await ensure_movie_voice_slots(db,existing.id,lesson_data);await db.commit()
             interactive_state,recorded_phrases=await _mobile_resume_state(db,existing.id)
-            return web.json_response(_session_payload(existing,ent,c,resumed=True,interactive_state=interactive_state,recorded_phrases=recorded_phrases))
+            video_state=await _mobile_pre_slide_video_state(db,cid,lid,existing.id)
+            return web.json_response(_session_payload(existing,ent,c,resumed=True,interactive_state=interactive_state,recorded_phrases=recorded_phrases,pre_slide_video_state=video_state))
         sess=LessonSession(child_id=cid,lesson_id=lid,current_step=0,status='IN_PROGRESS',level_at_start=c.language_level or 'PRE_A1',lesson_revision=int(lesson_data.get('revision') or 1),runtime_state_json=json.dumps({'source':'mobile'},ensure_ascii=False));db.add(sess);await db.flush();await ensure_movie_voice_slots(db,sess.id,lesson_data);await db.commit();await db.refresh(sess)
-    return web.json_response(_session_payload(sess,ent,c,resumed=False,interactive_state={},recorded_phrases=[]))
+        video_state=await _mobile_pre_slide_video_state(db,cid,lid,sess.id)
+    return web.json_response(_session_payload(sess,ent,c,resumed=False,interactive_state={},recorded_phrases=[],pre_slide_video_state=video_state))
 
 async def session_progress(request:web.Request)->web.Response:
     p=await _parent(request);sid=int(request.match_info['session_id']);data=await request.json()
@@ -551,7 +582,9 @@ async def voice(request:web.Request)->web.Response:
             outcome=replace(outcome,status='MOVIE_USABLE_WITH_SUPPORT',accepted=False,advance_allowed=True,needs_retry=False)
             movie_take_accepted=True
     status=outcome.status;accepted=outcome.accepted
-    authored_example=str(ph.get('simplified_text') or sl.get('simplified_text') or ph.get('target_text') or goal);correction_target=correction_for_assessment(accepted=accepted,semantic_match=assessment.semantic_match,attempt_number=attempt_number,ai_correction=assessment.corrected_target,authored_example=authored_example,goal=goal)
+    simple_example=str(ph.get('simplified_text') or sl.get('simplified_text') or ph.get('target_text') or goal);richer_example=str(ph.get('richer_model_text') or sl.get('richer_model_text') or '')
+    authored_example=richer_example if richer_example and str(c.language_level or '').upper()!='PRE_A1' and float(c.working_difficulty or 0)>=.45 else simple_example
+    correction_target=correction_for_assessment(accepted=accepted,semantic_match=assessment.semantic_match,attempt_number=attempt_number,ai_correction=assessment.corrected_target,authored_example=authored_example,goal=goal)
     feedback=assessment.feedback_native or assessment.response_native or assessment.response_target
     tutor_turn=assessment.tutor_turn
     if tutor_turn and not accepted and correction_target:
@@ -682,7 +715,9 @@ async def complete(request:web.Request)->web.Response:
             movie_contract_error=exc;log.exception('MOBILE_MOVIE_CONTRACT_INVALID lesson=%s',sess.lesson_id)
     movie_lesson_data={**lesson_data,'timeline':movie_contract.timeline} if movie_contract else lesson_data
     async with SessionLocal() as db:
-        voices=(await db.scalars(select(VoiceAttempt).where(VoiceAttempt.lesson_session_id==sid).order_by(VoiceAttempt.id))).all();char=await db.get(Character,c.active_character_id) if c.active_character_id else None;slots=await ensure_movie_voice_slots(db,sid,movie_lesson_data);await db.commit()
+        voices=(await db.scalars(select(VoiceAttempt).where(VoiceAttempt.lesson_session_id==sid).order_by(VoiceAttempt.id))).all();char=await db.get(Character,c.active_character_id) if c.active_character_id else None
+        if char:await _ensure_character_geometry(char)
+        slots=await ensure_movie_voice_slots(db,sid,movie_lesson_data);await db.commit()
     audio_by_phrase,missing_exact=select_movie_voice_takes(voices,movie_lesson_data)
     if movie_contract and missing_exact:
         raise web.HTTPConflict(text=json.dumps({'error':'Нужно записать все обязательные реплики для мультфильма.','code':'REQUIRED_MOVIE_RECORDINGS_MISSING','missing_phrase_ids':missing_exact},ensure_ascii=False),content_type='application/json')
