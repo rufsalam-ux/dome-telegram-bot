@@ -422,6 +422,20 @@ test('cold startup is isolated from lesson native modules and cannot wait foreve
   assert.equal(startupFailure(new TypeError('Network request failed')).code,'BACKEND_NETWORK');
 });
 
+test('root touch diagnostic bypasses the app runtime and exposes native touch evidence',()=>{
+  const entry=readFileSync(new URL('../index.js',import.meta.url),'utf8');
+  const diagnostic=readFileSync(new URL('../src/diagnostics/RootTouchDiagnostic.tsx',import.meta.url),'utf8');
+  assert.match(entry,/EXPO_PUBLIC_DOME_TOUCH_DIAGNOSTIC/);
+  assert.match(entry,/require\(['"]\.\/src\/diagnostics\/RootTouchDiagnostic['"]\)/);
+  assert.match(entry,/require\(['"]\.\/App['"]\)/);
+  for(const marker of ['TOUCH TEST','GLOBAL TAP COUNT','TOUCH X/Y','BUTTON PRESS COUNT','GLOBAL_TOUCH_RECEIVED','RETRY_PRESS_RECEIVED','BUILD HASH'])assert.match(diagnostic,new RegExp(marker));
+  assert.match(diagnostic,/onTouchStart=\{handleGlobalTouch\}/);
+  assert.match(diagnostic,/disabled=\{false\}/);
+  assert.match(diagnostic,/collapsable=\{false\}/);
+  assert.match(diagnostic,/pointerEvents='auto'/);
+  assert.doesNotMatch(diagnostic,/SafeArea|ErrorBoundary|GestureHandler|Modal|Audio|Haptic|position:\s*['"]absolute|from ['"]\.\.?\//);
+});
+
 test('programmatic demo flow has no early record, duplicate answer, or dead end',()=>{
   let stage=stageAfterTutorSpeech(cards,false);assert.equal(stage,'WAITING_ACTION');assert.equal(recordEnabled(stage,cards,false),false);
   stage=stageAfterTutorSpeech(cards,true);assert.equal(stage,'WAITING_VOICE');assert.equal(recordEnabled(stage,cards,true),true);
