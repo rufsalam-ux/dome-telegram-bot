@@ -368,8 +368,9 @@ test('confirmed geometry drives the same perceptual canvas and ground anchor',()
 });
 
 test('My Hero flow is React Native safe and never calls browser reload APIs',()=>{
-  const sources=['../src/screens/HeroScreen.tsx','../src/screens/HeroConfirmScreen.tsx','../src/screens/RootApp.tsx'].map(path=>readFileSync(new URL(path,import.meta.url),'utf8')).join('\n');
-  assert.doesNotMatch(sources,/window\.|document\.|location\.reload|\.reload\s*\(/);assert.match(sources,/setScreen\('hero_confirm'\)/);assert.match(sources,/updateChild/);assert.match(sources,/setScreen\('home'\)/);
+  const sources=['../App.tsx','../index.js','../src/screens/HeroScreen.tsx','../src/screens/HeroConfirmScreen.tsx','../src/screens/RootApp.tsx','../src/store/AppStore.tsx'].map(path=>readFileSync(new URL(path,import.meta.url),'utf8')).join('\n');
+  assert.doesNotMatch(sources,/\bwindow\s*\.|\bdocument\s*\.|\blocation\s*\.\s*reload|\.\s*reload\s*\(/);assert.match(sources,/setScreen\('hero_confirm'\)/);assert.match(sources,/updateChild/);assert.match(sources,/setScreen\('home'\)/);
+  assert.match(sources,/EXPO_PUBLIC_BUILD_COMMIT/);assert.match(sources,/dome-build-marker/);
 });
 
 test('interaction waits explain the physical action and provide a highlighted target layer',()=>{

@@ -3,6 +3,10 @@ import { LogBox, Pressable, StatusBar, Text, View } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { logStartupStage } from './src/engine/startup';
 
+const BUILD_COMMIT=(process.env.EXPO_PUBLIC_BUILD_COMMIT||'unmarked').trim();
+const BUILD_TIMESTAMP=(process.env.EXPO_PUBLIC_BUILD_TIMESTAMP||'unknown-time').trim();
+export const BUILD_MARKER=`BUILD ${BUILD_COMMIT.slice(0,12)} / ${BUILD_TIMESTAMP}`;
+
 const LazyAppRuntime=React.lazy(()=>import('./src/AppRuntime').then(module=>{
   logStartupStage('APP_RUNTIME_LOADED');
   return {default:module.AppRuntime};
@@ -33,7 +37,12 @@ export default function App() {
     <SafeAreaProvider>
       <SafeAreaView edges={['top', 'left', 'right']} style={{ flex: 1, backgroundColor: '#F7F7FB' }}>
         <StatusBar barStyle="dark-content" />
-        <RootErrorBoundary><Suspense fallback={<View style={{flex:1,alignItems:'center',justifyContent:'center',padding:24}}><Text style={{fontSize:18,color:'#42475C'}}>Открываем DOME…</Text></View>}><LazyAppRuntime/></Suspense></RootErrorBoundary>
+        <View style={{flex:1}}>
+          <RootErrorBoundary><Suspense fallback={<View style={{flex:1,alignItems:'center',justifyContent:'center',padding:24}}><Text style={{fontSize:18,color:'#42475C'}}>Открываем DOME…</Text></View>}><LazyAppRuntime/></Suspense></RootErrorBoundary>
+          <View pointerEvents='none' accessibilityLabel={BUILD_MARKER} style={{position:'absolute',right:6,bottom:3,zIndex:9999,borderRadius:5,backgroundColor:'rgba(0,0,0,.66)',paddingHorizontal:5,paddingVertical:2}}>
+            <Text testID='dome-build-marker' style={{color:'#fff',fontSize:9,fontWeight:'700'}}>{BUILD_MARKER}</Text>
+          </View>
+        </View>
       </SafeAreaView>
     </SafeAreaProvider>
   );
