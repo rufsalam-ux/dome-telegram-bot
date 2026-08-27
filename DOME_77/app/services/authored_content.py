@@ -22,6 +22,16 @@ CONTENT_TYPE_ALIASES = {
     "reading_aloud": "read_aloud",
     "echo_read": "echo_reading",
     "joint_reading": "shared_reading",
+    # Content Studio task-template vocabulary. These aliases configure stable
+    # runtime mechanics; they never inject executable lesson code.
+    "info": "passive",
+    "listen": "passive",
+    "multiple_choice": "choice",
+    "ordering": "sequence",
+    "image_hotspots": "interactive_scene",
+    "repeat_phrase": "repeat",
+    "open_dialogue": "dialogue",
+    "required_movie_phrase": "voice_answer",
 }
 
 SUPPORTED_CONTENT_TYPES = {
@@ -30,11 +40,15 @@ SUPPORTED_CONTENT_TYPES = {
     "word_builder", "syllable_builder", "sentence_builder", "fill_gap", "odd_one_out", "sound_position", "syllable_split",
     "find_in_text", "connect_lines", "handwriting_screen", "draw", "coloring", "maze", "dictation", "listen_choose",
     "read_aloud", "read_roles", "echo_reading", "shared_reading", "comprehension", "retell", "continue_story", "dialogue", "repeat", "speak",
-    "video_pause_question", "interactive_scene", "real_world_find", "photo_task", "physical_action", "mood_choice",
+    "video_pause_question", "interactive_scene", "real_world_find", "photo_task", "physical_action", "mood_choice", "puzzle",
+    # Existing DOME 77 Lesson 1 mechanics remain first-class data during its
+    # lossless Studio migration. The mobile runtime already executes them.
+    "guided_speaking", "presentation", "card_selector", "choice_card", "guided_scene", "transition",
+    "drag_and_drop", "animal_compare", "animal_riddle", "personal_travel_story",
 } | set(CONTENT_TYPE_ALIASES)
 
 SUPPORTED_MEDIA_TYPES = {"image", "video", "animation", "youtube", "audio"}
-PUBLICATION_STATUSES = {"DRAFT", "PUBLISHED"}
+PUBLICATION_STATUSES = {"DRAFT", "PUBLISHED", "ARCHIVED"}
 
 
 def canonical_content_type(kind: str | None) -> str:
@@ -245,13 +259,14 @@ def _valid_point(p: Any) -> bool:
 
 def _validate_slide(slide: dict[str, Any], i: int, prefix: str = "slide") -> list[str]:
     errors: list[str] = []
-    kind = str(slide.get("type") or "passive")
+    raw_kind = str(slide.get("type") or "passive").strip().lower()
+    kind = canonical_content_type(raw_kind)
     label = f"{prefix} {i}"
     if kind not in SUPPORTED_CONTENT_TYPES:
         return [f"{label}: unsupported type {kind}"]
     errors.extend(_validate_media_sequence(slide, label))
     errors.extend(_validate_pre_slide_video(slide,label))
-    required_for_movie = slide.get("requiredForMovie") is True or slide.get("required_for_movie") is True
+    required_for_movie = raw_kind == "required_movie_phrase" or slide.get("requiredForMovie") is True or slide.get("required_for_movie") is True
     if required_for_movie and not str(slide.get("moviePhraseId") or slide.get("required_phrase_id") or "").strip():
         errors.append(f"{label}: requiredForMovie needs moviePhraseId/required_phrase_id")
     if required_for_movie and slide.get("allow_skip") is True:
@@ -292,6 +307,20 @@ def _validate_slide(slide: dict[str, Any], i: int, prefix: str = "slide") -> lis
         pairs = list(slide.get("pairs") or [])
         if len(pairs) < 2:
             errors.append(f"{label}: {kind} needs at least 2 pairs")
+
+    if kind == "puzzle":
+        try:
+            pieces = int(slide.get("pieces") or slide.get("piece_count") or 0)
+        except (TypeError, ValueError):
+            pieces = 0
+        has_image = bool(slide.get("image_file") or any(
+            isinstance(item, dict) and item.get("type") == "image" and (item.get("src") or item.get("url"))
+            for item in (slide.get("media_sequence") or [])
+        ))
+        if pieces < 2 or pieces > 24:
+            errors.append(f"{label}: puzzle needs 2..24 pieces")
+        if not has_image:
+            errors.append(f"{label}: puzzle needs an image")
 
     if kind in {"tap_sound", "interactive_scene"}:
         hotspots = list(slide.get("hotspots") or [])
@@ -394,7 +423,7 @@ def validate_content_lesson(data: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     explicit_status = str(data.get("status") or "").strip().upper()
     if explicit_status and explicit_status not in PUBLICATION_STATUSES:
-        errors.append("status must be draft or published")
+        errors.append("status must be draft, published or archived")
     if str(data.get("engine") or "").lower() == "content_v1" and not str(data.get("schema_version") or "").strip():
         errors.append("missing schema_version")
     for key in ["lesson_id", "course_id", "title", "order"]:
@@ -411,6 +440,7 @@ def validate_content_lesson(data: dict[str, Any]) -> list[str]:
         errors.append("lesson needs at least one slide")
         return errors
     seen_ids: set[str] = set()
+    seen_orders: set[int] = set()
     for i, slide in enumerate(slides, 1):
         sid = str(slide.get("slide_id") or "")
         if not sid:
@@ -418,6 +448,15 @@ def validate_content_lesson(data: dict[str, Any]) -> list[str]:
         elif sid in seen_ids:
             errors.append(f"slide {i}: duplicate slide_id {sid}")
         seen_ids.add(sid)
+        try:
+            order = int(slide.get("order") or 0)
+        except (TypeError, ValueError):
+            order = 0
+        if order < 1:
+            errors.append(f"slide {i}: order must be positive")
+        elif order in seen_orders:
+            errors.append(f"slide {i}: duplicate order {order}")
+        seen_orders.add(order)
         errors.extend(_validate_slide(slide, i, "slide"))
     return errors
 

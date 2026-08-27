@@ -33,6 +33,14 @@ MEDIA_EXTENSIONS = {
 }
 
 
+def _require_enabled() -> None:
+    if not settings.content_studio_enabled:
+        raise web.HTTPServiceUnavailable(
+            text=json.dumps({"error": "Content Studio is disabled"}),
+            content_type="application/json",
+        )
+
+
 def _lesson_id(value: Any) -> str:
     lesson_id = str(value or "").strip().lower()
     if not LESSON_ID_RE.fullmatch(lesson_id):
@@ -41,6 +49,7 @@ def _lesson_id(value: Any) -> str:
 
 
 def _authorized(request: web.Request) -> None:
+    _require_enabled()
     expected = settings.content_studio_token.strip()
     if not expected:
         raise web.HTTPServiceUnavailable(
@@ -113,14 +122,15 @@ def _summary(lesson_id: str) -> dict[str, Any]:
     live = _read_json(_live_path(lesson_id))
     current = draft or live or {}
     persistent_live = persistent_lessons_root() / lesson_id / "lesson.json"
+    lifecycle = publication_status(live or current) if (live or current) else "DRAFT"
     return {
         "lesson_id": lesson_id,
         "title": str(current.get("title") or lesson_id),
         "course_id": str(current.get("course_id") or "conversation"),
         "order": int(current.get("order") or 9999),
         "draft": draft is not None,
-        "published": live is not None and publication_status(live) == "PUBLISHED",
-        "publication_status": "PUBLISHED" if live is not None and publication_status(live) == "PUBLISHED" else "DRAFT",
+        "published": live is not None and lifecycle == "PUBLISHED" and bool(live.get("active", True)),
+        "publication_status": lifecycle,
         "source": "persistent" if persistent_live.exists() else "bundled",
         "slide_count": len(current.get("slides") or []),
         "revision": int((live or current).get("revision") or 1),
@@ -128,6 +138,7 @@ def _summary(lesson_id: str) -> dict[str, Any]:
 
 
 async def studio_page(_: web.Request) -> web.FileResponse:
+    _require_enabled()
     response = web.FileResponse(Path(__file__).parent / "static" / "content_studio.html")
     response.headers["Cache-Control"] = "no-store"
     return response
@@ -170,6 +181,9 @@ async def create_lesson(request: web.Request) -> web.Response:
         "max_completed_runs": 2,
         "expires_after_months": 10,
         "target_language": str(data.get("target_language") or "en"),
+        "age_min": max(2, int(data.get("age_min") or 4)),
+        "age_max": max(2, int(data.get("age_max") or 10)),
+        "difficulty": str(data.get("difficulty") or "PRE_A1"),
         "native_language_mode": "child_profile",
         "slides": [],
         "revision": 1,
@@ -218,6 +232,32 @@ async def save_lesson(request: web.Request) -> web.Response:
     _atomic_json(_draft_path(lesson_id), lesson)
     _audit("LESSON_DRAFT_SAVED", lesson_id, slide_count=len(lesson.get("slides") or []))
     return web.json_response({"lesson": lesson, "summary": _summary(lesson_id), "validation_errors": validate_content_lesson(lesson)})
+
+
+async def reorder_lessons(request: web.Request) -> web.Response:
+    """Save author-selected catalog order as drafts; children stay on live revisions."""
+
+    _authorized(request)
+    data = await request.json()
+    orders = data.get("orders")
+    if not isinstance(orders, dict) or not orders:
+        raise web.HTTPBadRequest(text=json.dumps({"error": "orders object is required"}), content_type="application/json")
+    changed: list[str] = []
+    for raw_id, raw_order in orders.items():
+        lesson_id = _lesson_id(raw_id)
+        lesson = _editable_lesson(lesson_id)
+        if lesson is None:
+            raise web.HTTPNotFound(text=json.dumps({"error": f"Lesson {lesson_id} not found"}), content_type="application/json")
+        try:
+            order = max(1, int(raw_order))
+        except (TypeError, ValueError) as exc:
+            raise web.HTTPBadRequest(text=json.dumps({"error": f"Invalid order for {lesson_id}"}), content_type="application/json") from exc
+        draft = json.loads(json.dumps(lesson))
+        draft.update({"lesson_id": lesson_id, "engine": "content_v1", "schema_version": str(draft.get("schema_version") or "2.1"), "order": order, "active": False, "status": "draft", "import_status": "DRAFT"})
+        _atomic_json(_draft_path(lesson_id), draft)
+        _audit("LESSON_ORDER_DRAFTED", lesson_id, order=order)
+        changed.append(lesson_id)
+    return web.json_response({"ok": True, "changed": changed, "lessons": sorted((_summary(item) for item in _all_lesson_ids()), key=lambda item: (item["course_id"], item["order"], item["lesson_id"]))})
 
 
 async def duplicate_lesson(request: web.Request) -> web.Response:
@@ -299,6 +339,26 @@ async def publish_lesson(request: web.Request) -> web.Response:
     return web.json_response({"lesson": candidate, "summary": _summary(lesson_id)})
 
 
+async def archive_lesson(request: web.Request) -> web.Response:
+    """Explicitly hide a live lesson without deleting its versions or media."""
+
+    _authorized(request)
+    lesson_id = _lesson_id(request.match_info["lesson_id"])
+    source = _editable_lesson(lesson_id)
+    if source is None:
+        raise web.HTTPNotFound()
+    root = ensure_persistent_lesson(lesson_id)
+    if (root / "lesson.json").exists():
+        backup_lesson_version(lesson_id, "before_archive")
+    archived = json.loads(json.dumps(source))
+    archived.update({"lesson_id": lesson_id, "engine": "content_v1", "schema_version": str(archived.get("schema_version") or "2.1"), "active": False, "status": "archived", "import_status": "ARCHIVED"})
+    archived["revision"] = max(1, int(archived.get("revision") or 1)) + 1
+    _atomic_json(root / "lesson.json", archived)
+    _draft_path(lesson_id).unlink(missing_ok=True)
+    _audit("LESSON_ARCHIVED", lesson_id, revision=archived["revision"])
+    return web.json_response({"lesson": archived, "summary": _summary(lesson_id)})
+
+
 async def rollback_lesson(request: web.Request) -> web.Response:
     _authorized(request)
     lesson_id = _lesson_id(request.match_info["lesson_id"])
@@ -374,6 +434,7 @@ def register_content_studio_routes(app: web.Application) -> None:
     app.router.add_get("/api/studio/status", studio_status)
     app.router.add_get("/api/studio/lessons", list_lessons)
     app.router.add_post("/api/studio/lessons", create_lesson)
+    app.router.add_post("/api/studio/lessons/reorder", reorder_lessons)
     app.router.add_get("/api/studio/lessons/{lesson_id}", get_lesson)
     app.router.add_put("/api/studio/lessons/{lesson_id}", save_lesson)
     app.router.add_delete("/api/studio/lessons/{lesson_id}", delete_lesson)
@@ -381,6 +442,7 @@ def register_content_studio_routes(app: web.Application) -> None:
     app.router.add_post("/api/studio/lessons/{lesson_id}/validate", validate_lesson)
     app.router.add_get("/api/studio/lessons/{lesson_id}/preview", preview_lesson)
     app.router.add_post("/api/studio/lessons/{lesson_id}/publish", publish_lesson)
+    app.router.add_post("/api/studio/lessons/{lesson_id}/archive", archive_lesson)
     app.router.add_post("/api/studio/lessons/{lesson_id}/rollback", rollback_lesson)
     app.router.add_post("/api/studio/lessons/{lesson_id}/media", upload_media)
     app.router.add_get("/api/studio/lessons/{lesson_id}/media/{filename}", studio_media)

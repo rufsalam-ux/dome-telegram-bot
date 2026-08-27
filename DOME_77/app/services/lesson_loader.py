@@ -14,12 +14,12 @@ REMOVED_SLIDE_IDS = {"slide_02", *{f"slide_{n:02d}" for n in range(25, 40)}}
 REMOVED_ORDERS = {2, *range(25, 40)}
 
 
-def _runtime_slides(slides: list[dict], lesson_id: str) -> list[dict]:
+def _runtime_slides(slides: list[dict], lesson_id: str, *, content_engine: str = "") -> list[dict]:
     """Apply the historic DOME 77 cut only to its original lesson.
 
     Studio-authored lessons may legitimately use step_02 or orders 25..39.
     """
-    if lesson_id != "demo_001":
+    if lesson_id != "demo_001" or content_engine.lower() == "content_v1":
         return list(slides)
     result = []
     for slide in slides:
@@ -110,6 +110,11 @@ def load_lesson(lesson_id: str, *, preview: bool = False) -> dict:
         if not errors:
             selected = lesson, path
             break
+        # An explicit persistent archive is a publication tombstone for a
+        # bundled lesson. Broken edits may fall back; deliberate archive may not.
+        if not preview and path.parent.parent == persistent_lessons_root() and publication_status(lesson) == "ARCHIVED":
+            diagnostics.extend(f"{path}: {error}" for error in errors)
+            break
         diagnostics.extend(f"{path}: {error}" for error in errors)
         if preview and path.parent.parent == persistent_lessons_root():
             break
@@ -128,7 +133,9 @@ def load_lesson(lesson_id: str, *, preview: bool = False) -> dict:
                 lesson["timeline"] = external_timeline
         except Exception:
             pass
-    lesson["slides"] = [_enrich_runtime_layout(slide) for slide in _runtime_slides(lesson.get("slides") or [], lesson_id)]
+    lesson["slides"] = [_enrich_runtime_layout(slide) for slide in _runtime_slides(
+        lesson.get("slides") or [], lesson_id, content_engine=str(lesson.get("engine") or "")
+    )]
     bad = [s for s in lesson["slides"] if lesson_id == "demo_001" and int(s.get("order", 0) or 0) in REMOVED_ORDERS]
     if bad:
         raise RuntimeError(f"Removed slides leaked into runtime: {[s.get('slide_id') for s in bad]}")

@@ -74,8 +74,12 @@ class Settings(BaseSettings):
     mobile_auth_secret: str = ""
     # Separate owner credential for the browser-based Content Studio. It is
     # intentionally unrelated to Telegram ids and mobile parent sessions.
+    content_studio_enabled: bool = True
     content_studio_token: str = ""
     content_studio_max_upload_mb: int = 250
+    # The renderer must always retain the existing static-PNG movie path when
+    # this additive animation engine is disabled or cannot prepare a motion.
+    avatar_animation_engine_enabled: bool = True
     email_delivery_provider: str = "smtp"
     resend_api_key: str = ""
     resend_api_url: str = "https://api.resend.com/emails"

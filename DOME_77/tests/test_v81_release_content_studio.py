@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app.core.config import settings
 from app.db.models import Base, Child, LessonEntitlement, Parent
 from app.services import lesson_access
-from app.services.lesson_loader import load_lesson
+from app.services.lesson_loader import LessonConfigurationError, _runtime_slides, load_lesson
 from app.services.mobile_tokens import issue_session_token
 from app.webapp import content_studio, mobile_api
 
@@ -95,6 +95,67 @@ async def test_content_studio_draft_publish_versioned_media_and_rollback(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_content_studio_reorder_archive_and_feature_gate(monkeypatch, tmp_path):
+    storage = tmp_path / "storage"
+    content = tmp_path / "content"
+    (content / "lessons").mkdir(parents=True)
+    (content / "courses").mkdir(parents=True)
+    monkeypatch.setattr(settings, "storage_root", storage)
+    monkeypatch.setattr(settings, "content_root", content)
+    monkeypatch.setattr(settings, "content_studio_token", "owner-secret")
+    monkeypatch.setattr(settings, "content_studio_enabled", True)
+    app = web.Application()
+    content_studio.register_content_studio_routes(app)
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    headers = {"Authorization": "Bearer owner-secret"}
+    try:
+        for lesson_id in ("order_a", "order_b"):
+            created = await client.post("/api/studio/lessons", headers=headers, json={"lesson_id": lesson_id, "title": lesson_id})
+            lesson = (await created.json())["lesson"]
+            lesson["slides"] = [_slide()]
+            await client.put(f"/api/studio/lessons/{lesson_id}", headers=headers, json={"lesson": lesson})
+            assert (await client.post(f"/api/studio/lessons/{lesson_id}/publish", headers=headers)).status == 200
+        reordered = await client.post("/api/studio/lessons/reorder", headers=headers, json={"orders": {"order_b": 1, "order_a": 2}})
+        assert reordered.status == 200
+        assert (storage / "authored-content/lessons/order_b/draft.json").exists()
+        await client.post("/api/studio/lessons/order_b/publish", headers=headers)
+        archived = await client.post("/api/studio/lessons/order_a/archive", headers=headers)
+        assert archived.status == 200
+        assert (await archived.json())["summary"]["publication_status"] == "ARCHIVED"
+        with pytest.raises(LessonConfigurationError):
+            load_lesson("order_a")
+        assert load_lesson("order_b")["order"] == 1
+        monkeypatch.setattr(settings, "content_studio_enabled", False)
+        assert (await client.get("/api/studio/status", headers=headers)).status == 503
+        assert load_lesson("order_b")["lesson_id"] == "order_b"
+    finally:
+        await client.close()
+
+
+def test_demo_001_studio_migration_preserves_runtime_step_sequence():
+    source = json.loads((Path(__file__).resolve().parents[1] / "content/lessons/demo_001/lesson.json").read_text("utf-8"))
+    before = _runtime_slides(source["slides"], "demo_001", content_engine="")
+    migrated = json.loads(json.dumps(source))
+    migrated.update({
+        "engine": "content_v1", "schema_version": "2.1", "status": "published", "active": True,
+        "max_completed_runs": 2, "expires_after_months": 10,
+    })
+    for order, slide in enumerate(migrated["slides"], 1):
+        slide["order"] = order
+    assert content_studio.validate_content_lesson(migrated) == []
+    after = _runtime_slides(migrated["slides"], "demo_001", content_engine="content_v1")
+    assert [slide["slide_id"] for slide in after] == [slide["slide_id"] for slide in before]
+    assert [slide["type"] for slide in after] == [slide["type"] for slide in before]
+
+
+def test_content_studio_ui_has_native_authoring_lifecycle_and_drag_reorder():
+    html = (Path(__file__).resolve().parents[1] / "app/webapp/static/content_studio.html").read_text("utf-8")
+    for marker in ("data-step-handle", "text/dome-lesson", "archiveLesson", "preSlideVideo", "required_movie_phrase", "puzzle"):
+        assert marker in html
+
+
+@pytest.mark.asyncio
 async def test_mobile_catalog_discovers_new_published_lesson_without_apk_rebuild(monkeypatch, tmp_path):
     storage = tmp_path / "storage"
     content = tmp_path / "content"
@@ -156,7 +217,8 @@ def test_release_mobile_runtime_uses_server_selected_lesson_and_production_api()
     app = (root / "src/screens/RootApp.tsx").read_text("utf-8")
     env = (root / ".env.example").read_text("utf-8")
     assert "getLesson(lessonId)" in player and "startSession(child.id,lessonId)" in player
-    assert "listLessons(child.id)" in app and "<LazyLessonPlayer lessonId={activeLessonId}" in app
+    assert "listLessons(child.id)" in app
+    assert "require('./LessonPlayer')" in app and "<LessonPlayer lessonId={activeLessonId}" in app
     assert "dome-telegram-bot-production.up.railway.app" in env
 
 

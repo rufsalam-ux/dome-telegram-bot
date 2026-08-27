@@ -11,7 +11,7 @@
     "course_id": {"type": "string", "minLength": 1},
     "title": {"type": "string", "minLength": 1},
     "order": {"type": "integer", "minimum": 1},
-    "status": {"enum": ["draft", "published"]},
+    "status": {"enum": ["draft", "published", "archived"]},
     "active": {"type": "boolean"},
     "max_completed_runs": {"const": 2},
     "expires_after_months": {"const": 10},
