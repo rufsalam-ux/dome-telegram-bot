@@ -412,6 +412,8 @@ test('cold startup is isolated from lesson native modules and cannot wait foreve
   assert.doesNotMatch(root,/import\s+\{LessonPlayer\}\s+from/);assert.match(root,/React\.lazy/);assert.match(root,/withStartupTimeout/);
   assert.doesNotMatch(ui,/import\s+\{?\s*useAudioPlayer/);assert.match(ui,/import\(['"]expo-audio['"]\)/);assert.match(ui,/onPress\(\);void playTapSound\(\)/);
   assert.match(app,/key=\{runtimeAttempt\}/);assert.match(app,/setRuntimeAttempt\(value=>value\+1\)/);assert.match(app,/startup-error-code/);
+  assert.match(app,/RETRY_PRESS_RECEIVED/);assert.match(app,/RETRY TAP: \{this\.props\.retryTapCount\}/);assert.match(app,/ERROR CODE: \{failure\.code\}/);assert.match(app,/disabled=\{false\}/);assert.match(app,/onPress=\{this\.props\.onRetryPress\}/);assert.match(app,/setRetryTapCount\(nextTap\);setRetrying\(true\)/);
+  assert.ok(app.indexOf('<RootErrorBoundary')<app.indexOf('<SafeAreaProvider>'));assert.match(app,/<BuildMarker fatal\/>/);assert.doesNotMatch(app,/<Button\b/);
   for(const stage of ['APP_MOUNT','SECURESTORE_DONE','BACKEND_BOOTSTRAP_DONE','NAV_READY','FIRST_SCREEN_RENDERED'])assert.match(app+root,new RegExp(`['"]${stage}['"]`));
   await assert.rejects(withStartupTimeout(new Promise(()=>{}),'bootstrap',5),error=>error instanceof StartupTimeoutError&&error.stage==='bootstrap');
   assert.match(startupErrorText(new StartupTimeoutError('secure_store',5)),/сохранённый вход/);
