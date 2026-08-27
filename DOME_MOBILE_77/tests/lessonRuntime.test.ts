@@ -410,11 +410,11 @@ test('cold startup is isolated from lesson native modules and cannot wait foreve
   assert.doesNotMatch(app,/from ['"]\.\/src\/store\/AppStore['"]/);assert.doesNotMatch(app,/from ['"]\.\/src\/screens\/RootApp['"]/);assert.match(app,/React\.lazy\(\(\)=>import\(['"]\.\/src\/AppRuntime['"]\)/);
   assert.doesNotMatch(mobileApi,/^import .*expo-(file-system|secure-store)/m);assert.match(mobileApi,/import\(['"]expo-secure-store['"]\)/);
   assert.doesNotMatch(root,/import\s+\{LessonPlayer\}\s+from/);assert.match(root,/React\.lazy/);assert.match(root,/withStartupTimeout/);
-  assert.doesNotMatch(ui,/import\s+\{?\s*useAudioPlayer/);assert.match(ui,/import\(['"]expo-audio['"]\)/);assert.match(ui,/onPress\(\);void playTapSound\(\)/);
-  assert.match(app,/key=\{runtimeAttempt\}/);assert.match(app,/setRuntimeAttempt\(value=>value\+1\)/);assert.match(app,/startup-error-code/);
-  assert.match(app,/RETRY_PRESS_RECEIVED/);assert.match(app,/RETRY TAP: \{this\.props\.retryTapCount\}/);assert.match(app,/ERROR CODE: \{failure\.code\}/);assert.match(app,/disabled=\{false\}/);assert.match(app,/onPress=\{this\.props\.onRetryPress\}/);assert.match(app,/setRetryTapCount\(nextTap\);setRetrying\(true\)/);
-  assert.ok(app.indexOf('<RootErrorBoundary')<app.indexOf('<SafeAreaProvider>'));assert.match(app,/<BuildMarker fatal\/>/);assert.doesNotMatch(app,/<Button\b/);
-  for(const stage of ['APP_MOUNT','SECURESTORE_DONE','BACKEND_BOOTSTRAP_DONE','NAV_READY','FIRST_SCREEN_RENDERED'])assert.match(app+root,new RegExp(`['"]${stage}['"]`));
+  assert.doesNotMatch(ui,/import\s+\{?\s*useAudioPlayer/);assert.match(ui,/import\(['"]expo-audio['"]\)/);assert.ok(ui.indexOf('onPress();')<ui.indexOf('Vibration.vibrate(8)'));assert.match(ui,/DOME_TAP_HAPTIC_UNAVAILABLE/);
+  assert.match(app,/key=\{runtimeAttempt\}/);assert.match(app,/setRuntimeAttempt\(value=>value\+1\)/);assert.match(app,/fatal-boot-error/);
+  assert.match(app,/RETRY_PRESS_RECEIVED/);assert.match(app,/BOOT STAGE:/);assert.match(app,/BOOT ERROR:/);assert.match(app,/RETRY COUNT:/);assert.match(app,/disabled=\{false\}/);assert.match(app,/onPress=\{this\.props\.onRetryPress\}/);
+  assert.ok(app.indexOf('<RootErrorBoundary')<app.indexOf('<SafeAreaProvider>'));assert.doesNotMatch(app,/<Button\b/);
+  for(const stage of ['APP_MOUNT','STORE_RESTORE','SESSION_RESTORE','BACKEND_HEALTH','PROFILE_LOAD','NAVIGATION_READY','APP_READY','FIRST_SCREEN_RENDERED'])assert.match(app+root,new RegExp(`['"]${stage}['"]`));
   await assert.rejects(withStartupTimeout(new Promise(()=>{}),'bootstrap',5),error=>error instanceof StartupTimeoutError&&error.stage==='bootstrap');
   assert.match(startupErrorText(new StartupTimeoutError('secure_store',5)),/сохранённый вход/);
   assert.equal(rootRuntimeFailure(new Error('Cannot construct ExpoAudio AudioPlayer shared object')).code,'UI_AUDIO_INIT');
@@ -422,18 +422,19 @@ test('cold startup is isolated from lesson native modules and cannot wait foreve
   assert.equal(startupFailure(new TypeError('Network request failed')).code,'BACKEND_NETWORK');
 });
 
-test('root touch diagnostic bypasses the app runtime and exposes native touch evidence',()=>{
+test('normal root replaces the temporary touch diagnostic and retries bootstrap in process',()=>{
   const entry=readFileSync(new URL('../index.js',import.meta.url),'utf8');
-  const diagnostic=readFileSync(new URL('../src/diagnostics/RootTouchDiagnostic.tsx',import.meta.url),'utf8');
-  assert.match(entry,/EXPO_PUBLIC_DOME_TOUCH_DIAGNOSTIC/);
-  assert.match(entry,/require\(['"]\.\/src\/diagnostics\/RootTouchDiagnostic['"]\)/);
+  const app=readFileSync(new URL('../App.tsx',import.meta.url),'utf8');
+  const root=readFileSync(new URL('../src/screens/RootApp.tsx',import.meta.url),'utf8');
+  const metro=readFileSync(new URL('../metro.config.js',import.meta.url),'utf8');
+  assert.doesNotMatch(entry,/RootTouchDiagnostic|EXPO_PUBLIC_DOME_TOUCH_DIAGNOSTIC/);
   assert.match(entry,/require\(['"]\.\/App['"]\)/);
-  for(const marker of ['TOUCH TEST','GLOBAL TAP COUNT','TOUCH X/Y','BUTTON PRESS COUNT','GLOBAL_TOUCH_RECEIVED','RETRY_PRESS_RECEIVED','BUILD HASH'])assert.match(diagnostic,new RegExp(marker));
-  assert.match(diagnostic,/onTouchStart=\{handleGlobalTouch\}/);
-  assert.match(diagnostic,/disabled=\{false\}/);
-  assert.match(diagnostic,/collapsable=\{false\}/);
-  assert.match(diagnostic,/pointerEvents='auto'/);
-  assert.doesNotMatch(diagnostic,/SafeArea|ErrorBoundary|GestureHandler|Modal|Audio|Haptic|position:\s*['"]absolute|from ['"]\.\.?\//);
+  assert.match(root,/setBootAttempt\(value=>value\+1\)/);assert.match(root,/setStartupError\(null\);setSessionReady\(false\)/);
+  assert.match(root,/bootstrap-retry-button/);assert.doesNotMatch(root,/window\.|document\.|location\.reload/);
+  assert.doesNotMatch(app,/window\.|document\.|location\.reload/);assert.match(app,/failure\.stack/);assert.match(app,/failingLocation/);assert.match(app,/failingFunction/);
+  assert.match(metro,/__dome_startup/);assert.match(metro,/DOME_DEVICE_BEACON/);assert.match(metro,/statusCode=204/);
+  const error=new Error('Synthetic bootstrap crash');error.stack='Error: Synthetic bootstrap crash\n    at restoreSession (src/store/AppStore.tsx:88:12)';
+  const failure=rootRuntimeFailure(error,'STORE_RESTORE');assert.equal(failure.stage,'STORE_RESTORE');assert.equal(failure.failingFunction,'restoreSession');assert.match(failure.failingLocation,/AppStore\.tsx:88:12/);
 });
 
 test('programmatic demo flow has no early record, duplicate answer, or dead end',()=>{

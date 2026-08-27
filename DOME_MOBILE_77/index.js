@@ -6,11 +6,7 @@ globalThis.__DOME_STARTUP_BEACON_ORIGIN__=String(NativeModules?.SourceCode?.scri
 logStartupStage('ENTRY_EVALUATION');
 
 try {
-  const useRootTouchDiagnostic=process.env.EXPO_PUBLIC_DOME_TOUCH_DIAGNOSTIC==='1';
-  const App=useRootTouchDiagnostic
-    ?require('./src/diagnostics/RootTouchDiagnostic').default
-    :require('./App').default;
-  if(useRootTouchDiagnostic)console.log('[DOME_TOUCH] TOUCH_DIAGNOSTIC_ROOT_SELECTED');
+  const App=require('./App').default;
   logStartupStage('APP_MODULE_LOADED');
   registerRootComponent(App);
   logStartupStage('ROOT_REGISTERED');
