@@ -13,11 +13,12 @@ class CharacterRig:
     parts: dict[str, str] = field(default_factory=dict)
     joints: dict[str, Any] = field(default_factory=dict)
     capabilities: set[str] = field(default_factory=set)
+    capability_map: dict[str, bool] = field(default_factory=dict)
     provider: str = "fallback_png"
     source_png: str | None = None
 
     def supports(self, capability: str) -> bool:
-        return capability in self.capabilities
+        return bool(self.capability_map.get(capability)) or capability in self.capabilities
 
 @dataclass(slots=True)
 class MotionCommand:

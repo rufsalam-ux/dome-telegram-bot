@@ -42,7 +42,7 @@ def test_final_render_is_bounded_and_nonblocking():
     assert 'asyncio.wait_for' in H
     assert 'allow_generate=allow_generate' in CART
     assert 'TemporaryDirectory' in CART and 'filter_complex_threads", "1"' in CART
-    assert 'allow_generate:bool=True' in RUNTIME
+    assert 'allow_generate: bool = True' in RUNTIME
 
 
 def test_new_clean_animal_assets_are_present():

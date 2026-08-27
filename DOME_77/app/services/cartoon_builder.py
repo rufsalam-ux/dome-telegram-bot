@@ -495,7 +495,11 @@ def build_timeline_cartoon(base_video: Path, character_png: Path, audio_by_phras
         for index, segment in enumerate(timeline):
             try:
                 phrase_audio = Path(audio_by_phrase[segment["phrase_id"]]) if audio_by_phrase.get(segment["phrase_id"]) else None
-                ai_clips.append(prepare_character_animation(render_character, segment, work / "ai-animation", phrase_audio, allow_generate=allow_generate))
+                animation_segment = {**segment, "resolved_facing": _desired_facing(segment).lower()}
+                ai_clips.append(prepare_character_animation(
+                    character_png, animation_segment, work / "ai-animation", phrase_audio,
+                    metadata=character_metadata, allow_generate=allow_generate,
+                ))
             except Exception as exc:
                 log.warning("AI animation fallback for scene %s: %s", index, exc)
                 ai_clips.append(None)
@@ -549,8 +553,10 @@ def build_timeline_cartoon(base_video: Path, character_png: Path, audio_by_phras
                 hero_label = f"[hero{local_index}]"
                 source = input_by_scene[scene_index]
                 if ai_clips[scene_index]:
+                    alpha_input = Path(ai_clips[scene_index]).suffix.lower() in {".mov", ".webm"}
+                    transparency = "format=rgba" if alpha_input else "chromakey=0x00FF00:0.28:0.08,format=rgba"
                     filters.append(
-                        f"[{source}:v]setpts=PTS-STARTPTS,chromakey=0x00FF00:0.28:0.08,format=rgba,"
+                        f"[{source}:v]setpts=PTS-STARTPTS,{transparency},"
                         f"scale=-1:{height},fade=t=in:st={start:.3f}:d=0.12:alpha=1,"
                         f"fade=t=out:st={max(start, end - 0.18):.3f}:d=0.18:alpha=1{hero_label}"
                     )

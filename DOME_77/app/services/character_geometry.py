@@ -53,6 +53,8 @@ class CharacterGeometry:
     canonicalFacing: str
     confidence: float
     source: str
+    eyeBoundingBoxes: list[list[float]] | None = None
+    mouthBoundingBox: list[float] | None = None
     userConfirmed: bool = False
     confirmedAt: str | None = None
     analysisVersion: str = ANALYSIS_VERSION
@@ -159,6 +161,11 @@ def attach_character_rig(payload: dict, *, trusted: bool | None = None) -> dict:
     confidence = _clamp(result.get("confidence"), 0.0)
     confirmed = result.get("userConfirmed") is True
     is_trusted = confirmed if trusted is None else bool(trusted)
+    eyes = _boxes(result.get("eyeBoundingBoxes") or result.get("eye_bounding_boxes"))
+    mouth = _optional_box(result.get("mouthBoundingBox") or result.get("mouth_bounding_box"))
+    high_confidence = confidence >= .78 or is_trusted
+    front_regions = _boxes(result.get("frontLimbs") or result.get("front_limbs"))
+    rear_regions = _boxes(result.get("rearLimbs") or result.get("rear_limbs"))
     existing = result.get("rigMetadata") if isinstance(result.get("rigMetadata"), dict) else {}
     result["metadataVersion"] = RIG_METADATA_VERSION
     result["rigMetadata"] = {
@@ -174,14 +181,24 @@ def attach_character_rig(payload: dict, *, trusted: bool | None = None) -> dict:
             "front_limbs": result.get("frontLimbs") or [],
             "rear_limbs": result.get("rearLimbs") or [],
             "tail": result.get("tailBoundingBox"),
+            "eyes": eyes,
+            "mouth": mouth,
         },
         "capabilities": {
             "cutout": confidence >= .78 or is_trusted,
-            "blink": result.get("headBoundingBox") is not None,
+            "blink": bool(eyes) and high_confidence,
             "talk": True,
             "limbGestures": confidence >= .72 and bool(joints.get("left_shoulder") and joints.get("right_shoulder")),
             "tailMotion": "tail" in joints,
             "safeWholeBodyFallback": confidence < .78 and not is_trusted,
+            "canBlink": bool(eyes) and high_confidence,
+            "canAnimateMouth": mouth is not None and high_confidence,
+            "canMoveHead": result.get("headBoundingBox") is not None and high_confidence,
+            "canMoveLeftArm": len(front_regions) >= 1 and high_confidence,
+            "canMoveRightArm": len(front_regions) >= 2 and high_confidence,
+            "canMoveLeftLeg": len(rear_regions) >= 1 and high_confidence,
+            "canMoveRightLeg": len(rear_regions) >= 2 and high_confidence,
+            "canAnimateTail": "tail" in joints and high_confidence,
         },
     }
     return result
@@ -341,6 +358,8 @@ def _normalized_provider_geometry(data: dict, fallback: CharacterGeometry) -> Ch
         canonicalFacing=facing_value,
         confidence=_clamp(data.get("confidence"), 0.0),
         source="vision_verified",
+        eyeBoundingBoxes=_boxes(data.get("eyeBoundingBoxes") or data.get("eye_bounding_boxes")) or None,
+        mouthBoundingBox=_optional_box(data.get("mouthBoundingBox") or data.get("mouth_bounding_box")),
     )
 
 
@@ -354,6 +373,7 @@ async def _vision_pass(path: Path, *, verification: bool = False) -> dict:
         emphasis
         + "Analyze exactly one transparent full-body child character. Return JSON only with: "
         "characterBoundingBox [left,top,width,height], headPoint, headBoundingBox, torsoBoundingBox, "
+        "optional eyeBoundingBoxes and mouthBoundingBox only when those visible features can be localized safely, "
         "frontPoint, backPoint, feetAnchor, groundAnchor, optional tailBoundingBox and tailPoint, "
         "frontLimbs and rearLimbs as arrays of boxes; leftArmOrFrontLimb, rightArmOrFrontLimb, "
         "optional leftHandOrFrontPaw, rightHandOrFrontPaw, leftLegOrRearLimb and rightLegOrRearLimb as points; "

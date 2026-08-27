@@ -20,6 +20,20 @@
     },
     "parts": {"type": "object"},
     "joints": {"type": "object"},
-    "capabilities": {"type": "array", "items": {"type": "string"}}
+    "capabilities": {"type": "array", "items": {"type": "string"}},
+    "capability_map": {
+      "type": "object",
+      "properties": {
+        "canBlink": {"type": "boolean"},
+        "canAnimateMouth": {"type": "boolean"},
+        "canMoveHead": {"type": "boolean"},
+        "canMoveLeftArm": {"type": "boolean"},
+        "canMoveRightArm": {"type": "boolean"},
+        "canMoveLeftLeg": {"type": "boolean"},
+        "canMoveRightLeg": {"type": "boolean"},
+        "canAnimateTail": {"type": "boolean"}
+      },
+      "additionalProperties": {"type": "boolean"}
+    }
   }
 }

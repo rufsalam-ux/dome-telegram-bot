@@ -8,11 +8,20 @@ from .kling_provider import KlingProvider, KlingError, enabled as kling_enabled
 from .character_motion_library import CharacterMotionLibrary, signature
 from .motion_planner import primary_motion_action
 from .quality_check import animation_ok
+from .cutout_renderer import ensure_local_animation_clip
 
 log=logging.getLogger('dome.character_animation')
 
 
-def prepare_character_animation(character_png:Path, segment:dict, work_root:Path, audio_path:Path|None=None, *, allow_generate:bool=True) -> Path|None:
+def prepare_character_animation(
+    character_png: Path,
+    segment: dict,
+    work_root: Path,
+    audio_path: Path | None = None,
+    *,
+    metadata: dict | None = None,
+    allow_generate: bool = True,
+) -> Path | None:
     """Return cached/generated green-screen character clip or None for PNG fallback."""
     if not settings.avatar_animation_engine_enabled:
         return None
@@ -24,6 +33,17 @@ def prepare_character_animation(character_png:Path, segment:dict, work_root:Path
     view=str(block.get('view') or segment.get('view') or 'front')
     speaking=bool(block.get('speaking', segment.get('talk_start') is not None))
     reuse=bool(block.get('reuse',True))
+    try:
+        local_clip = ensure_local_animation_clip(
+            character_png, segment, settings.storage_root, work_root,
+            settings.ffmpeg_bin, metadata, audio_path,
+        )
+        if local_clip is not None:
+            log.info('Using local capability-based cutout animation action=%s clip=%s', action, local_clip)
+            return local_clip
+    except Exception as exc:
+        # A malformed or unusual drawing must preserve the proven static-PNG path.
+        log.warning('Local cutout animation unavailable; preserving PNG fallback: %s', exc)
     lib=CharacterMotionLibrary(settings.storage_root,character_png)
     sig=signature(description,speaking=speaking,view=view,duration=duration)
     body_path=None

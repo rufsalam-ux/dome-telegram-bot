@@ -169,7 +169,7 @@ def test_semantic_animation_vocabulary_is_complete_and_head_first():
 
 def test_local_rig_parameters_are_persistent_cache_first(tmp_path):
     avatar=tmp_path/"avatar.png";_head_left_dinosaur(avatar)
-    metadata={"confidence":.9,"tailPoint":[.9,.55],"rigMetadata":{"capabilities":{"safeWholeBodyFallback":False}}}
+    metadata={"confidence":.9,"tailPoint":[.9,.55],"rigMetadata":{"capabilities":{"safeWholeBodyFallback":False,"canAnimateMouth":True,"canAnimateTail":True}}}
     library,first_hits,first_created=ensure_local_motion_cache(avatar,tmp_path,metadata,avatar_id=77)
     again,second_hits,second_created=ensure_local_motion_cache(avatar,tmp_path,metadata,avatar_id=77)
     assert first_hits==0 and first_created>=len(SEMANTIC_ACTIONS)-1

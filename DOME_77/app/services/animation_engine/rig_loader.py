@@ -22,6 +22,7 @@ def load_character_rig(character_png: Path, rig_root: Path, metadata: dict | Non
                 parts=dict(data.get("parts") or {}),
                 joints=dict(data.get("joints") or {}),
                 capabilities=set(data.get("capabilities") or []),
+                capability_map={key: bool(value) for key, value in (data.get("capability_map") or {}).items()},
                 provider=data.get("provider", "unknown"),
                 source_png=data.get("source_png") or str(character_png),
             )
@@ -36,6 +37,7 @@ def load_character_rig(character_png: Path, rig_root: Path, metadata: dict | Non
         views={"front": str(character_png)},
         joints=dict(rig_metadata.get("joints") or {}),
         capabilities={"translate", "scale", "mirror", "bob", *enabled},
+        capability_map={name: bool(value) for name, value in capabilities.items()},
         provider="metadata_cutout" if rig_metadata else "fallback_png",
         source_png=str(character_png),
     )
