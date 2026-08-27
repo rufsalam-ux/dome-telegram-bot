@@ -3,7 +3,7 @@ import {Image,Linking,ScrollView,Share,Text,View,Alert} from 'react-native';
 import {Body,Button,Card,H1,H2} from '../components/Ui';
 import {useAppStore} from '../store/AppStore';
 import {bootstrap,isUnauthorizedError,listLessons,listMovies,API_BASE,restoreApiToken,updateChildLanguages} from '../api/mobile';
-import {logStartupStage,startupErrorText,withStartupTimeout} from '../engine/startup';
+import {logStartupStage,startupFailure,StartupFailure,withStartupTimeout} from '../engine/startup';
 
 // LessonPlayer initializes native audio/video modules. Load it only when the
 // lesson route is requested so a media-module problem can never block app boot.
@@ -27,7 +27,7 @@ export function RootApp(){
   const[native,setNative]=useState('ru');
   const[savingLang,setSavingLang]=useState(false);
   const[sessionReady,setSessionReady]=useState(false);
-  const[startupError,setStartupError]=useState('');
+  const[startupError,setStartupError]=useState<StartupFailure|null>(null);
   const[bootAttempt,setBootAttempt]=useState(0);
   const[lessons,setLessons]=useState<any[]>([]);
   const[lessonsLoading,setLessonsLoading]=useState(false);
@@ -39,7 +39,7 @@ export function RootApp(){
 
   useEffect(()=>{
     let active=true;
-    setSessionReady(false);setStartupError('');
+    setSessionReady(false);setStartupError(null);
     (async()=>{
       let route='auth';
       try{
@@ -56,7 +56,7 @@ export function RootApp(){
       }catch(error:any){
         console.error('DOME_STARTUP_RESTORE_ERROR',error);
         if(active&&isUnauthorizedError(error))await withStartupTimeout(s.logout(),'logout',3000).catch(logoutError=>console.error('DOME_STARTUP_LOGOUT_ERROR',logoutError));
-        else if(active){route='startup_error';setStartupError(startupErrorText(error))}
+        else if(active){route='startup_error';const failure=startupFailure(error);console.error('DOME_BOOTSTRAP_FAILED',failure.code,failure.reason,error);setStartupError(failure)}
       }finally{
         if(active){logStartupStage('NAV_READY',{route,boot_attempt:bootAttempt});setSessionReady(true)}
       }
@@ -77,7 +77,7 @@ export function RootApp(){
   const activeLesson=lessons.find(item=>item.lesson_id===activeLessonId&&item.available)||lessons.find(item=>item.available);
 
   if(!sessionReady)return <View style={{flex:1,alignItems:'center',justifyContent:'center',padding:24}}><Body>Восстанавливаем вход…</Body></View>;
-  if(startupError)return <View style={{flex:1,alignItems:'center',justifyContent:'center',padding:28}}><H1>DOME</H1><Body>{startupError} Проверьте интернет и повторите попытку.</Body><Button title='Повторить запуск' onPress={()=>setBootAttempt(value=>value+1)}/><Button secondary title='Открыть экран входа' onPress={()=>{setStartupError('');s.setScreen('auth')}}/></View>;
+  if(startupError)return <View style={{flex:1,alignItems:'center',justifyContent:'center',padding:28}}><H1>DOME</H1><Body>{startupError.message} Проверьте интернет и повторите попытку.</Body><Text testID='bootstrap-error-code' selectable style={{fontSize:12,textAlign:'center',marginBottom:10,color:'#6A7088'}}>Код: {startupError.code} · {startupError.reason}</Text><Button title='Повторить запуск' onPress={()=>setBootAttempt(value=>value+1)}/><Button secondary title='Открыть экран входа' onPress={()=>{setStartupError(null);s.setScreen('auth')}}/></View>;
   if(s.screen==='auth')return <LazyAuthScreen/>;
   if(s.screen==='children')return <ScrollView contentContainerStyle={{padding:24,flexGrow:1}}>{visibleChildren.length?<><H1>Кто сегодня занимается?</H1><Body>Выберите ребёнка или добавьте новый профиль.</Body><Button testID='add-child-button' title='＋ Добавить ребёнка' onPress={()=>s.setScreen('add_child')}/>{visibleChildren.map(c=><Card key={c.id}><H2>{c.name}</H2><Body>{c.age?`${c.age} лет · `:''}изучает {c.learningLanguage||'ru'}</Body><Button title='Выбрать' onPress={()=>{s.setSelectedChild(c);s.setScreen(c.activeCharacterId?'home':'hero')}}/></Card>)}</>:<><H1>Добро пожаловать в DOME</H1><Body>Аккаунт подтверждён. Создайте первый профиль ребёнка, чтобы начать занятия.</Body><Button testID='add-child-onboarding-button' title='＋ Добавить ребёнка' onPress={()=>s.setScreen('add_child')}/><Card><H2>Первый шаг</H2><Body>Укажите имя, возраст и языки обучения. После этого вместе выберите героя.</Body></Card></>}<Button secondary title='Выйти из аккаунта' onPress={s.logout}/></ScrollView>;
   if(s.screen==='add_child')return <LazyAddChildScreen/>;

@@ -1,6 +1,14 @@
-import React from 'react';import { Pressable,Text,Vibration,View } from 'react-native';import {useAudioPlayer} from 'expo-audio';import { theme } from '../theme/theme';
+import React from 'react';import { Pressable,Text,Vibration,View } from 'react-native';import { theme } from '../theme/theme';
 const tapSound=require('../../assets/sounds/soft-click.wav');
-function useTapFeedback(onPress:()=>void){const player=useAudioPlayer(tapSound);return()=>{try{player.seekTo(0);player.play()}catch{}Vibration.vibrate(8);onPress()}}
+let tapPlayer:any=null;let tapPlayerPromise:Promise<any>|null=null;
+async function playTapSound(){
+  try{
+    if(!tapPlayerPromise)tapPlayerPromise=import('expo-audio').then(({createAudioPlayer})=>tapPlayer=createAudioPlayer(tapSound,{keepAudioSessionActive:true})).catch(error=>{tapPlayerPromise=null;console.warn('DOME_TAP_AUDIO_UNAVAILABLE',error);return null});
+    const player=tapPlayer||await tapPlayerPromise;if(!player)return;
+    await player.seekTo(0);player.play();
+  }catch(error){console.warn('DOME_TAP_AUDIO_FAILED',error)}
+}
+function useTapFeedback(onPress:()=>void){return()=>{Vibration.vibrate(8);onPress();void playTapSound()}}
 export function Card({children,compact=false}:{children:React.ReactNode,compact?:boolean}){return <View style={{backgroundColor:'#FFF',borderRadius:compact?10:18,padding:compact?6:18,borderWidth:1,borderColor:theme.colors.border,marginBottom:compact?2:12}}>{children}</View>}
 export function Button({title,onPress,secondary=false,disabled=false,compact=false,testID}:{title:string,onPress:()=>void,secondary?:boolean,disabled?:boolean,compact?:boolean,testID?:string}){const activate=useTapFeedback(onPress);return <Pressable accessibilityRole='button' accessibilityLabel={title} testID={testID} disabled={disabled} onPress={activate} android_ripple={{color:secondary?'#dcecff':'#ffffff33'}} style={({pressed})=>({opacity:disabled?0.5:pressed?0.86:1,transform:[{scale:pressed?0.975:1}],backgroundColor:secondary?'#FFF':theme.colors.primary,borderColor:theme.colors.primary,borderWidth:1,borderRadius:compact?10:14,paddingVertical:compact?8:14,paddingHorizontal:compact?10:18,marginVertical:compact?1:6,minHeight:compact?44:undefined,justifyContent:'center'})}><Text style={{color:secondary?theme.colors.primary:'#FFF',fontWeight:'700',fontSize:compact?15:16,lineHeight:compact?18:20,textAlign:'center'}}>{title}</Text></Pressable>}
 export function H1({children,compact=false}:{children:React.ReactNode,compact?:boolean}){return <Text style={{fontSize:compact?17:30,fontWeight:'800',color:theme.colors.text,marginBottom:compact?1:12}}>{children}</Text>}

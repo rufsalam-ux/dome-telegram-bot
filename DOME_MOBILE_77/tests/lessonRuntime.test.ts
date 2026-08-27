@@ -49,7 +49,7 @@ import {
 import {avatarCanvasStyle,avatarFacing,avatarGroundRatio,avatarRenderTrace,avatarScaleX,canonicalChildAvatarUri,lessonAvatarConfig,slideAvatarConfig,sourceAvatarFacing,visibleCharacterAspect,visibleCharacterBox} from '../src/engine/avatarRuntime.ts';
 import {CAT_ACTIVITY_STATES,catProcessingState,catStateForStage} from '../src/engine/catRuntime.ts';
 import {mediaPhaseAfterEnd,normalizeMediaSequence,usesGenericMediaRuntime} from '../src/engine/mediaRuntime.ts';
-import {StartupTimeoutError,startupErrorText,withStartupTimeout} from '../src/engine/startup.ts';
+import {rootRuntimeFailure,startupFailure,StartupTimeoutError,startupErrorText,withStartupTimeout} from '../src/engine/startup.ts';
 import bundledLesson from '../src/data/botLesson.json' with {type:'json'};
 import {buildRuntimeOrder} from '../src/data/lessonInteractions.ts';
 import {beginVisualAssetLoad,failVisualAsset,loadVisualAssetWithRetry,useLocalizedVisualAsset,visualAssetSourceForKey} from '../src/engine/visualAsset.ts';
@@ -405,13 +405,19 @@ test('cold startup is isolated from lesson native modules and cannot wait foreve
   const app=readFileSync(new URL('../App.tsx',import.meta.url),'utf8');
   const root=readFileSync(new URL('../src/screens/RootApp.tsx',import.meta.url),'utf8');
   const mobileApi=readFileSync(new URL('../src/api/mobile.ts',import.meta.url),'utf8');
+  const ui=readFileSync(new URL('../src/components/Ui.tsx',import.meta.url),'utf8');
   assert.equal(packageJson.main,'index.js');assert.match(entry,/ENTRY_EVALUATION/);assert.match(entry,/registerRootComponent/);assert.match(entry,/APP_MODULE_LOAD_FAILED/);
   assert.doesNotMatch(app,/from ['"]\.\/src\/store\/AppStore['"]/);assert.doesNotMatch(app,/from ['"]\.\/src\/screens\/RootApp['"]/);assert.match(app,/React\.lazy\(\(\)=>import\(['"]\.\/src\/AppRuntime['"]\)/);
   assert.doesNotMatch(mobileApi,/^import .*expo-(file-system|secure-store)/m);assert.match(mobileApi,/import\(['"]expo-secure-store['"]\)/);
   assert.doesNotMatch(root,/import\s+\{LessonPlayer\}\s+from/);assert.match(root,/React\.lazy/);assert.match(root,/withStartupTimeout/);
+  assert.doesNotMatch(ui,/import\s+\{?\s*useAudioPlayer/);assert.match(ui,/import\(['"]expo-audio['"]\)/);assert.match(ui,/onPress\(\);void playTapSound\(\)/);
+  assert.match(app,/key=\{runtimeAttempt\}/);assert.match(app,/setRuntimeAttempt\(value=>value\+1\)/);assert.match(app,/startup-error-code/);
   for(const stage of ['APP_MOUNT','SECURESTORE_DONE','BACKEND_BOOTSTRAP_DONE','NAV_READY','FIRST_SCREEN_RENDERED'])assert.match(app+root,new RegExp(`['"]${stage}['"]`));
   await assert.rejects(withStartupTimeout(new Promise(()=>{}),'bootstrap',5),error=>error instanceof StartupTimeoutError&&error.stage==='bootstrap');
   assert.match(startupErrorText(new StartupTimeoutError('secure_store',5)),/сохранённый вход/);
+  assert.equal(rootRuntimeFailure(new Error('Cannot construct ExpoAudio AudioPlayer shared object')).code,'UI_AUDIO_INIT');
+  assert.equal(startupFailure(new StartupTimeoutError('bootstrap',5)).code,'BOOTSTRAP_TIMEOUT');
+  assert.equal(startupFailure(new TypeError('Network request failed')).code,'BACKEND_NETWORK');
 });
 
 test('programmatic demo flow has no early record, duplicate answer, or dead end',()=>{
