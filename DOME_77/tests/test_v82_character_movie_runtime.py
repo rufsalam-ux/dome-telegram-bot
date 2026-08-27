@@ -14,12 +14,14 @@ from app.services.cartoon_builder import (
 from app.services.cartoon_text_overlay import cartoon_text_filters, overlay_safe_zone_violations
 from app.services.character_geometry import (
     ANALYSIS_VERSION,
+    RIG_METADATA_VERSION,
     analyze_character_geometry,
     confirm_character_geometry,
     geometry_from_json,
     geometry_status,
     upgrade_character_geometry_payload,
 )
+from app.services.preset_characters import preset_character_geometry
 from app.services.lesson_runtime import VOICE_FEEDBACK_STATES, classify_voice_feedback
 from app.services.animation_engine.character_motion_library import CharacterMotionLibrary
 from app.services.authored_content import _validate_pre_slide_video
@@ -63,6 +65,10 @@ async def test_head_left_dinosaur_geometry_is_analyzed_once_and_persistable(tmp_
     assert payload["leftArmOrFrontLimb"] and payload["rightArmOrFrontLimb"]
     assert payload["leftHandOrFrontPaw"] and payload["rightHandOrFrontPaw"]
     assert payload["leftLegOrRearLimb"] and payload["rightLegOrRearLimb"]
+    assert payload["metadataVersion"] == RIG_METADATA_VERSION
+    assert payload["rigMetadata"]["joints"]["head"] == payload["headPoint"]
+    assert payload["rigMetadata"]["joints"]["ground"] == payload["groundAnchor"]
+    assert payload["rigMetadata"]["capabilities"]["talk"] is True
     assert geometry_status(geometry) == "READY"
     assert geometry_from_json(json.dumps(payload)) == payload
     assert set(Character.__table__.columns.keys()) >= {
@@ -79,6 +85,8 @@ async def test_head_left_dinosaur_geometry_is_analyzed_once_and_persistable(tmp_
     assert confirmed["groundAnchor"] == [.52, .96]
     assert confirmed["canonicalFacing"] == "LEFT"
     assert confirmed["confirmedAt"]
+    assert confirmed["rigMetadata"]["trusted"] is True
+    assert confirmed["rigMetadata"]["joints"]["head"] == [.16, .2]
     assert geometry_status(confirmed) == "CONFIRMED"
 
 
@@ -90,6 +98,17 @@ def test_confirmed_legacy_metadata_migrates_without_losing_head_left_truth():
     assert upgraded["canonicalFacing"]==upgraded["facingDirection"]=="LEFT"
     for key in ("leftArmOrFrontLimb","rightArmOrFrontLimb","leftHandOrFrontPaw","rightHandOrFrontPaw","leftLegOrRearLimb","rightLegOrRearLimb"):
         assert len(upgraded[key])==2
+    assert upgraded["rigMetadata"]["trusted"] is True
+    assert upgraded["rigMetadata"]["joints"]["head"] == [.15, .2]
+
+
+def test_builtin_avatar_has_trusted_canonical_rig_without_confirmation():
+    preset = preset_character_geometry("cat")
+    assert preset["userConfirmed"] is True
+    assert preset["metadataVersion"] == RIG_METADATA_VERSION
+    assert preset["rigMetadata"]["trusted"] is True
+    assert preset["rigMetadata"]["mode"] == "cutout_2d"
+    assert set(preset["rigMetadata"]["joints"]) >= {"head", "torso", "left_shoulder", "right_shoulder", "left_hip_or_rear_limb", "right_hip_or_rear_limb", "ground"}
 
 
 def test_visible_bbox_drives_scale_baseline_and_source_orientation(tmp_path):

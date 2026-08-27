@@ -369,8 +369,12 @@ test('confirmed geometry drives the same perceptual canvas and ground anchor',()
 });
 
 test('My Hero flow is React Native safe and never calls browser reload APIs',()=>{
-  const sources=['../App.tsx','../index.js','../src/screens/HeroScreen.tsx','../src/screens/HeroConfirmScreen.tsx','../src/screens/RootApp.tsx','../src/store/AppStore.tsx'].map(path=>readFileSync(new URL(path,import.meta.url),'utf8')).join('\n');
+  const hero=readFileSync(new URL('../src/screens/HeroScreen.tsx',import.meta.url),'utf8');const confirmation=readFileSync(new URL('../src/screens/HeroConfirmScreen.tsx',import.meta.url),'utf8');
+  const sources=['../App.tsx','../index.js','../src/screens/RootApp.tsx','../src/store/AppStore.tsx'].map(path=>readFileSync(new URL(path,import.meta.url),'utf8')).join('\n')+hero+confirmation;
   assert.doesNotMatch(sources,/\bwindow\s*\.|\bdocument\s*\.|\blocation\s*\.\s*reload|\.\s*reload\s*\(/);assert.match(sources,/setScreen\('hero_confirm'\)/);assert.match(sources,/updateChild/);assert.match(sources,/setScreen\('home'\)/);
+  const presetBody=hero.slice(hero.indexOf('const preset='),hero.indexOf('const upload='));const uploadBody=hero.slice(hero.indexOf('const upload='));assert.doesNotMatch(presetBody,/hero_confirm/);assert.match(presetBody,/setScreen\('home'\)/);assert.match(uploadBody,/setScreen\('hero_confirm'\)/);
+  assert.match(hero,/custom-avatar-processing/);assert.match(hero,/Загружаем и распознаём твоего героя/);assert.match(hero,/ActivityIndicator/);assert.match(hero,/allowsEditing:false/);
+  for(const marker of ['leftHandOrFrontPaw','rightHandOrFrontPaw','leftLegOrRearLimb','rightLegOrRearLimb'])assert.match(confirmation,new RegExp(marker));
   assert.match(sources,/EXPO_PUBLIC_BUILD_COMMIT/);assert.match(sources,/dome-build-marker/);
 });
 

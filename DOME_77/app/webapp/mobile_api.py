@@ -419,7 +419,7 @@ async def hero_preset(request:web.Request)->web.Response:
     except Exception: raise web.HTTPBadRequest(text=json.dumps({'error':'Unknown hero'}),content_type='application/json')
     metadata=preset_character_geometry(catalog)
     async with SessionLocal() as db:
-        ch=Character(child_id=cid,original_path=str(path),processed_path=str(path),status='READY',source='CATALOG',catalog_id=catalog,visual_metadata_json=json.dumps(metadata,ensure_ascii=False),visual_analysis_version=ANALYSIS_VERSION,visual_analysis_status='READY');db.add(ch);await db.flush();c2=await db.get(Child,cid);c2.active_character_id=ch.id;await db.commit();await db.refresh(ch)
+        ch=Character(child_id=cid,original_path=str(path),processed_path=str(path),status='READY',source='CATALOG',catalog_id=catalog,visual_metadata_json=json.dumps(metadata,ensure_ascii=False),visual_analysis_version=ANALYSIS_VERSION,visual_analysis_status='CONFIRMED');db.add(ch);await db.flush();c2=await db.get(Child,cid);c2.active_character_id=ch.id;await db.commit();await db.refresh(ch)
     val=f'hero:{cid}:{ch.id}'; t=signed_media_token(val)
     return web.json_response({'character_id':ch.id,'hero_url':f'{_base(request)}/api/mobile/hero/file/{cid}/{ch.id}?t={t}','hero_metadata':_character_json(ch)})
 
@@ -443,8 +443,9 @@ async def hero_upload(request:web.Request)->web.Response:
     try:await asyncio.to_thread(process_character,original,processed)
     except Exception as exc:raise web.HTTPBadRequest(text=json.dumps({'error':f'Не удалось удалить фон: {exc}'}),content_type='application/json')
     geometry=await analyze_character_geometry(processed,allow_remote=True);metadata=geometry.payload();analysis_status=geometry_status(geometry)
-    if analysis_status!='READY':
-        raise web.HTTPUnprocessableEntity(text=json.dumps({'error':'Не удалось уверенно определить голову и направление героя. Выберите более чёткий рисунок целиком.','code':'CHARACTER_GEOMETRY_UNCERTAIN','hero_metadata':metadata},ensure_ascii=False),content_type='application/json')
+    # Low-confidence and unusual drawings still proceed to the one-time custom
+    # confirmation screen. The movie renderer will use its safe whole-body
+    # fallback until the parent confirms canonical anatomy.
     async with SessionLocal() as db:
         ch=Character(child_id=cid,original_path=str(original),processed_path=str(processed),status='READY',source='CHILD_DRAWING',visual_metadata_json=json.dumps(metadata,ensure_ascii=False),visual_analysis_version=ANALYSIS_VERSION,visual_analysis_status=analysis_status);db.add(ch);await db.flush();c=await db.get(Child,cid);c.active_character_id=ch.id;await db.commit();await db.refresh(ch)
     val=f'hero:{cid}:{ch.id}';t=signed_media_token(val)

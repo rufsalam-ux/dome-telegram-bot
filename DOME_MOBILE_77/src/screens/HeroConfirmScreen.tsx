@@ -31,11 +31,15 @@ export function HeroConfirmScreen(){
   const[back,setBack]=useState<HeroPoint>(()=>point(metadata?.backPoint,[facingInitial==='LEFT'?bbox[0]+bbox[2]:facingInitial==='RIGHT'?bbox[0]:.5,metadata?.bodyCenterY??.62]));
   const[leftArm,setLeftArm]=useState<HeroPoint>(()=>point(metadata?.leftArmOrFrontLimb,[bbox[0]+bbox[2]*.32,metadata?.bodyCenterY??.6]));
   const[rightArm,setRightArm]=useState<HeroPoint>(()=>point(metadata?.rightArmOrFrontLimb,[bbox[0]+bbox[2]*.68,metadata?.bodyCenterY??.6]));
+  const[leftHand,setLeftHand]=useState<HeroPoint>(()=>point(metadata?.leftHandOrFrontPaw,[leftArm[0],Math.min(.98,leftArm[1]+.14)]));
+  const[rightHand,setRightHand]=useState<HeroPoint>(()=>point(metadata?.rightHandOrFrontPaw,[rightArm[0],Math.min(.98,rightArm[1]+.14)]));
+  const[leftLeg,setLeftLeg]=useState<HeroPoint>(()=>point(metadata?.leftLegOrRearLimb,[bbox[0]+bbox[2]*.39,bbox[1]+bbox[3]*.86]));
+  const[rightLeg,setRightLeg]=useState<HeroPoint>(()=>point(metadata?.rightLegOrRearLimb,[bbox[0]+bbox[2]*.61,bbox[1]+bbox[3]*.86]));
   const[feet,setFeet]=useState<HeroPoint>(()=>point(metadata?.feetAnchor||metadata?.groundAnchor,[.5,bbox[1]+bbox[3]]));
   const[tail,setTail]=useState<HeroPoint>(()=>point(metadata?.tailPoint,back));const[facing,setFacing]=useState<'LEFT'|'RIGHT'|'FRONT'>(facingInitial==='LEFT'||facingInitial==='RIGHT'?facingInitial:'FRONT');const[busy,setBusy]=useState(false);
   if(!child||!metadata||!child.activeCharacterId||!child.heroUrl)return <View style={{padding:24}}><H1>Герой не выбран</H1><Button title='Вернуться к выбору' onPress={()=>store.setScreen('hero')}/></View>;
   const sourceAspect=Math.max(.25,Math.min(4,Number(metadata.sourceWidth||1)/Math.max(1,Number(metadata.sourceHeight||1))));const availableWidth=Math.max(160,dimensions.width-32);let frameHeight=Math.min(440,availableWidth/sourceAspect);let frameWidth=frameHeight*sourceAspect;if(frameWidth>availableWidth){frameWidth=availableWidth;frameHeight=frameWidth/sourceAspect}const uri=child.heroUrl.startsWith('http')?child.heroUrl:API_BASE+child.heroUrl;const hasTail=Boolean(metadata.tailPoint||metadata.tailBoundingBox);
-  const confirm=async()=>{try{setBusy(true);const response=await confirmHeroGeometry(child.id,child.activeCharacterId!,{headPoint:head,frontPoint:front,backPoint:back,leftArmOrFrontLimb:leftArm,rightArmOrFrontLimb:rightArm,feetAnchor:feet,groundAnchor:feet,tailPoint:hasTail?tail:null,facingDirection:facing,canonicalFacing:facing});store.updateChild({...child,heroMetadata:response.hero_metadata});store.setScreen('home')}catch(error:any){Alert.alert('Не удалось сохранить разметку',error.message)}finally{setBusy(false)}};
+  const confirm=async()=>{try{setBusy(true);const response=await confirmHeroGeometry(child.id,child.activeCharacterId!,{headPoint:head,frontPoint:front,backPoint:back,leftArmOrFrontLimb:leftArm,rightArmOrFrontLimb:rightArm,leftHandOrFrontPaw:leftHand,rightHandOrFrontPaw:rightHand,leftLegOrRearLimb:leftLeg,rightLegOrRearLimb:rightLeg,feetAnchor:feet,groundAnchor:feet,tailPoint:hasTail?tail:null,facingDirection:facing,canonicalFacing:facing});store.updateChild({...child,heroMetadata:response.hero_metadata});store.setScreen('home')}catch(error:any){Alert.alert('Не удалось сохранить разметку',error.message)}finally{setBusy(false)}};
   return <ScrollView contentContainerStyle={{padding:16,paddingBottom:32}}><H1>Проверим героя один раз</H1><Body>Перетащите метки, если DOME ошибся. Эта разметка сохранится и будет одинаково использоваться в уроках и мультфильмах.</Body>
     <View testID='hero-anatomy-canvas' style={{alignSelf:'center',width:frameWidth,height:frameHeight,marginVertical:12,borderRadius:18,overflow:'hidden',backgroundColor:'#eef6ff',borderWidth:2,borderColor:'#b9d8ff'}}>
       <Image source={{uri}} resizeMode='stretch' style={{width:'100%',height:'100%'}}/>
@@ -44,6 +48,10 @@ export function HeroConfirmScreen(){
       <Marker label='ЗАД' color='#7b61a8' value={back} width={frameWidth} height={frameHeight} onChange={setBack}/>
       <Marker label='ЛЕВАЯ ЛАПА' color='#d34fa5' value={leftArm} width={frameWidth} height={frameHeight} onChange={setLeftArm}/>
       <Marker label='ПРАВАЯ ЛАПА' color='#00a0a0' value={rightArm} width={frameWidth} height={frameHeight} onChange={setRightArm}/>
+      <Marker label='ЛЕВАЯ КИСТЬ' color='#b53286' value={leftHand} width={frameWidth} height={frameHeight} onChange={setLeftHand}/>
+      <Marker label='ПРАВАЯ КИСТЬ' color='#007d7d' value={rightHand} width={frameWidth} height={frameHeight} onChange={setRightHand}/>
+      <Marker label='ЛЕВАЯ НОГА' color='#6a5acd' value={leftLeg} width={frameWidth} height={frameHeight} onChange={setLeftLeg}/>
+      <Marker label='ПРАВАЯ НОГА' color='#4b61c0' value={rightLeg} width={frameWidth} height={frameHeight} onChange={setRightLeg}/>
       <Marker label='НОГИ / ОПОРА' color='#138a55' value={feet} width={frameWidth} height={frameHeight} onChange={setFeet}/>
       {hasTail?<Marker label='ХВОСТ' color='#e07a16' value={tail} width={frameWidth} height={frameHeight} onChange={setTail}/>:null}
     </View>

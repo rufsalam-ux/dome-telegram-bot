@@ -16,6 +16,7 @@ from app.core.config import settings
 
 log = logging.getLogger("dome.character_geometry")
 ANALYSIS_VERSION = "character-geometry-v3"
+RIG_METADATA_VERSION = "dome-cutout-rig-v1"
 FACING_DIRECTIONS = {"LEFT", "RIGHT", "FRONT", "UNKNOWN"}
 
 
@@ -57,7 +58,7 @@ class CharacterGeometry:
     analysisVersion: str = ANALYSIS_VERSION
 
     def payload(self) -> dict:
-        return asdict(self)
+        return attach_character_rig(asdict(self), trusted=self.userConfirmed)
 
 
 def _clamp(value: object, default: float = 0.0) -> float:
@@ -124,6 +125,66 @@ def _facing_sides(facing: str) -> tuple[str, str]:
     if facing == "RIGHT":
         return "RIGHT", "LEFT"
     return "FRONT", "BACK"
+
+
+def attach_character_rig(payload: dict, *, trusted: bool | None = None) -> dict:
+    """Attach a provider-neutral 2D rig derived from canonical anatomy.
+
+    The geometry remains the source of truth. This function never changes a
+    confirmed point; it only maps those points into reusable animation pivots.
+    """
+
+    result = dict(payload)
+    bbox = _box(result.get("characterBoundingBox"), [0.0, 0.0, 1.0, 1.0])
+    head = _point(result.get("headPoint"), [result.get("headCenterX", 0.5), result.get("headCenterY", 0.25)])
+    torso = _box(result.get("torsoBoundingBox"), [bbox[0] + bbox[2] * .2, bbox[1] + bbox[3] * .34, bbox[2] * .6, bbox[3] * .48])
+    torso_center = [round(torso[0] + torso[2] / 2, 6), round(torso[1] + torso[3] / 2, 6)]
+    feet = _point(result.get("groundAnchor") or result.get("feetAnchor"), [bbox[0] + bbox[2] / 2, bbox[1] + bbox[3]])
+    estimates = _limb_points(bbox, torso_center[1], feet[1])
+    joints = {
+        "root": feet,
+        "torso": torso_center,
+        "neck": [head[0], round(max(bbox[1], head[1] + bbox[3] * .13), 6)],
+        "head": head,
+        "left_shoulder": _point(result.get("leftArmOrFrontLimb"), estimates[0]),
+        "right_shoulder": _point(result.get("rightArmOrFrontLimb"), estimates[1]),
+        "left_hand_or_paw": _point(result.get("leftHandOrFrontPaw"), estimates[2]),
+        "right_hand_or_paw": _point(result.get("rightHandOrFrontPaw"), estimates[3]),
+        "left_hip_or_rear_limb": _point(result.get("leftLegOrRearLimb"), estimates[4]),
+        "right_hip_or_rear_limb": _point(result.get("rightLegOrRearLimb"), estimates[5]),
+        "ground": feet,
+    }
+    if result.get("tailPoint") is not None:
+        joints["tail"] = _point(result.get("tailPoint"), result.get("backPoint") or torso_center)
+    confidence = _clamp(result.get("confidence"), 0.0)
+    confirmed = result.get("userConfirmed") is True
+    is_trusted = confirmed if trusted is None else bool(trusted)
+    existing = result.get("rigMetadata") if isinstance(result.get("rigMetadata"), dict) else {}
+    result["metadataVersion"] = RIG_METADATA_VERSION
+    result["rigMetadata"] = {
+        **existing,
+        "version": RIG_METADATA_VERSION,
+        "mode": "cutout_2d",
+        "trusted": is_trusted,
+        "canonicalFacing": str(result.get("canonicalFacing") or result.get("facingDirection") or "FRONT").upper(),
+        "joints": joints,
+        "regions": {
+            "head": result.get("headBoundingBox"),
+            "torso": torso,
+            "front_limbs": result.get("frontLimbs") or [],
+            "rear_limbs": result.get("rearLimbs") or [],
+            "tail": result.get("tailBoundingBox"),
+        },
+        "capabilities": {
+            "cutout": confidence >= .78 or is_trusted,
+            "blink": result.get("headBoundingBox") is not None,
+            "talk": True,
+            "limbGestures": confidence >= .72 and bool(joints.get("left_shoulder") and joints.get("right_shoulder")),
+            "tailMotion": "tail" in joints,
+            "safeWholeBodyFallback": confidence < .78 and not is_trusted,
+        },
+    }
+    return result
 
 
 def _alpha_geometry(path: Path) -> CharacterGeometry:
@@ -388,7 +449,7 @@ def upgrade_character_geometry_payload(payload: dict) -> dict:
         "frontSide": _facing_sides(facing)[0], "backSide": _facing_sides(facing)[1],
         "analysisVersion": ANALYSIS_VERSION,
     })
-    return result
+    return attach_character_rig(result, trusted=result.get("userConfirmed") is True)
 
 
 def confirm_character_geometry(current: dict, submitted: dict) -> dict:
@@ -420,7 +481,7 @@ def confirm_character_geometry(current: dict, submitted: dict) -> dict:
             result[key] = _point(submitted.get(key), result.get(key) or feet)
     if "tailPoint" in submitted:
         result["tailPoint"] = _point(submitted.get("tailPoint"), current.get("tailPoint") or back)
-    return result
+    return attach_character_rig(result, trusted=True)
 
 
 def geometry_status(geometry: CharacterGeometry | dict) -> str:

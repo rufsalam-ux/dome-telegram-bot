@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from app.core.config import settings
-from app.services.character_geometry import ANALYSIS_VERSION
+from app.services.character_geometry import ANALYSIS_VERSION, attach_character_rig
 
 
 PRESET_CHARACTERS: list[dict] = [
@@ -37,7 +37,7 @@ def preset_character_geometry(character_id: str) -> dict:
     """Stable one-time geometry for the front-facing authored catalog assets."""
 
     get_preset_character(character_id)
-    return {
+    return attach_character_rig({
         "characterBoundingBox": [0.0, 0.0, 1.0, 1.0],
         "sourceWidth": 1024,
         "sourceHeight": 1024,
@@ -71,7 +71,7 @@ def preset_character_geometry(character_id: str) -> dict:
         "source": "preset_catalog",
         "userConfirmed": True,
         "analysisVersion": ANALYSIS_VERSION,
-    }
+    }, trusted=True)
 
 
 def preset_collage_path() -> Path:
