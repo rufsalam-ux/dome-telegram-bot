@@ -54,6 +54,7 @@ import bundledLesson from '../src/data/botLesson.json' with {type:'json'};
 import {buildRuntimeOrder} from '../src/data/lessonInteractions.ts';
 import {beginVisualAssetLoad,failVisualAsset,loadVisualAssetWithRetry,useLocalizedVisualAsset,visualAssetSourceForKey} from '../src/engine/visualAsset.ts';
 import {markPreSlideVideoShown,normalizePreSlideVideo,preSlideVideoKey,preSlideVideoTargetIndex,shouldShowPreSlideVideo} from '../src/engine/preSlideVideo.ts';
+import {canonicalTaskType,expectedTargetId,initialPuzzleOrder,isStableTaskTemplate,memoryDeck,moveSequenceItem,puzzleSolved,sequenceSolved,swapPuzzlePieces,taskPairs} from '../src/engine/taskTemplateRuntime.ts';
 
 const greeting={type:'guided_speaking',answer_mode:'required_voice',adaptive:true,bot_says_target:'Привет! Я рада тебя видеть. Как ты сегодня себя чувствуешь?',simplified_text:'Привет! У меня всё хорошо.'};
 const cards={slide_id:'slide_09',type:'card_selector',answer_mode:'none',card_question_sets:{A:[{id:'A1',text:'Назови три прилагательных.',pre_a1_text:'Ты добрый или весёлый?'},{id:'A2',text:'Второй?'},{id:'A3',text:'Третий?'}]}};
@@ -467,4 +468,24 @@ test('scripted QA can traverse every active demo_001 runtime slide',()=>{
     assert.equal(stage,'COMPLETE',`${slide.slide_id} has a reachable completion`);
     assert.equal(nextEnabled(stage),true);
   }
+});
+
+test('stable authored task templates are deterministic and data-only',()=>{
+  const matching={slide_id:'match_1',type:'matching',pairs:[{id:'cat',left:'🐱',right:'cat'},{id:'dog',left:'🐶',right:'dog'}]};
+  assert.equal(isStableTaskTemplate(matching),true);assert.equal(taskPairs(matching).length,2);assert.equal(requiresSelection(matching),true);
+  const memory={...matching,type:'memory'};assert.deepEqual(memoryDeck(memory),memoryDeck(memory));assert.equal(memoryDeck(memory).length,4);
+  const drag={type:'drag_drop',items:[{id:'coat',target_id:'bag'}],targets:[{id:'bag'}]};assert.equal(expectedTargetId(drag,'coat',0),'bag');assert.equal(requiresSelection(drag),true);
+  assert.equal(canonicalTaskType({type:'ordering'}),'sequence');assert.equal(isStableTaskTemplate({type:'ordering'}),true);
+});
+
+test('puzzle and sequence templates require a real completed action',()=>{
+  const order=initialPuzzleOrder(6,'puzzle_1');assert.equal(order.length,6);assert.equal(puzzleSolved(order),false);
+  let current=order;for(let expected=0;expected<current.length;expected++){const found=current.indexOf(expected);current=swapPuzzlePieces(current,expected,found)}assert.equal(puzzleSolved(current),true);
+  assert.deepEqual(moveSequenceItem(['b','a','c'],0,1),['a','b','c']);assert.equal(sequenceSolved(['a','b','c'],['a','b','c']),true);
+  assert.equal(stageAfterTutorSpeech({type:'puzzle',pieces:6},false),'WAITING_ACTION');
+});
+
+test('disabled Content Studio steps never become child progress steps',()=>{
+  const order=buildRuntimeOrder([{slide_id:'one',order:1},{slide_id:'disabled',order:2,enabled:false},{slide_id:'three',order:3}]);
+  assert.deepEqual(order.map(step=>step.slide_id),['one','three']);
 });

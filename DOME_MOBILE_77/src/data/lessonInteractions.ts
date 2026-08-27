@@ -57,7 +57,8 @@ export const SUITCASE_ITEMS=[
 ] as const;
 
 export function buildRuntimeOrder(slides:any[]):any[]{
-  const ordered=[...slides].sort((a,b)=>(Number(a?.order)||9999)-(Number(b?.order)||9999));
+  // Disabled Studio steps are authoring data, not child progress steps.
+  const ordered=slides.filter(slide=>slide?.enabled!==false).sort((a,b)=>(Number(a?.order)||9999)-(Number(b?.order)||9999));
   if(!ordered.some(slide=>String(slide?.next_slide||'').trim()))return ordered;
   const by:Record<string,any>={};ordered.forEach(slide=>{by[slide.slide_id]=slide});
   const output:any[]=[];const seen=new Set<string>();let id=String(ordered.find(slide=>slide?.entry===true)?.slide_id||(by.slide_01?'slide_01':ordered[0]?.slide_id)||'');

@@ -133,6 +133,7 @@ def _validate_pre_slide_video(slide: dict[str, Any], label: str) -> list[str]:
     raw=slide.get("preSlideVideo",slide.get("pre_slide_video"))
     if raw is None:return []
     if not isinstance(raw,dict):return [f"{label}: preSlideVideo must be an object"]
+    if not raw:return []
     errors=[];uri=str(raw.get("uri") or raw.get("src") or raw.get("url") or "").strip()
     if raw.get("enabled") is not False and not uri:errors.append(f"{label}: enabled preSlideVideo needs uri/src/url")
     policy=str(raw.get("showPolicy") or raw.get("show_policy") or "once_per_attempt")

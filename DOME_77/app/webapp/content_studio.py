@@ -23,6 +23,7 @@ from app.services.authored_content import (
     validate_content_lesson,
 )
 from app.services.lesson_loader import LessonConfigurationError, load_lesson
+from app.services.content_authoring_assistant import propose_task
 
 
 LESSON_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{1,79}$")
@@ -31,6 +32,9 @@ MEDIA_EXTENSIONS = {
     ".mp4", ".m4v", ".webm", ".mov",
     ".mp3", ".m4a", ".ogg", ".wav",
 }
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+VIDEO_EXTENSIONS = {".mp4", ".m4v", ".webm", ".mov"}
+AUDIO_EXTENSIONS = {".mp3", ".m4a", ".ogg", ".wav"}
 
 
 def _require_enabled() -> None:
@@ -83,6 +87,85 @@ def _read_json(path: Path) -> dict[str, Any] | None:
 
 def _draft_path(lesson_id: str) -> Path:
     return persistent_lessons_root() / lesson_id / "draft.json"
+
+
+def _media_manifest_path(lesson_id: str) -> Path:
+    return persistent_lessons_root() / lesson_id / "media-library.json"
+
+
+def _media_manifest(lesson_id: str) -> dict[str, Any]:
+    data = _read_json(_media_manifest_path(lesson_id)) or {}
+    assets = data.get("assets") if isinstance(data.get("assets"), dict) else {}
+    return {"version": 1, "assets": assets}
+
+
+def _save_media_manifest(lesson_id: str, manifest: dict[str, Any]) -> None:
+    _atomic_json(_media_manifest_path(lesson_id), manifest)
+
+
+def _json_strings(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [item for child in value for item in _json_strings(child)]
+    if isinstance(value, dict):
+        return [item for child in value.values() for item in _json_strings(child)]
+    return []
+
+
+def _media_references(lesson_id: str, filename: str) -> list[str]:
+    needle = f"media/{filename}"
+    references: list[str] = []
+    for label, data in (("draft", _read_json(_draft_path(lesson_id))), ("published", _read_json(persistent_lessons_root() / lesson_id / "lesson.json"))):
+        if data and any(value == needle or value.endswith(f"/{filename}") for value in _json_strings(data)):
+            references.append(label)
+    return references
+
+
+def _media_entry(lesson_id: str, path: Path, manifest: dict[str, Any] | None = None) -> dict[str, Any]:
+    metadata = ((manifest or _media_manifest(lesson_id)).get("assets") or {}).get(path.name) or {}
+    return {
+        "name": path.name,
+        "display_name": str(metadata.get("display_name") or path.name),
+        "path": f"media/{path.name}",
+        "size": path.stat().st_size,
+        "sha256": str(metadata.get("sha256") or ""),
+        "created_at": str(metadata.get("created_at") or ""),
+        "used_by": _media_references(lesson_id, path.name),
+    }
+
+
+def _media_validation_errors(lesson_id: str, lesson: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    roots = [persistent_lessons_root() / lesson_id, bundled_lessons_root() / lesson_id]
+    for index, slide in enumerate(lesson.get("slides") or [], 1):
+        descriptors = list(slide.get("media_sequence") or [])
+        pre_video = slide.get("preSlideVideo") or slide.get("pre_slide_video")
+        if isinstance(pre_video, dict) and pre_video.get("enabled") is not False:
+            descriptors.append({"id": "preSlideVideo", "type": "video", "src": pre_video.get("uri") or pre_video.get("src") or pre_video.get("url")})
+        for descriptor in descriptors:
+            if not isinstance(descriptor, dict):
+                continue
+            source = str(descriptor.get("src") or descriptor.get("url") or "").strip()
+            kind = str(descriptor.get("type") or "").strip().lower()
+            if not source or re.match(r"^https?://", source, re.I):
+                continue
+            safe = Path(source.replace("\\", "/"))
+            if safe.is_absolute() or ".." in safe.parts:
+                errors.append(f"slide {index}: unsafe media path {source}")
+                continue
+            if not any((root / safe).is_file() for root in roots):
+                errors.append(f"slide {index}: missing media {source}")
+                continue
+            extension = safe.suffix.lower()
+            allowed = IMAGE_EXTENSIONS if kind in {"image", "animation"} else VIDEO_EXTENSIONS if kind == "video" else AUDIO_EXTENSIONS if kind == "audio" else None
+            if allowed is not None and extension not in allowed:
+                errors.append(f"slide {index}: {kind} cannot use {extension or '<no extension>'}")
+    return errors
+
+
+def _validation_errors(lesson_id: str, lesson: dict[str, Any]) -> list[str]:
+    return validate_content_lesson(lesson) + _media_validation_errors(lesson_id, lesson)
 
 
 def _live_path(lesson_id: str) -> Path:
@@ -202,10 +285,11 @@ async def get_lesson(request: web.Request) -> web.Response:
     versions_root = persistent_lessons_root() / lesson_id / "_versions"
     versions = [path.name for path in sorted(versions_root.iterdir(), reverse=True) if path.is_dir()] if versions_root.exists() else []
     media_root = persistent_lessons_root() / lesson_id / "media"
+    manifest = _media_manifest(lesson_id)
     media = []
     if media_root.exists():
         for path in sorted((item for item in media_root.iterdir() if item.is_file()), key=lambda item: item.stat().st_mtime, reverse=True):
-            media.append({"name": path.name, "path": f"media/{path.name}", "size": path.stat().st_size})
+            media.append(_media_entry(lesson_id, path, manifest))
     return web.json_response({"lesson": lesson, "summary": _summary(lesson_id), "versions": versions, "media": media})
 
 
@@ -231,7 +315,7 @@ async def save_lesson(request: web.Request) -> web.Response:
             slide["order"] = index
     _atomic_json(_draft_path(lesson_id), lesson)
     _audit("LESSON_DRAFT_SAVED", lesson_id, slide_count=len(lesson.get("slides") or []))
-    return web.json_response({"lesson": lesson, "summary": _summary(lesson_id), "validation_errors": validate_content_lesson(lesson)})
+    return web.json_response({"lesson": lesson, "summary": _summary(lesson_id), "validation_errors": _validation_errors(lesson_id, lesson)})
 
 
 async def reorder_lessons(request: web.Request) -> web.Response:
@@ -299,7 +383,7 @@ async def validate_lesson(request: web.Request) -> web.Response:
     lesson = _editable_lesson(lesson_id)
     if lesson is None:
         raise web.HTTPNotFound()
-    errors = validate_content_lesson(lesson)
+    errors = _validation_errors(lesson_id, lesson)
     return web.json_response({"ok": not errors, "errors": errors})
 
 
@@ -308,7 +392,7 @@ async def preview_lesson(request: web.Request) -> web.Response:
     lesson_id = _lesson_id(request.match_info["lesson_id"])
     draft = _read_json(_draft_path(lesson_id))
     if draft is not None:
-        errors = validate_content_lesson(draft)
+        errors = _validation_errors(lesson_id, draft)
         return web.json_response({"lesson": draft, "validation_errors": errors})
     try:
         return web.json_response({"lesson": load_lesson(lesson_id, preview=True), "validation_errors": []})
@@ -327,7 +411,7 @@ async def publish_lesson(request: web.Request) -> web.Response:
     candidate = json.loads(json.dumps(draft))
     candidate.update({"lesson_id": lesson_id, "engine": "content_v1", "active": True, "status": "published", "import_status": "PUBLISHED"})
     candidate["revision"] = max(1, int(candidate.get("revision") or 1)) + 1
-    errors = validate_content_lesson(candidate)
+    errors = _validation_errors(lesson_id, candidate)
     if errors:
         raise web.HTTPUnprocessableEntity(text=json.dumps({"error": "Lesson validation failed", "errors": errors}, ensure_ascii=False), content_type="application/json")
     root = ensure_persistent_lesson(lesson_id)
@@ -373,15 +457,7 @@ async def rollback_lesson(request: web.Request) -> web.Response:
     return web.json_response({"lesson": _editable_lesson(lesson_id), "summary": _summary(lesson_id)})
 
 
-async def upload_media(request: web.Request) -> web.Response:
-    _authorized(request)
-    lesson_id = _lesson_id(request.match_info["lesson_id"])
-    if _editable_lesson(lesson_id) is None:
-        raise web.HTTPNotFound()
-    reader = await request.multipart()
-    part = await reader.next()
-    if part is None or part.name != "file" or not part.filename:
-        raise web.HTTPBadRequest(text=json.dumps({"error": "file is required"}), content_type="application/json")
+async def _store_media_part(lesson_id: str, part: Any) -> tuple[dict[str, Any], bool]:
     original = Path(part.filename).name
     extension = Path(original).suffix.lower()
     if extension not in MEDIA_EXTENSIONS:
@@ -404,14 +480,109 @@ async def upload_media(request: web.Request) -> web.Response:
                     raise web.HTTPRequestEntityTooLarge(max_size=limit, actual_size=size)
                 digest.update(chunk)
                 stream.write(chunk)
+        sha256 = digest.hexdigest()
+        manifest = _media_manifest(lesson_id)
+        duplicate = next((name for name, metadata in manifest["assets"].items() if metadata.get("sha256") == sha256 and Path(name).suffix.lower() == extension and (media_root / name).exists()), None)
+        if duplicate:
+            temporary.unlink(missing_ok=True)
+            return _media_entry(lesson_id, media_root / duplicate, manifest), True
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%f")
-        filename = f"{stem}-{stamp}-{digest.hexdigest()[:10]}{extension}"
+        filename = f"{stem}-{stamp}-{sha256[:10]}{extension}"
         target = media_root / filename
         os.replace(temporary, target)
+        manifest["assets"][filename] = {
+            "display_name": original,
+            "sha256": sha256,
+            "created_at": datetime.now(UTC).isoformat(),
+        }
+        _save_media_manifest(lesson_id, manifest)
     finally:
         temporary.unlink(missing_ok=True)
-    _audit("LESSON_MEDIA_UPLOADED", lesson_id, filename=filename, size=size, sha256=digest.hexdigest())
-    return web.json_response({"path": f"media/{filename}", "name": filename, "size": size, "sha256": digest.hexdigest()}, status=201)
+    return _media_entry(lesson_id, target, manifest), False
+
+
+async def upload_media(request: web.Request) -> web.Response:
+    _authorized(request)
+    lesson_id = _lesson_id(request.match_info["lesson_id"])
+    if _editable_lesson(lesson_id) is None:
+        raise web.HTTPNotFound()
+    reader = await request.multipart()
+    part = await reader.next()
+    if part is None or part.name != "file" or not part.filename:
+        raise web.HTTPBadRequest(text=json.dumps({"error": "file is required"}), content_type="application/json")
+    result, reused = await _store_media_part(lesson_id, part)
+    _audit("LESSON_MEDIA_REUSED" if reused else "LESSON_MEDIA_UPLOADED", lesson_id, filename=result["name"], size=result["size"], sha256=result["sha256"])
+    result["reused"] = reused
+    return web.json_response(result, status=200 if reused else 201)
+
+
+async def rename_media(request: web.Request) -> web.Response:
+    _authorized(request)
+    lesson_id = _lesson_id(request.match_info["lesson_id"])
+    filename = Path(request.match_info["filename"]).name
+    path = persistent_lessons_root() / lesson_id / "media" / filename
+    if filename != request.match_info["filename"] or not path.is_file():
+        raise web.HTTPNotFound()
+    data = await request.json()
+    display_name = str(data.get("display_name") or "").strip()[:160]
+    if not display_name:
+        raise web.HTTPBadRequest(text=json.dumps({"error": "display_name is required"}), content_type="application/json")
+    manifest = _media_manifest(lesson_id)
+    metadata = dict(manifest["assets"].get(filename) or {})
+    metadata["display_name"] = display_name
+    metadata.setdefault("created_at", datetime.fromtimestamp(path.stat().st_mtime, UTC).isoformat())
+    manifest["assets"][filename] = metadata
+    _save_media_manifest(lesson_id, manifest)
+    _audit("LESSON_MEDIA_RENAMED", lesson_id, filename=filename, display_name=display_name)
+    return web.json_response(_media_entry(lesson_id, path, manifest))
+
+
+async def replace_media(request: web.Request) -> web.Response:
+    _authorized(request)
+    lesson_id = _lesson_id(request.match_info["lesson_id"])
+    filename = Path(request.match_info["filename"]).name
+    old_path = persistent_lessons_root() / lesson_id / "media" / filename
+    if filename != request.match_info["filename"] or not old_path.is_file():
+        raise web.HTTPNotFound()
+    reader = await request.multipart()
+    part = await reader.next()
+    if part is None or part.name != "file" or not part.filename:
+        raise web.HTTPBadRequest(text=json.dumps({"error": "file is required"}), content_type="application/json")
+    result, reused = await _store_media_part(lesson_id, part)
+    result.update({"reused": reused, "replaces": f"media/{filename}"})
+    _audit("LESSON_MEDIA_REPLACEMENT_CREATED", lesson_id, old_filename=filename, new_filename=result["name"], reused=reused)
+    return web.json_response(result, status=200 if reused else 201)
+
+
+async def delete_unused_media(request: web.Request) -> web.Response:
+    _authorized(request)
+    lesson_id = _lesson_id(request.match_info["lesson_id"])
+    filename = Path(request.match_info["filename"]).name
+    base = (persistent_lessons_root() / lesson_id / "media").resolve()
+    path = (base / filename).resolve()
+    if filename != request.match_info["filename"] or base not in path.parents or not path.is_file():
+        raise web.HTTPNotFound()
+    used_by = _media_references(lesson_id, filename)
+    if used_by:
+        raise web.HTTPConflict(text=json.dumps({"error": "Asset is still referenced", "used_by": used_by}), content_type="application/json")
+    path.unlink()
+    manifest = _media_manifest(lesson_id)
+    manifest["assets"].pop(filename, None)
+    _save_media_manifest(lesson_id, manifest)
+    _audit("LESSON_MEDIA_UNUSED_DELETED", lesson_id, filename=filename)
+    return web.json_response({"ok": True, "deleted": filename})
+
+
+async def assist_task(request: web.Request) -> web.Response:
+    _authorized(request)
+    data = await request.json()
+    instruction = str(data.get("instruction") or "").strip()
+    if not instruction:
+        raise web.HTTPBadRequest(text=json.dumps({"error": "instruction is required"}), content_type="application/json")
+    assets = [str(item) for item in (data.get("assets") or []) if isinstance(item, str)]
+    result = await propose_task(instruction, assets)
+    _audit("LESSON_TASK_PROPOSED", str(data.get("lesson_id") or "assistant"), task_type=result["proposal"].get("type"), source=result["source"])
+    return web.json_response(result)
 
 
 async def studio_media(request: web.Request) -> web.StreamResponse:
@@ -444,5 +615,9 @@ def register_content_studio_routes(app: web.Application) -> None:
     app.router.add_post("/api/studio/lessons/{lesson_id}/publish", publish_lesson)
     app.router.add_post("/api/studio/lessons/{lesson_id}/archive", archive_lesson)
     app.router.add_post("/api/studio/lessons/{lesson_id}/rollback", rollback_lesson)
+    app.router.add_post("/api/studio/assist/task", assist_task)
     app.router.add_post("/api/studio/lessons/{lesson_id}/media", upload_media)
+    app.router.add_patch("/api/studio/lessons/{lesson_id}/media/{filename}", rename_media)
+    app.router.add_post("/api/studio/lessons/{lesson_id}/media/{filename}/replace", replace_media)
+    app.router.add_delete("/api/studio/lessons/{lesson_id}/media/{filename}", delete_unused_media)
     app.router.add_get("/api/studio/lessons/{lesson_id}/media/{filename}", studio_media)

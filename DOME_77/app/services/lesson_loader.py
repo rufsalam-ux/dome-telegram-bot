@@ -19,7 +19,9 @@ def _runtime_slides(slides: list[dict], lesson_id: str, *, content_engine: str =
 
     Studio-authored lessons may legitimately use step_02 or orders 25..39.
     """
-    if lesson_id != "demo_001" or content_engine.lower() == "content_v1":
+    if content_engine.lower() == "content_v1":
+        return [slide for slide in slides if slide.get("enabled") is not False]
+    if lesson_id != "demo_001":
         return list(slides)
     result = []
     for slide in slides:

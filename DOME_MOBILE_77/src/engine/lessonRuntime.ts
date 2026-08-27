@@ -27,11 +27,11 @@ export function withLessonTimeout<T>(operation:Promise<T>,label:string,timeoutMs
 
 export function requiresSelection(slide:any):boolean{
   const type=String(slide?.type||'');
-  return Array.isArray(slide?.selection_options)||Array.isArray(slide?.riddle_options)||Array.isArray(slide?.options)||['choice','tap_select','multi_select','listen_choose','odd_one_out','fill_gap'].includes(type)||type==='card_selector'||type==='animal_compare'||type==='mood_choice'||slide?.interactive_task==='suitcase'||slide?.interaction_kind==='gift_selector';
+  return Array.isArray(slide?.selection_options)||Array.isArray(slide?.riddle_options)||Array.isArray(slide?.options)||['choice','multiple_choice','tap_select','multi_select','listen_choose','odd_one_out','fill_gap','drag_drop','matching','memory','puzzle','ordering','sequence'].includes(type)||type==='card_selector'||type==='animal_compare'||type==='mood_choice'||slide?.interactive_task==='suitcase'||slide?.interaction_kind==='gift_selector';
 }
 
 export function requiresVoice(slide:any):boolean{
-  return ['required_voice','optional_voice'].includes(String(slide?.answer_mode||''))||['voice_answer','repeat','speak','dialogue','roleplay','retell','continue_story','read_aloud','echo_reading','shared_reading','read_roles'].includes(String(slide?.type||''))||slide?.type==='card_selector'||slide?.type==='animal_compare';
+  return ['required_voice','optional_voice'].includes(String(slide?.answer_mode||''))||['voice_answer','required_movie_phrase','repeat','repeat_phrase','speak','dialogue','open_dialogue','roleplay','retell','continue_story','read_aloud','echo_reading','shared_reading','read_roles'].includes(String(slide?.type||''))||slide?.type==='card_selector'||slide?.type==='animal_compare';
 }
 
 export function stageAfterTutorSpeech(slide:any,hasSelection=false):RuntimeStage{

@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app.core.config import settings
 from app.db.models import Base, Child, LessonEntitlement, Parent
 from app.services import lesson_access
+from app.services.content_authoring_assistant import deterministic_proposal, sanitize_proposal
 from app.services.lesson_loader import LessonConfigurationError, _runtime_slides, load_lesson
 from app.services.mobile_tokens import issue_session_token
 from app.webapp import content_studio, mobile_api
@@ -59,7 +60,7 @@ async def test_content_studio_draft_publish_versioned_media_and_rollback(monkeyp
         lesson["slides"] = [_slide()]
         response = await client.put("/api/studio/lessons/studio_001", headers=headers, json={"lesson": lesson})
         assert response.status == 200
-        assert (await response.json())["validation_errors"] == []
+        assert "missing media media/picture.png" in " ".join((await response.json())["validation_errors"])
         assert not (storage / "authored-content/lessons/studio_001/lesson.json").exists()
 
         first = FormData()
@@ -70,6 +71,10 @@ async def test_content_studio_draft_publish_versioned_media_and_rollback(monkeyp
         result2 = await (await client.post("/api/studio/lessons/studio_001/media", headers=headers, data=second)).json()
         assert result1["path"] != result2["path"]
         assert (storage / "authored-content/lessons/studio_001" / result1["path"]).read_bytes() == b"one"
+
+        lesson["slides"][0]["media_sequence"][0]["src"] = result1["path"]
+        response = await client.put("/api/studio/lessons/studio_001", headers=headers, json={"lesson": lesson})
+        assert (await response.json())["validation_errors"] == []
 
         response = await client.post("/api/studio/lessons/studio_001/publish", headers=headers)
         assert response.status == 200
@@ -114,6 +119,7 @@ async def test_content_studio_reorder_archive_and_feature_gate(monkeypatch, tmp_
             created = await client.post("/api/studio/lessons", headers=headers, json={"lesson_id": lesson_id, "title": lesson_id})
             lesson = (await created.json())["lesson"]
             lesson["slides"] = [_slide()]
+            lesson["slides"][0].pop("media_sequence")
             await client.put(f"/api/studio/lessons/{lesson_id}", headers=headers, json={"lesson": lesson})
             assert (await client.post(f"/api/studio/lessons/{lesson_id}/publish", headers=headers)).status == 200
         reordered = await client.post("/api/studio/lessons/reorder", headers=headers, json={"orders": {"order_b": 1, "order_a": 2}})
@@ -239,3 +245,84 @@ def test_studio_lesson_orders_are_not_filtered_by_demo_001_legacy_cut(monkeypatc
     loaded = load_lesson("studio_long")
     assert len(loaded["slides"]) == 40
     assert {slide["order"] for slide in loaded["slides"]} >= {2, 25, 39}
+
+
+def test_stable_task_templates_pre_video_and_movie_phrase_validate():
+    lesson = {
+        "schema_version": "2.1", "engine": "content_v1", "lesson_id": "templates_001",
+        "course_id": "conversation", "title": "Templates", "order": 1,
+        "max_completed_runs": 2, "expires_after_months": 10,
+        "slides": [
+            {"slide_id": "drag", "order": 1, "type": "drag_drop", "prompt": "Pack", "items": [{"id": "coat"}, {"id": "hat"}], "targets": [{"id": "bag"}, {"id": "box"}]},
+            {"slide_id": "memory", "order": 2, "type": "memory", "prompt": "Pairs", "pairs": [["cat", "кот"], ["dog", "собака"]]},
+            {"slide_id": "puzzle", "order": 3, "type": "puzzle", "prompt": "Puzzle", "pieces": 6, "image_file": "media/puzzle.png"},
+            {"slide_id": "movie", "order": 4, "type": "required_movie_phrase", "prompt": "Say it", "requiredForMovie": True, "moviePhraseId": "movie_line", "allow_skip": False},
+        ],
+    }
+    assert content_studio.validate_content_lesson(lesson) == []
+    lesson["slides"][2]["preSlideVideo"] = {"enabled": True, "uri": "media/intro.mp4", "skippable": True, "showPolicy": "once_per_attempt"}
+    assert content_studio.validate_content_lesson(lesson) == []
+    lesson["slides"][2]["preSlideVideo"] = {}
+    assert content_studio.validate_content_lesson(lesson) == []
+    lesson["slides"][3].pop("moviePhraseId")
+    assert "requiredForMovie needs moviePhraseId" in " ".join(content_studio.validate_content_lesson(lesson))
+
+
+def test_authoring_assistant_only_returns_editable_declarative_templates():
+    proposal = deterministic_proposal("Make a memory game from these pictures", ["media/cat.png", "media/dog.png"])
+    assert proposal["type"] == "memory" and len(proposal["pairs"]) >= 2
+    clean = sanitize_proposal({**proposal, "javascript": "location.reload()", "type": "memory"}, proposal)
+    assert "javascript" not in clean
+    assert not any(word in json.dumps(clean) for word in ("<script", "function()"))
+
+
+@pytest.mark.asyncio
+async def test_media_library_deduplicates_renames_replaces_and_deletes_only_unused(monkeypatch, tmp_path):
+    storage = tmp_path / "storage"
+    content = tmp_path / "content"
+    (content / "lessons").mkdir(parents=True)
+    (content / "courses").mkdir(parents=True)
+    monkeypatch.setattr(settings, "storage_root", storage)
+    monkeypatch.setattr(settings, "content_root", content)
+    monkeypatch.setattr(settings, "content_studio_token", "owner-secret")
+    monkeypatch.setattr(settings, "openai_api_key", "")
+    app = web.Application(client_max_size=10 * 1024 * 1024)
+    content_studio.register_content_studio_routes(app)
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    headers = {"Authorization": "Bearer owner-secret"}
+    try:
+        created = await client.post("/api/studio/lessons", headers=headers, json={"lesson_id": "media_001", "title": "Media"})
+        lesson = (await created.json())["lesson"]
+        lesson["slides"] = [{"slide_id": "one", "order": 1, "type": "info", "prompt": "Hello"}]
+        await client.put("/api/studio/lessons/media_001", headers=headers, json={"lesson": lesson})
+
+        first = FormData(); first.add_field("file", b"same-image", filename="cat.png", content_type="image/png")
+        first_response = await client.post("/api/studio/lessons/media_001/media", headers=headers, data=first)
+        first_asset = await first_response.json()
+        duplicate = FormData(); duplicate.add_field("file", b"same-image", filename="renamed-cat.png", content_type="image/png")
+        duplicate_response = await client.post("/api/studio/lessons/media_001/media", headers=headers, data=duplicate)
+        duplicate_asset = await duplicate_response.json()
+        assert first_response.status == 201 and duplicate_response.status == 200
+        assert duplicate_asset["reused"] is True and duplicate_asset["path"] == first_asset["path"]
+        assert len(list((storage / "authored-content/lessons/media_001/media").iterdir())) == 1
+
+        renamed = await client.patch(f'/api/studio/lessons/media_001/media/{first_asset["name"]}', headers=headers, json={"display_name": "Кот"})
+        assert (await renamed.json())["display_name"] == "Кот"
+        replacement = FormData(); replacement.add_field("file", b"new-image", filename="cat-v2.png", content_type="image/png")
+        replacement_response = await client.post(f'/api/studio/lessons/media_001/media/{first_asset["name"]}/replace', headers=headers, data=replacement)
+        replacement_asset = await replacement_response.json()
+        assert replacement_asset["path"] != first_asset["path"] and replacement_asset["replaces"] == first_asset["path"]
+
+        lesson["slides"][0]["media_sequence"] = [{"id": "visual", "type": "image", "src": first_asset["path"]}]
+        await client.put("/api/studio/lessons/media_001", headers=headers, json={"lesson": lesson})
+        used_delete = await client.delete(f'/api/studio/lessons/media_001/media/{first_asset["name"]}', headers=headers)
+        assert used_delete.status == 409
+        unused_delete = await client.delete(f'/api/studio/lessons/media_001/media/{replacement_asset["name"]}', headers=headers)
+        assert unused_delete.status == 200
+
+        assisted = await client.post("/api/studio/assist/task", headers=headers, json={"lesson_id": "media_001", "instruction": "Make a 6-piece puzzle", "assets": [first_asset["path"]]})
+        proposal = (await assisted.json())["proposal"]
+        assert proposal["type"] == "puzzle" and proposal["pieces"] == 6
+    finally:
+        await client.close()
