@@ -1,3 +1,5 @@
+import * as SecureStore from 'expo-secure-store';
+
 const DEFAULT_BASE='https://dome-telegram-bot-production.up.railway.app';
 const TOKEN_KEY='dome_mobile_token';
 
@@ -10,11 +12,9 @@ let invalidationPromise:Promise<void>|null=null;
 const sessionInvalidatedListeners=new Set<SessionInvalidatedListener>();
 
 async function readUriBase64(uri:string):Promise<string>{
-  const FileSystem=await import('expo-file-system/legacy');
+  const FileSystem=require('expo-file-system/legacy');
   return FileSystem.readAsStringAsync(uri,{encoding:FileSystem.EncodingType.Base64});
 }
-
-async function secureStore(){return import('expo-secure-store')}
 
 export class MobileApiError extends Error{
   status:number;
@@ -41,7 +41,6 @@ export function onApiSessionInvalidated(listener:SessionInvalidatedListener):()=
 
 export async function restoreApiToken():Promise<string>{
   if(cachedToken===undefined){
-    const SecureStore=await secureStore();
     cachedToken=(await SecureStore.getItemAsync(TOKEN_KEY))||'';
   }
   return cachedToken;
@@ -50,14 +49,12 @@ export async function restoreApiToken():Promise<string>{
 export async function persistApiToken(value:string):Promise<void>{
   const next=String(value||'').trim();
   cachedToken=next;
-  const SecureStore=await secureStore();
   if(next)await SecureStore.setItemAsync(TOKEN_KEY,next);
   else await SecureStore.deleteItemAsync(TOKEN_KEY);
 }
 
 export async function clearApiToken():Promise<void>{
   cachedToken='';
-  const SecureStore=await secureStore();
   await SecureStore.deleteItemAsync(TOKEN_KEY);
 }
 

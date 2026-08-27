@@ -407,10 +407,11 @@ test('cold startup is isolated from lesson native modules and cannot wait foreve
   const mobileApi=readFileSync(new URL('../src/api/mobile.ts',import.meta.url),'utf8');
   const ui=readFileSync(new URL('../src/components/Ui.tsx',import.meta.url),'utf8');
   assert.equal(packageJson.main,'index.js');assert.match(entry,/ENTRY_EVALUATION/);assert.match(entry,/registerRootComponent/);assert.match(entry,/APP_MODULE_LOAD_FAILED/);
-  assert.doesNotMatch(app,/from ['"]\.\/src\/store\/AppStore['"]/);assert.doesNotMatch(app,/from ['"]\.\/src\/screens\/RootApp['"]/);assert.match(app,/React\.lazy\(\(\)=>import\(['"]\.\/src\/AppRuntime['"]\)/);
-  assert.doesNotMatch(mobileApi,/^import .*expo-(file-system|secure-store)/m);assert.match(mobileApi,/import\(['"]expo-secure-store['"]\)/);
-  assert.doesNotMatch(root,/import\s+\{LessonPlayer\}\s+from/);assert.match(root,/React\.lazy/);assert.match(root,/withStartupTimeout/);
-  assert.doesNotMatch(ui,/import\s+\{?\s*useAudioPlayer/);assert.match(ui,/import\(['"]expo-audio['"]\)/);assert.ok(ui.indexOf('onPress();')<ui.indexOf('Vibration.vibrate(8)'));assert.match(ui,/DOME_TAP_HAPTIC_UNAVAILABLE/);
+  assert.doesNotMatch(app,/from ['"]\.\/src\/store\/AppStore['"]/);assert.doesNotMatch(app,/from ['"]\.\/src\/screens\/RootApp['"]/);assert.match(app,/import \{AppRuntime\} from ['"]\.\/src\/AppRuntime['"]/);
+  assert.match(mobileApi,/import \* as SecureStore from ['"]expo-secure-store['"]/);assert.match(mobileApi,/require\(['"]expo-file-system\/legacy['"]\)/);
+  assert.doesNotMatch(root,/import\s+\{LessonPlayer\}\s+from/);assert.match(root,/require\(['"]\.\/LessonPlayer['"]\)/);assert.match(root,/import \{AuthScreen\} from ['"]\.\/AuthScreen['"]/);assert.match(root,/withStartupTimeout/);
+  assert.doesNotMatch(ui,/import\s+\{?\s*useAudioPlayer/);assert.match(ui,/require\(['"]expo-audio['"]\)/);assert.ok(ui.indexOf('onPress();')<ui.indexOf('Vibration.vibrate(8)'));assert.match(ui,/DOME_TAP_HAPTIC_UNAVAILABLE/);
+  assert.doesNotMatch(app+root+mobileApi+ui,/React\.lazy|\bimport\s*\(/);
   assert.match(app,/key=\{runtimeAttempt\}/);assert.match(app,/setRuntimeAttempt\(value=>value\+1\)/);assert.match(app,/fatal-boot-error/);
   assert.match(app,/RETRY_PRESS_RECEIVED/);assert.match(app,/BOOT STAGE:/);assert.match(app,/BOOT ERROR:/);assert.match(app,/RETRY COUNT:/);assert.match(app,/disabled=\{false\}/);assert.match(app,/onPress=\{this\.props\.onRetryPress\}/);
   assert.ok(app.indexOf('<RootErrorBoundary')<app.indexOf('<SafeAreaProvider>'));assert.doesNotMatch(app,/<Button\b/);

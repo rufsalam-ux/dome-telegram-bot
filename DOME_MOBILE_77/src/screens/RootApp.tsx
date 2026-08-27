@@ -1,19 +1,14 @@
-import React,{Suspense,useEffect,useRef,useState} from 'react';
+import React,{useEffect,useRef,useState} from 'react';
 import {Alert,Image,Linking,Pressable,ScrollView,Share,Text,View} from 'react-native';
 import {Body,Button,Card,H1,H2} from '../components/Ui';
 import {useAppStore} from '../store/AppStore';
 import {bootstrap,isUnauthorizedError,listLessons,listMovies,API_BASE,restoreApiToken,updateChildLanguages} from '../api/mobile';
 import {BootStage,logStartupStage,startupFailure,StartupFailure,withStartupTimeout} from '../engine/startup';
+import {AuthScreen} from './AuthScreen';
 
-// LessonPlayer initializes native audio/video modules. Load it only when the
-// lesson route is requested so a media-module problem can never block app boot.
-const LazyLessonPlayer=React.lazy(()=>import('./LessonPlayer').then(module=>({default:module.LessonPlayer})));
-const LazyPurchaseScreen=React.lazy(()=>import('./PurchaseScreen').then(module=>({default:module.PurchaseScreen})));
-const LazyAdminScreen=React.lazy(()=>import('./AdminScreen').then(module=>({default:module.AdminScreen})));
-const LazyAuthScreen=React.lazy(()=>import('./AuthScreen').then(module=>({default:module.AuthScreen})));
-const LazyHeroScreen=React.lazy(()=>import('./HeroScreen').then(module=>({default:module.HeroScreen})));
-const LazyHeroConfirmScreen=React.lazy(()=>import('./HeroConfirmScreen').then(module=>({default:module.HeroConfirmScreen})));
-const LazyAddChildScreen=React.lazy(()=>import('./AddChildScreen').then(module=>({default:module.AddChildScreen})));
+// Optional native screens use synchronous, statically analyzable Metro requires.
+// Their code is part of the main bundle, but native media modules are evaluated
+// only when the corresponding route opens. No network-loaded JS chunk is used.
 
 const LANGUAGES=[
   ['ru','Русский'],['en','English'],['es','Español'],['de','Deutsch'],['fr','Français'],
@@ -117,11 +112,11 @@ export function RootApp({onBootStage,retryCount,onRetryReceived}:RootAppProps){
       <Text selectable style={{fontSize:9,lineHeight:12,marginTop:12,color:'#6A7088'}}>STACK: {startupError.stack||'unavailable'}</Text>
     </ScrollView>;
   }
-  if(s.screen==='auth')return <LazyAuthScreen/>;
+  if(s.screen==='auth')return <AuthScreen/>;
   if(s.screen==='children')return <ScrollView contentContainerStyle={{padding:24,flexGrow:1}}>{visibleChildren.length?<><H1>Кто сегодня занимается?</H1><Body>Выберите ребёнка или добавьте новый профиль.</Body><Button testID='add-child-button' title='＋ Добавить ребёнка' onPress={()=>s.setScreen('add_child')}/>{visibleChildren.map(c=><Card key={c.id}><H2>{c.name}</H2><Body>{c.age?`${c.age} лет · `:''}изучает {c.learningLanguage||'ru'}</Body><Button title='Выбрать' onPress={()=>{s.setSelectedChild(c);s.setScreen(c.activeCharacterId?'home':'hero')}}/></Card>)}</>:<><H1>Добро пожаловать в DOME</H1><Body>Аккаунт подтверждён. Создайте первый профиль ребёнка, чтобы начать занятия.</Body><Button testID='add-child-onboarding-button' title='＋ Добавить ребёнка' onPress={()=>s.setScreen('add_child')}/><Card><H2>Первый шаг</H2><Body>Укажите имя, возраст и языки обучения. После этого вместе выберите героя.</Body></Card></>}<Button secondary title='Выйти из аккаунта' onPress={s.logout}/></ScrollView>;
-  if(s.screen==='add_child')return <LazyAddChildScreen/>;
-  if(s.screen==='hero')return <LazyHeroScreen/>;
-  if(s.screen==='hero_confirm')return <LazyHeroConfirmScreen/>;
+  if(s.screen==='add_child'){const {AddChildScreen}=require('./AddChildScreen');return <AddChildScreen/>}
+  if(s.screen==='hero'){const {HeroScreen}=require('./HeroScreen');return <HeroScreen/>}
+  if(s.screen==='hero_confirm'){const {HeroConfirmScreen}=require('./HeroConfirmScreen');return <HeroConfirmScreen/>}
 
   if(s.screen==='language'){
     const c=s.selectedChild;if(!c)return null;
@@ -130,10 +125,10 @@ export function RootApp({onBootStage,retryCount,onRetryReceived}:RootAppProps){
   }
 
   if(s.screen==='home')return <ScrollView contentContainerStyle={{padding:24}}><H1>{s.selectedChild?.name||'DOME'}</H1>{s.selectedChild?.heroUrl?<Image source={{uri:s.selectedChild.heroUrl.startsWith('http')?s.selectedChild.heroUrl:API_BASE+s.selectedChild.heroUrl}} style={{height:150,width:'100%',resizeMode:'contain'}}/>:null}<Card><Body>Изучаемый: {s.selectedChild?.learningLanguage||'ru'} · объяснения: {s.selectedChild?.nativeLanguage||'ru'}</Body>{activeLesson?<Body muted>{activeLesson.resume_step!==null?'Можно продолжить:':'Следующий урок:'} {activeLesson.title}</Body>:null}{lessonsError?<Body>Не удалось обновить каталог: {lessonsError}</Body>:null}</Card><Button disabled={lessonsLoading||!activeLesson} title={lessonsLoading?'Загружаю уроки…':activeLesson?.resume_step!==null?'▶ Продолжить урок':'▶ Начать урок'} onPress={()=>activeLesson&&openLesson(activeLesson.lesson_id)}/><Button title='📚 Мои уроки' onPress={()=>s.setScreen('lessons')}/><Button title='🌍 Изменить языки' secondary onPress={()=>s.setScreen('language')}/><Button title='🎭 Мой герой' secondary onPress={()=>s.setScreen('hero')}/><Button title='🎬 Мои мультфильмы' secondary onPress={async()=>{if(s.selectedChild)try{const r=await listMovies(s.selectedChild.id);setMovies(r.movies||[])}catch{}s.setScreen('movies')}}/><Button title='💳 Тарифы и подписка' secondary onPress={()=>s.setScreen('plans')}/><Button title='📊 Мои успехи' secondary onPress={()=>Alert.alert('Прогресс','Данные берутся с сервера DOME.')}/><Button secondary title='Сменить ребёнка' onPress={()=>s.setScreen('children')}/></ScrollView>;
-  if(s.screen==='plans'||s.screen==='purchase')return <LazyPurchaseScreen/>;
+  if(s.screen==='plans'||s.screen==='purchase'){const {PurchaseScreen}=require('./PurchaseScreen');return <PurchaseScreen/>}
   if(s.screen==='lessons')return <ScrollView contentContainerStyle={{padding:24}}><H1>Мои уроки</H1><Button secondary disabled={lessonsLoading} title={lessonsLoading?'Обновляю…':'↻ Обновить каталог'} onPress={()=>setCatalogReloadNonce(value=>value+1)}/>{lessonsLoading?<Card><Body>Обновляю опубликованный каталог…</Body></Card>:null}{lessonsError?<Card><Body>{lessonsError}</Body></Card>:null}{lessons.map(item=><Card key={`${item.course_id}:${item.lesson_id}`}><H2>{item.title}</H2><Body>{item.description||item.course_title}</Body><Body muted>Пройдено: {item.completed_runs}/{item.max_completed_runs}{item.resume_step!==null?' · есть сохранённый прогресс':''}</Body><Button disabled={!item.available} title={item.available?(item.resume_step!==null?'Продолжить':'Начать'):'🔒 Недоступен'} onPress={()=>openLesson(item.lesson_id)}/></Card>)}{!lessonsLoading&&!lessons.length?<Card><Body>Опубликованных уроков пока нет.</Body></Card>:null}<Button secondary title='Назад' onPress={()=>s.setScreen('home')}/></ScrollView>;
-  if(s.screen==='lesson')return activeLessonId?<Suspense fallback={<View style={{flex:1,alignItems:'center',justifyContent:'center',padding:24}}><Body>Открываем урок…</Body></View>}><LazyLessonPlayer lessonId={activeLessonId}/></Suspense>:<View style={{flex:1,alignItems:'center',justifyContent:'center',padding:24}}><Body>Урок не выбран.</Body><Button title='К списку уроков' onPress={()=>s.setScreen('lessons')}/></View>;
+  if(s.screen==='lesson'){if(activeLessonId){const {LessonPlayer}=require('./LessonPlayer');return <LessonPlayer lessonId={activeLessonId}/>}return <View style={{flex:1,alignItems:'center',justifyContent:'center',padding:24}}><Body>Урок не выбран.</Body><Button title='К списку уроков' onPress={()=>s.setScreen('lessons')}/></View>}
   if(s.screen==='movies')return <ScrollView contentContainerStyle={{padding:24}}><H1>Мои мультфильмы</H1>{movies.length?movies.map((m:any)=><Card key={`${m.session_id}-${m.created_at}`}><Body>{m.title||m.filename}</Body><Body muted>{m.status==='READY'?'Готов':m.status==='PROCESSING'?'Обрабатывается…':m.status==='FAILED'?'Нужен повторный запуск':'Ожидает данных'} · {m.created_at||''}</Body>{m.url?<><Button title='▶ Смотреть / скачать' onPress={()=>Linking.openURL(m.url)}/><Button secondary title='Поделиться' onPress={()=>Share.share({message:m.url,url:m.url})}/></>:null}</Card>):<Card><Body>Пока мультфильмов нет.</Body></Card>}<Button secondary title='Обновить' onPress={async()=>{if(s.selectedChild){const r=await listMovies(s.selectedChild.id);setMovies(r.movies||[])}}}/><Button secondary title='Назад' onPress={()=>s.setScreen('home')}/></ScrollView>;
-  if(s.screen==='admin')return <LazyAdminScreen/>;
+  if(s.screen==='admin'){const {AdminScreen}=require('./AdminScreen');return <AdminScreen/>}
   return <View style={{padding:24}}><Text>Неизвестный экран</Text></View>
 }

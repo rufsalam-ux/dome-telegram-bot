@@ -3,7 +3,7 @@ const tapSound=require('../../assets/sounds/soft-click.wav');
 let tapPlayer:any=null;let tapPlayerPromise:Promise<any>|null=null;
 async function playTapSound(){
   try{
-    if(!tapPlayerPromise)tapPlayerPromise=import('expo-audio').then(({createAudioPlayer})=>tapPlayer=createAudioPlayer(tapSound,{keepAudioSessionActive:true})).catch(error=>{tapPlayerPromise=null;console.warn('DOME_TAP_AUDIO_UNAVAILABLE',error);return null});
+    if(!tapPlayerPromise)tapPlayerPromise=Promise.resolve().then(()=>{const {createAudioPlayer}=require('expo-audio');return tapPlayer=createAudioPlayer(tapSound,{keepAudioSessionActive:true})}).catch(error=>{tapPlayerPromise=null;console.warn('DOME_TAP_AUDIO_UNAVAILABLE',error);return null});
     const player=tapPlayer||await tapPlayerPromise;if(!player)return;
     await player.seekTo(0);player.play();
   }catch(error){console.warn('DOME_TAP_AUDIO_FAILED',error)}

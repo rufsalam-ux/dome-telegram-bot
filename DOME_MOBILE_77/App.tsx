@@ -1,25 +1,12 @@
-import React,{Suspense,useCallback,useEffect,useMemo,useRef,useState} from 'react';
+import React,{useCallback,useEffect,useRef,useState} from 'react';
 import {LogBox,Pressable,ScrollView,StatusBar,Text,View} from 'react-native';
 import {SafeAreaProvider,SafeAreaView} from 'react-native-safe-area-context';
 import {BootStage,logStartupStage,rootRuntimeFailure,StartupFailure} from './src/engine/startup';
+import {AppRuntime} from './src/AppRuntime';
 
 const BUILD_COMMIT=(process.env.EXPO_PUBLIC_BUILD_COMMIT||'unmarked').trim();
 const BUILD_TIMESTAMP=(process.env.EXPO_PUBLIC_BUILD_TIMESTAMP||'unknown-time').trim();
 export const BUILD_MARKER=`BUILD ${BUILD_COMMIT.slice(0,12)} / ${BUILD_TIMESTAMP}`;
-
-type AppRuntimeProps={
-  onBootStage:(stage:BootStage,failure?:StartupFailure|null)=>void;
-  retryCount:number;
-  onRetryReceived:()=>number;
-};
-
-function createLazyAppRuntime(){return React.lazy(()=>import('./src/AppRuntime').then(module=>{
-  logStartupStage('APP_RUNTIME_LOADED');return {default:module.AppRuntime};
-}).catch(error=>{
-  const failure=rootRuntimeFailure(error,'ROOT');
-  logStartupStage('APP_RUNTIME_LOAD_FAILED',{error_code:failure.code,error_name:failure.errorName,error_message:failure.errorMessage,stack:failure.stack.slice(0,1200)});
-  throw error;
-})) as React.LazyExoticComponent<React.ComponentType<AppRuntimeProps>>}
 
 // A tunnel websocket warning is not an application failure. It remains in Metro
 // output, but never covers the child-facing UI.
@@ -80,7 +67,6 @@ export default function App(){
   const[bootStage,setBootStage]=useState<BootStage>('ROOT');
   const[bootFailure,setBootFailure]=useState<StartupFailure|null>(null);
   const retryCountRef=useRef(0);
-  const LazyAppRuntime=useMemo(createLazyAppRuntime,[runtimeAttempt]);
 
   const reportBootStage=useCallback((stage:BootStage,failure:StartupFailure|null=null)=>{
     setBootStage(stage);setBootFailure(failure);
@@ -98,16 +84,14 @@ export default function App(){
   },[registerRetry,reportBootStage,runtimeAttempt]);
   const handleRootFailure=useCallback((failure:StartupFailure)=>{setBootStage(failure.stage);setBootFailure(failure)},[]);
 
-  useEffect(()=>{logStartupStage('APP_MOUNT');reportBootStage('ROOT')},[reportBootStage]);
+  useEffect(()=>{logStartupStage('APP_MOUNT');logStartupStage('APP_RUNTIME_LOADED');reportBootStage('ROOT')},[reportBootStage]);
 
   return <RootErrorBoundary key={runtimeAttempt} bootStage={bootStage} retryCount={retryCount} onRetryPress={handleRootRetry} onFailure={handleRootFailure}>
     <SafeAreaProvider>
       <SafeAreaView edges={['top','left','right']} style={{flex:1,backgroundColor:'#F7F7FB'}}>
         <StatusBar barStyle='dark-content'/>
         <View style={{flex:1}}>
-          <Suspense fallback={<View style={{flex:1,alignItems:'center',justifyContent:'center',padding:24}}><Text style={{fontSize:18,color:'#42475C'}}>Открываем DOME…</Text></View>}>
-            <LazyAppRuntime key={runtimeAttempt} onBootStage={reportBootStage} retryCount={retryCount} onRetryReceived={registerRetry}/>
-          </Suspense>
+          <AppRuntime key={runtimeAttempt} onBootStage={reportBootStage} retryCount={retryCount} onRetryReceived={registerRetry}/>
           <BootMarker stage={bootStage} failure={bootFailure} retryCount={retryCount}/>
         </View>
       </SafeAreaView>
