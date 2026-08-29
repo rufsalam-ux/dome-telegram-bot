@@ -1,5 +1,5 @@
 export type UiLanguage='ru'|'en'|'de';
-export type Screen='auth'|'children'|'add_child'|'hero'|'hero_confirm'|'home'|'lesson'|'lessons'|'movies'|'plans'|'purchase'|'consents'|'admin'|'language'|'parent_verify';
+export type Screen='auth'|'children'|'add_child'|'hero'|'hero_confirm'|'home'|'lesson'|'lessons'|'movies'|'plans'|'purchase'|'consents'|'admin'|'language'|'experience_settings'|'parent_verify';
 export interface ParentProfile{id:string;name:string;phone?:string;email?:string;country?:string;phoneVerified?:boolean;emailVerified?:boolean;uiLanguage?:UiLanguage;adultAuthorityConfirmed?:boolean}
 export type HeroPoint=[number,number];
 export type HeroBox=[number,number,number,number];

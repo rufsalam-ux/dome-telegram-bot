@@ -340,7 +340,7 @@ test('correction finishes TTS before Answer and preserves the correct Next polic
   assert.equal(hasCorrectiveFeedback(correction),true);
   assert.equal(recordEnabled('AI_SPEAKING',greeting,true),false);
   assert.equal(recordEnabled('WAITING_VOICE',greeting,true),true);
-  for(const postTts of ['WAITING_VOICE','FEEDBACK','RETRY','FOLLOW_UP'] as const)assert.equal(answerEnabled(postTts,greeting,true,false,false),true);
+  for(const postTts of ['WAITING_VOICE','FEEDBACK','RETRY','FOLLOW_UP','COMPLETE'] as const)assert.equal(answerEnabled(postTts,greeting,true,false,false),true);
   assert.equal(answerEnabled('AI_SPEAKING',greeting,true,false,false),false);assert.equal(answerEnabled('WAITING_VOICE',greeting,true,true,false),false);
   assert.equal(nextEnabled('WAITING_VOICE',true,{requiredForMovie:false}),true);
   assert.equal(nextEnabled('WAITING_VOICE',true,{requiredForMovie:true,hasValidRecording:false}),false);
@@ -383,8 +383,14 @@ test('interaction waits explain the physical action and provide a highlighted ta
   const player=readFileSync(new URL('../src/screens/LessonPlayer.tsx',import.meta.url),'utf8');assert.match(player,/interaction-guidance/);assert.match(player,/interactionAttention/);
 });
 
-test('parrot remains movie-required and receives an adaptive natural target model',()=>{
-  const parrot=(bundledLesson.slides as any[]).find(slide=>slide.slide_id==='slide_44');assert.equal(parrot.requiredForMovie,true);assert.equal(isRequiredForMovie(parrot),true);assert.equal(nextEnabled('WAITING_VOICE',true,{requiredForMovie:true,hasValidRecording:false}),false);assert.equal(answerEnabled('RETRY',parrot,true,false,false),true);assert.match(adaptiveModelPhrase(parrot,'PRE_A1',.15),/Попугай.+красный.+красивый/);assert.match(adaptiveModelPhrase(parrot,'A2',.6),/живёт в тёплом месте/);
+test('parrot remains movie-required and receives an optional bounded conversation',()=>{
+  const parrot=(bundledLesson.slides as any[]).find(slide=>slide.slide_id==='slide_44');assert.equal(parrot.requiredForMovie,true);assert.equal(isRequiredForMovie(parrot),true);assert.equal(parrot.allow_ai_followup,true);assert.equal(parrot.max_ai_followups,2);assert.equal(nextEnabled('WAITING_VOICE',true,{requiredForMovie:true,hasValidRecording:false}),false);assert.equal(nextEnabled('COMPLETE',true,{requiredForMovie:true,hasValidRecording:true}),true);assert.equal(answerEnabled('COMPLETE',parrot,true,false,false),true);assert.match(adaptiveModelPhrase(parrot,'PRE_A1',.15),/Попугай.+красный.+красивый/);assert.match(adaptiveModelPhrase(parrot,'A2',.6),/живёт в тёплом месте/);
+});
+
+test('invite task has one authoritative authored goal and model phrase',()=>{
+  const invite=(bundledLesson.slides as any[]).find(slide=>slide.slide_id==='slide_16');
+  assert.match(runtimePrompt(invite,'PRE_A1',.15,'initial'),/приехать к тебе/i);assert.doesNotMatch(runtimePrompt(invite,'PRE_A1',.15,'initial'),/полетели со мной/i);
+  assert.match(adaptiveModelPhrase(invite,'PRE_A1',.15),/Приезжайте ко мне/);
 });
 
 test('pre-slide video is a presentation hook and never changes the 27-step order',()=>{
@@ -411,12 +417,13 @@ test('cold startup is isolated from lesson native modules and cannot wait foreve
   const root=readFileSync(new URL('../src/screens/RootApp.tsx',import.meta.url),'utf8');
   const mobileApi=readFileSync(new URL('../src/api/mobile.ts',import.meta.url),'utf8');
   const ui=readFileSync(new URL('../src/components/Ui.tsx',import.meta.url),'utf8');
+  const experience=readFileSync(new URL('../src/experience/experience.ts',import.meta.url),'utf8');
   assert.equal(packageJson.main,'index.js');assert.match(entry,/ENTRY_EVALUATION/);assert.match(entry,/registerRootComponent/);assert.match(entry,/APP_MODULE_LOAD_FAILED/);
   assert.doesNotMatch(app,/from ['"]\.\/src\/store\/AppStore['"]/);assert.doesNotMatch(app,/from ['"]\.\/src\/screens\/RootApp['"]/);assert.match(app,/import \{AppRuntime\} from ['"]\.\/src\/AppRuntime['"]/);
   assert.match(mobileApi,/import \* as SecureStore from ['"]expo-secure-store['"]/);assert.match(mobileApi,/require\(['"]expo-file-system\/legacy['"]\)/);
   assert.doesNotMatch(root,/import\s+\{LessonPlayer\}\s+from/);assert.match(root,/require\(['"]\.\/LessonPlayer['"]\)/);assert.match(root,/import \{AuthScreen\} from ['"]\.\/AuthScreen['"]/);assert.match(root,/withStartupTimeout/);
-  assert.doesNotMatch(ui,/import\s+\{?\s*useAudioPlayer/);assert.match(ui,/require\(['"]expo-audio['"]\)/);assert.ok(ui.indexOf('onPress();')<ui.indexOf('Vibration.vibrate(8)'));assert.match(ui,/DOME_TAP_HAPTIC_UNAVAILABLE/);
-  assert.doesNotMatch(app+root+mobileApi+ui,/React\.lazy|\bimport\s*\(/);
+  assert.doesNotMatch(ui+experience,/import\s+\{?\s*useAudioPlayer/);assert.match(ui,/playExperience\('BUTTON_TAP'\)/);assert.match(experience,/require\(['"]expo-audio['"]\)/);assert.match(experience,/DOME_EXPERIENCE_HAPTIC_FAILED/);assert.match(experience,/DOME_EXPERIENCE_AUDIO_FAILED/);
+  assert.doesNotMatch(app+root+mobileApi+ui+experience,/React\.lazy|\bimport\s*\(/);
   assert.match(app,/key=\{runtimeAttempt\}/);assert.match(app,/setRuntimeAttempt\(value=>value\+1\)/);assert.match(app,/fatal-boot-error/);
   assert.match(app,/RETRY_PRESS_RECEIVED/);assert.match(app,/BOOT STAGE:/);assert.match(app,/BOOT ERROR:/);assert.match(app,/RETRY COUNT:/);assert.match(app,/disabled=\{false\}/);assert.match(app,/onPress=\{this\.props\.onRetryPress\}/);
   assert.ok(app.indexOf('<RootErrorBoundary')<app.indexOf('<SafeAreaProvider>'));assert.doesNotMatch(app,/<Button\b/);

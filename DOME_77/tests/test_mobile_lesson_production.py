@@ -276,8 +276,8 @@ async def test_scripted_mobile_demo_traverses_real_endpoints_and_reaches_ready_m
     lesson=load_lesson();by_id={slide["slide_id"]:slide for slide in lesson["slides"]};audio=base64.b64encode(b"real-recording"*200).decode()
     async def post_interactive(session_id,slide_id,task,result):
         response=await client.post(f"/api/mobile/session/{session_id}/interactive",headers=headers,json={"slide_id":slide_id,"task_type":task,"result":result});assert response.status==200
-    async def post_voice(session_id,slide_id,phrase_id,prompt):
-        response=await client.post(f"/api/mobile/session/{session_id}/voice",headers=headers,json={"audio_base64":audio,"slide_id":slide_id,"phrase_id":phrase_id,"prompt":prompt});assert response.status==200;payload=await response.json();assert payload["accepted"] is True and payload["tutor_turn"]["reason"]=="accepted"
+    async def post_voice(session_id,slide_id,phrase_id,prompt,conversation_turn=0):
+        response=await client.post(f"/api/mobile/session/{session_id}/voice",headers=headers,json={"audio_base64":audio,"slide_id":slide_id,"phrase_id":phrase_id,"prompt":prompt,"conversation_turn":conversation_turn});assert response.status==200;payload=await response.json();assert payload["accepted"] is True and payload["tutor_turn"]["reason"]=="accepted";assert payload["task_goal"]==prompt;assert {"target_response","helper_translation","feedback","follow_up_question","model_phrase"}<=payload.keys();return payload
     try:
         started=await client.post("/api/mobile/session/start",headers=headers,json={"child_id":child_id,"lesson_id":"demo_001"});assert started.status==200;session_id=(await started.json())["session_id"]
         await post_interactive(session_id,"slide_09","card_selector",{"selected_card_id":"A","card_question_index":0,"completed":False})
@@ -301,6 +301,7 @@ async def test_scripted_mobile_demo_traverses_real_endpoints_and_reaches_ready_m
             await post_interactive(session_id,"slide_51","animal_compare",{"selected_animal_id":phrase});await post_voice(session_id,"slide_51",phrase,prompt)
         await post_interactive(session_id,"slide_45","animal_riddle",{"selected_animal_id":"giraffe"});await post_voice(session_id,"slide_45","giraffe","Tell me about the giraffe.")
         await post_voice(session_id,"slide_42","polar_bear","Tell me about the polar bear.");await post_voice(session_id,"slide_44","parrot","Tell me about the red parrot.")
+        follow_up=await post_voice(session_id,"slide_44","parrot:followup:1","Where does this parrot live?",1);assert follow_up["movie_take_accepted"] is False and follow_up["task_goal_source"]=="active_follow_up"
         await post_interactive(session_id,"slide_49","mood_choice",{"selected_mood":"happy","completed":True})
         runtime=[];seen=set();cursor="slide_01"
         while cursor and cursor in by_id and cursor not in seen:seen.add(cursor);runtime.append(cursor);cursor=by_id[cursor].get("next_slide")
@@ -391,4 +392,7 @@ def test_real_all_exact_child_voices_render_canonical_m1_to_mp4(tmp_path, monkey
     result = build_mobile_lesson_movie(MovieRenderInputs(base_video=contract.base_video, character=hero, audio_by_phrase=voices, timeline=contract.timeline, output=output, lesson_dir=contract.lesson_dir, target_language="en", approved_phrase_ids=contract.approved_phrase_ids, expected_base_sha256=contract.expected_base_sha256, require_all_phrase_audio=True, character_metadata=metadata))
     assert result == output and output.stat().st_size > 100_000
     width,height,duration=_probe_video(output)
-    assert (width,height)==(1920,1080) and duration>=99.9
+    # The mobile delivery profile is intentionally 720p and bounded below the
+    # remaining Railway-volume budget; the canonical movie timeline stays full.
+    assert (width,height)==(1280,720) and duration>=99.9
+    assert output.stat().st_size<24_000_000

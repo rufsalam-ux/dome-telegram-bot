@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import shutil
 import subprocess
@@ -55,7 +56,7 @@ def _publish_progress(callback: MovieProgressCallback | None, stage: str, progre
         callback(stage, max(0, min(100, int(progress))), strategy)
 
 
-def cleanup_stale_render_dirs(output_mp4: Path) -> tuple[int, int]:
+def cleanup_stale_render_dirs(output_mp4: Path, work_root: Path | None = None) -> tuple[int, int]:
     """Delete only incomplete work directories belonging to this exact output.
 
     Child recordings, final MP4 files, avatar metadata and persistent animation
@@ -63,31 +64,81 @@ def cleanup_stale_render_dirs(output_mp4: Path) -> tuple[int, int]:
     """
 
     output_mp4 = Path(output_mp4)
-    parent = output_mp4.parent.resolve()
     removed = 0
     released = 0
-    if not parent.exists():
-        return removed, released
-    for candidate in parent.glob(f"{output_mp4.stem}_render_*"):
-        try:
-            resolved = candidate.resolve()
-            if not candidate.is_dir() or resolved.parent != parent:
-                continue
-            released += sum(item.stat().st_size for item in candidate.rglob("*") if item.is_file())
-            shutil.rmtree(candidate)
-            removed += 1
-        except FileNotFoundError:
+    roots = {output_mp4.parent.resolve()}
+    if work_root is not None:
+        roots.add(Path(work_root).resolve())
+    for parent in roots:
+        if not parent.exists():
             continue
-        except Exception as exc:
-            log.warning("Unable to remove stale movie work directory path=%s error=%s", candidate, exc)
+        for candidate in parent.glob(f"{output_mp4.stem}_render_*"):
+            try:
+                resolved = candidate.resolve()
+                if not candidate.is_dir() or resolved.parent != parent:
+                    continue
+                released += sum(item.stat().st_size for item in candidate.rglob("*") if item.is_file())
+                shutil.rmtree(candidate)
+                removed += 1
+            except FileNotFoundError:
+                continue
+            except Exception as exc:
+                log.warning("Unable to remove stale movie work directory path=%s error=%s", candidate, exc)
     if removed:
         log.warning("MOBILE_MOVIE_STALE_WORK_CLEANUP output=%s dirs=%s bytes=%s", output_mp4, removed, released)
     return removed, released
 
 
-def movie_storage_free_bytes(output_mp4: Path) -> int:
+def movie_storage_free_bytes(path: Path) -> int:
+    path = Path(path)
+    root = path if path.exists() and path.is_dir() else path.parent
+    root.mkdir(parents=True, exist_ok=True)
+    return int(shutil.disk_usage(root).free)
+
+
+def movie_render_work_root(configured: Path | None = None) -> Path:
+    """Return the bounded, ephemeral root used by FFmpeg intermediates."""
+
+    root = Path(configured) if configured else Path(tempfile.gettempdir()) / "dome-movie-work"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _publish_final_movie(final_tmp: Path, output_mp4: Path, *, reserve_bytes: int = 4_000_000) -> None:
+    """Publish one verified MP4 to persistent storage without moving work files.
+
+    Railway's volume is intentionally small.  Copying only the final artifact
+    avoids filling it with render windows, voice tracks and concat files.  The
+    `.uploading` file is atomically renamed only after a complete fsynced copy.
+    """
+
+    size = final_tmp.stat().st_size
     output_mp4.parent.mkdir(parents=True, exist_ok=True)
-    return int(shutil.disk_usage(output_mp4.parent).free)
+    uploading = output_mp4.with_suffix(output_mp4.suffix + ".uploading")
+    uploading.unlink(missing_ok=True)
+    free = movie_storage_free_bytes(output_mp4)
+    reclaimable = output_mp4.stat().st_size if output_mp4.exists() else 0
+    if free + reclaimable < size + reserve_bytes:
+        raise CartoonBuildError(
+            code="MOVIE_STORAGE_EXHAUSTED",
+            stage="UPLOADING",
+            technical_message=f"insufficient persistent storage for final movie: free={free} size={size}",
+        )
+    # Replacing the same session's older movie is safe after the new artifact
+    # has already been rendered and validated in ephemeral storage.
+    if free < size + reserve_bytes and output_mp4.exists():
+        output_mp4.unlink()
+    try:
+        with final_tmp.open("rb") as source, uploading.open("wb") as target:
+            shutil.copyfileobj(source, target, length=1024 * 1024)
+            target.flush()
+            os.fsync(target.fileno())
+        if uploading.stat().st_size != size:
+            raise OSError(f"incomplete movie publish: expected={size} actual={uploading.stat().st_size}")
+        uploading.replace(output_mp4)
+    except Exception:
+        uploading.unlink(missing_ok=True)
+        raise
 
 
 def _probe_video(path: Path) -> tuple[int, int, float]:
@@ -507,6 +558,7 @@ def build_timeline_cartoon(
     render_strategy: str = "rich",
     progress_callback: MovieProgressCallback | None = None,
     total_timeout_override: float | None = None,
+    work_root: Path | None = None,
 ) -> Path:
     """Render the authored movie with disk-backed sequential FFmpeg stages.
 
@@ -570,7 +622,8 @@ def build_timeline_cartoon(
             raise CartoonBuildError(SAFE_MOVIE_ERROR)
         return min(float(step_timeout), remaining)
 
-    with tempfile.TemporaryDirectory(prefix=f"{output_mp4.stem}_render_", dir=output_mp4.parent) as work_value:
+    render_root = movie_render_work_root(work_root)
+    with tempfile.TemporaryDirectory(prefix=f"{output_mp4.stem}_render_", dir=render_root) as work_value:
         work = Path(work_value)
         _publish_progress(progress_callback, "PREPARING_SCENES", 28, render_strategy)
         render_character,_visible_aspect=_visible_character_asset(character_png,character_metadata,work/"character-visible.png")
@@ -672,12 +725,13 @@ def build_timeline_cartoon(
                     f"enable='between(t,{start:.3f},{end:.3f})':eof_action=pass{out}"
                 )
                 previous = out
-            filters.append(f"{previous}fps=30,format=yuv420p[vout]")
+            max_width = max(640, min(1920, int(cfg.get("output_max_width", 1280))))
+            filters.append(f"{previous}scale={max_width}:-2:force_original_aspect_ratio=decrease:flags=lanczos,fps=30,format=yuv420p[vout]")
             segment_path = work / f"video_{window_index:03d}.mp4"
             cmd += [
                 "-filter_complex", ";".join(filters), "-map", "[vout]", "-an",
-                "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
-                "-maxrate", "2600k", "-bufsize", "5200k", "-r", "30",
+                "-c:v", "libx264", "-preset", "ultrafast", "-crf", str(int(cfg.get("video_crf", 25))),
+                "-maxrate", str(cfg.get("video_maxrate", "1600k")), "-bufsize", str(cfg.get("video_bufsize", "3200k")), "-r", "30",
                 "-t", f"{window_duration:.3f}", str(segment_path),
             ]
             _run_ffmpeg_step(cmd, step=f"video_{window_index:03d}", work=work, timeout=remaining_timeout())
@@ -747,7 +801,7 @@ def build_timeline_cartoon(
             log.error("Final movie artifact is missing or empty: %s", final_tmp)
             raise CartoonBuildError(SAFE_MOVIE_ERROR)
         _publish_progress(progress_callback, "UPLOADING", 96, render_strategy)
-        final_tmp.replace(output_mp4)
+        _publish_final_movie(final_tmp, output_mp4)
 
     _publish_progress(progress_callback, "FINALIZING", 98, render_strategy)
     log.info("Cartoon ready: %s bytes=%s", output_mp4, output_mp4.stat().st_size)

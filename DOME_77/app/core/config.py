@@ -7,6 +7,10 @@ class Settings(BaseSettings):
     bot_token: str = ""
     database_url: str = "sqlite+aiosqlite:///./storage/app.db"
     storage_root: Path = Path("./storage")
+    # Movie intermediates are intentionally kept off the persistent Railway
+    # volume.  A null value selects the host's ephemeral temp directory; only
+    # the verified final MP4 is published into storage_root.
+    movie_work_root: Path | None = None
     data_dir: Path | None = None  # legacy/current Railway alias; DATA_DIR=/data is supported
     content_root: Path = Path("./content")
     ffmpeg_bin: str = "ffmpeg"

@@ -9,9 +9,13 @@ def test_animal_pairs_are_deterministic():
 def test_lesson_bounds_authored_ai_followups_and_has_current_animal_phrases():
     j=json.loads(Path("content/lessons/demo_001/lesson.json").read_text(encoding="utf-8"))
     followup_slides=[s for s in j["slides"] if s.get("allow_ai_followup")]
-    assert [s["slide_id"] for s in followup_slides] == ["slide_01"]
-    assert followup_slides[0]["max_ai_followups"] == 2
-    assert followup_slides[0]["conversation_goal"]
+    assert [s["slide_id"] for s in followup_slides] == ["slide_01", "slide_44"]
+    for slide in followup_slides:
+        assert 1 <= slide["max_ai_followups"] <= 3
+        assert slide["conversation_goal"]
+    parrot=next(s for s in followup_slides if s["slide_id"]=="slide_44")
+    assert parrot["required_phrase_id"] == "parrot"
+    assert parrot["suppress_ai_followup"] is False
     ids={x["phrase_id"] for x in j["required_phrases"]}
     assert {"penguin","parrot","lion","giraffe","zebra"} <= ids
     for s in j["slides"]:

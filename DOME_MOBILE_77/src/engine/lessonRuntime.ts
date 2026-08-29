@@ -48,7 +48,10 @@ export function answerEnabled(stage:RuntimeStage,slide:any,hasSelection=false,bu
   if(busy||recording||!requiresVoice(slide)||requiresSelection(slide)&&!hasSelection)return false;
   // FEEDBACK/RETRY/FOLLOW_UP are accepted as recoverable post-TTS states. This
   // prevents a stale non-playing stage from disabling Answer forever.
-  return ['WAITING_VOICE','FEEDBACK','RETRY','FOLLOW_UP'].includes(stage);
+  // COMPLETE means the authored requirement is satisfied, not that the child
+  // must stop talking. Optional conversation remains available while Next is
+  // also active; required movie tasks still use nextEnabled's recording gate.
+  return ['WAITING_VOICE','FEEDBACK','RETRY','FOLLOW_UP','COMPLETE'].includes(stage);
 }
 
 export type TutorAudioStatus={playing?:boolean;isBuffering?:boolean;didJustFinish?:boolean;currentTime?:number;duration?:number};
@@ -110,8 +113,8 @@ function sentenceStarter(value:string):string{
 }
 
 export function progressiveHint(slide:any,attempt:number):ProgressiveHint{
-  const question=String(slide?.question||slide?.bot_says_target||'Попробуй ещё раз.').trim();
-  const example=String(slide?.simplified_text||slide?.model_answer_target||question).trim();
+  const question=String(slide?.task_goal||slide?.question||slide?.bot_says_target||'Попробуй ещё раз.').trim();
+  const example=String(slide?.model_examples?.[0]||slide?.simplified_text||slide?.model_answer_target||question).trim();
   const labels=(slide?.selection_options||slide?.riddle_options||[]).map((item:any)=>String(item?.label||item?.answer_value_ru||item?.id||'').trim()).filter(Boolean);
   const step=Math.max(1,Number(attempt)||1);
   if(step===1)return {step:'REPHRASE',prompt:question};
@@ -121,7 +124,7 @@ export function progressiveHint(slide:any,attempt:number):ProgressiveHint{
 }
 
 export function adaptiveModelPhrase(slide:any,languageLevel='PRE_A1',difficulty=.15):string{
-  const simple=String(slide?.simplified_text||slide?.model_answer_target||slide?.question||'').trim();
+  const simple=String(slide?.model_examples?.[0]||slide?.simplified_text||slide?.model_answer_target||slide?.task_goal||slide?.question||'').trim();
   const richer=String(slide?.richer_model_text||slide?.model_answer_richer||'').trim();
   return richer&&String(languageLevel).toUpperCase()!=='PRE_A1'&&difficulty>=.45?richer:simple;
 }
@@ -144,7 +147,7 @@ export function complexitySupport(difficulty=0.15):string{
 }
 
 export function runtimePrompt(slide:any,_languageLevel='PRE_A1',_difficulty=0.15,phase:PromptPhase='initial'):string{
-  const authored=String(slide?.bot_says_target||slide?.question||'').trim();
+  const authored=String(slide?.task_goal||slide?.bot_says_target||slide?.question||'').trim();
   const simplified=String(slide?.simplified_text||'').trim();
   return phase==='retry'&&simplified?simplified:authored;
 }

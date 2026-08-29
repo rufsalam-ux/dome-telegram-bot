@@ -14,7 +14,7 @@ from sqlalchemy import select
 from app.core.config import settings
 from app.db.models import LessonMovie, MovieVoiceSlot
 from app.db.session import SessionLocal
-from app.services.cartoon_builder import CartoonBuildError, _probe_video, build_timeline_cartoon, cleanup_stale_render_dirs, movie_storage_free_bytes
+from app.services.cartoon_builder import CartoonBuildError, _probe_video, build_timeline_cartoon, cleanup_stale_render_dirs, movie_render_work_root, movie_storage_free_bytes
 from app.services.cartoon_text_overlay import cartoon_text_filters
 from app.services.lesson_loader import load_lesson
 
@@ -42,6 +42,7 @@ class MovieRenderInputs:
     require_all_phrase_audio: bool = True
     character_metadata: dict | None = None
     progress_callback: MovieProgressCallback | None = None
+    work_root: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -317,13 +318,14 @@ def build_mobile_lesson_movie(inputs: MovieRenderInputs) -> Path:
         inputs.target_language,
         inputs.output,
     )
-    cleanup_stale_render_dirs(inputs.output)
-    free_bytes = movie_storage_free_bytes(inputs.output)
+    work_root = movie_render_work_root(inputs.work_root or settings.movie_work_root)
+    cleanup_stale_render_dirs(inputs.output, work_root)
+    free_bytes = movie_storage_free_bytes(work_root)
     if free_bytes < MOVIE_MIN_FREE_BYTES:
         raise CartoonBuildError(
             code="MOVIE_STORAGE_EXHAUSTED",
             stage="VALIDATING_RECORDINGS",
-            technical_message=f"insufficient movie storage before render: free={free_bytes}",
+            technical_message=f"insufficient ephemeral movie work storage before render: free={free_bytes}",
         )
 
     strategies = ["rich", "safe", "static"]
@@ -337,8 +339,8 @@ def build_mobile_lesson_movie(inputs: MovieRenderInputs) -> Path:
         remaining = deadline - time.monotonic()
         if remaining <= 10:
             raise CartoonBuildError(code="MOVIE_RENDER_TIMED_OUT", stage="FFMPEG_RENDER", technical_message="movie fallback budget exhausted")
-        cleanup_stale_render_dirs(inputs.output)
-        log.info("MOBILE_MOVIE_STRATEGY_START strategy=%s remaining=%.1f free=%s", strategy, remaining, movie_storage_free_bytes(inputs.output))
+        cleanup_stale_render_dirs(inputs.output, work_root)
+        log.info("MOBILE_MOVIE_STRATEGY_START strategy=%s remaining=%.1f work_free=%s output_free=%s", strategy, remaining, movie_storage_free_bytes(work_root), movie_storage_free_bytes(inputs.output))
         try:
             return build_timeline_cartoon(
                 inputs.base_video,
@@ -351,10 +353,11 @@ def build_mobile_lesson_movie(inputs: MovieRenderInputs) -> Path:
                 render_strategy=strategy,
                 progress_callback=inputs.progress_callback,
                 total_timeout_override=remaining,
+                work_root=work_root,
             )
         except CartoonBuildError as exc:
             last_error = exc
-            cleanup_stale_render_dirs(inputs.output)
+            cleanup_stale_render_dirs(inputs.output, work_root)
             log.warning(
                 "MOBILE_MOVIE_STRATEGY_FAILED strategy=%s code=%s stage=%s detail=%s",
                 strategy,
@@ -365,7 +368,7 @@ def build_mobile_lesson_movie(inputs: MovieRenderInputs) -> Path:
             if exc.code in {"MOVIE_FFMPEG_UNAVAILABLE", "MOVIE_RENDER_TIMED_OUT"}:
                 break
         except OSError as exc:
-            cleanup_stale_render_dirs(inputs.output)
+            cleanup_stale_render_dirs(inputs.output, work_root)
             last_error = CartoonBuildError(
                 code="MOVIE_STORAGE_EXHAUSTED" if getattr(exc, "errno", None) == 28 else "MOVIE_RENDER_IO_FAILED",
                 stage="FFMPEG_RENDER",

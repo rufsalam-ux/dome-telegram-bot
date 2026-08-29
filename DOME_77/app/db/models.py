@@ -121,6 +121,9 @@ class LessonMovie(Base):
     run_number: Mapped[int] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(30), default="IDLE", index=True)
     job_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    # job_id identifies the durable session movie. attempt_id changes only
+    # when a failed/timed-out render is explicitly retried.
+    attempt_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     movie_version: Mapped[str] = mapped_column(String(80), default="mobile-movie-v2")
     stage: Mapped[str] = mapped_column(String(50), default="IDLE")
     progress: Mapped[int] = mapped_column(Integer, default=0)

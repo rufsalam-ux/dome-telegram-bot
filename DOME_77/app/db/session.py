@@ -167,6 +167,7 @@ async def init_db() -> None:
             "visual_analysis_status": "VARCHAR(40) NOT NULL DEFAULT 'PENDING'"})
         await _add_columns(conn, "lesson_movies", {
             "job_id": "VARCHAR(64)",
+            "attempt_id": "VARCHAR(64)",
             "movie_version": "VARCHAR(80) NOT NULL DEFAULT 'mobile-movie-v1'",
             "stage": "VARCHAR(50) NOT NULL DEFAULT 'IDLE'",
             "progress": "INTEGER NOT NULL DEFAULT 0",
@@ -179,6 +180,7 @@ async def init_db() -> None:
             "finished_at": "TIMESTAMP",
         })
         await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_lesson_movies_job_id ON lesson_movies(job_id)"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_lesson_movies_attempt_id ON lesson_movies(attempt_id)"))
         # One-way compatibility migration to the explicit durable job states.
         await conn.execute(text("UPDATE lesson_movies SET status='SUCCEEDED', stage='READY', progress=100 WHERE status='READY'"))
         await conn.execute(text("UPDATE lesson_movies SET status='RUNNING', stage=CASE WHEN stage='IDLE' THEN 'FFMPEG_RENDER' ELSE stage END WHERE status='PROCESSING'"))

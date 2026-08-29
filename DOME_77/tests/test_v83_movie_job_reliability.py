@@ -7,19 +7,32 @@ from app.db.models import LessonMovie
 from app.services import mobile_lesson_movie
 from app.services.cartoon_builder import (
     CartoonBuildError,
+    _publish_final_movie,
     _run_ffmpeg_step,
     cleanup_stale_render_dirs,
+    movie_render_work_root,
 )
 from app.services.mobile_lesson_movie import MOBILE_MOVIE_VERSION, MovieRenderInputs
+from app.webapp.mobile_api import _queue_movie_row
 
 
 def test_movie_job_schema_has_explicit_durable_lifecycle_fields():
     assert {
-        "job_id", "movie_version", "stage", "progress", "strategy",
+        "job_id", "attempt_id", "movie_version", "stage", "progress", "strategy",
         "error_code", "error_message", "attempt_count", "started_at",
         "heartbeat_at", "finished_at",
     } <= set(LessonMovie.__table__.columns.keys())
     assert MOBILE_MOVIE_VERSION == "mobile-movie-v2"
+
+
+def test_retry_preserves_durable_job_id_and_issues_a_new_attempt_id(tmp_path):
+    movie=LessonMovie(lesson_session_id=12,child_id=1,lesson_id="demo_001",run_number=3,status="FAILED")
+    first_job,first_attempt=_queue_movie_row(movie,tmp_path/"movie.mp4")
+    movie.status="FAILED"
+    second_job,second_attempt=_queue_movie_row(movie,tmp_path/"movie.mp4")
+    assert second_job==first_job
+    assert second_attempt!=first_attempt
+    assert movie.attempt_count==2
 
 
 def test_stale_work_cleanup_is_exact_and_preserves_recordings_cache_and_final(tmp_path):
@@ -35,6 +48,22 @@ def test_stale_work_cleanup_is_exact_and_preserves_recordings_cache_and_final(tm
     assert removed == 1 and released == 9000 and not stale.exists()
     assert output.read_bytes() == b"final movie" and voice.read_bytes() == b"child voice"
     assert (cache / "talk.json").exists() and other.exists()
+
+
+def test_ephemeral_work_cleanup_and_streamed_final_publish_preserve_persistent_inputs(tmp_path):
+    persistent = tmp_path / "persistent";persistent.mkdir()
+    work_root = movie_render_work_root(tmp_path / "ephemeral")
+    output = persistent / "mobile_demo_001_session12.mp4"
+    voice = persistent / "voice.wav";voice.write_bytes(b"child recording")
+    stale = work_root / "mobile_demo_001_session12_render_old";stale.mkdir();(stale / "window.mp4").write_bytes(b"old")
+    final = work_root / "verified.mp4";final.write_bytes(b"v" * 20_000)
+
+    removed, _released = cleanup_stale_render_dirs(output, work_root)
+    _publish_final_movie(final, output, reserve_bytes=0)
+
+    assert removed == 1 and not stale.exists()
+    assert output.read_bytes() == b"v" * 20_000
+    assert voice.read_bytes() == b"child recording"
 
 
 def test_ffmpeg_disk_full_is_classified_without_exposing_technical_child_message(monkeypatch, tmp_path):
@@ -70,7 +99,7 @@ def _inputs(tmp_path: Path) -> MovieRenderInputs:
 
 def test_render_automatically_falls_back_rich_to_safe_to_static(monkeypatch, tmp_path):
     calls = []
-    monkeypatch.setattr(mobile_lesson_movie, "cleanup_stale_render_dirs", lambda _path: (0, 0))
+    monkeypatch.setattr(mobile_lesson_movie, "cleanup_stale_render_dirs", lambda *_args: (0, 0))
     monkeypatch.setattr(mobile_lesson_movie, "movie_storage_free_bytes", lambda _path: 500_000_000)
     monkeypatch.setattr(mobile_lesson_movie, "cartoon_text_filters", lambda *_args: [])
 
@@ -89,7 +118,7 @@ def test_render_automatically_falls_back_rich_to_safe_to_static(monkeypatch, tmp
 
 def test_low_storage_skips_rich_animation_but_keeps_safe_movie(monkeypatch, tmp_path):
     calls = []
-    monkeypatch.setattr(mobile_lesson_movie, "cleanup_stale_render_dirs", lambda _path: (0, 0))
+    monkeypatch.setattr(mobile_lesson_movie, "cleanup_stale_render_dirs", lambda *_args: (0, 0))
     monkeypatch.setattr(mobile_lesson_movie, "movie_storage_free_bytes", lambda _path: 80_000_000)
     monkeypatch.setattr(mobile_lesson_movie, "cartoon_text_filters", lambda *_args: [])
 
