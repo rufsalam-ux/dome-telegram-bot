@@ -16,6 +16,31 @@ async function readUriBase64(uri:string):Promise<string>{
   return FileSystem.readAsStringAsync(uri,{encoding:FileSystem.EncodingType.Base64});
 }
 
+export type TutorAudioSource={uri:string;headers?:Record<string,string>;name?:string};
+
+export function tutorAudioCacheKey(uri:string):string{
+  const value=String(uri||'');let forward=2166136261;let backward=2166136261;
+  for(let index=0;index<value.length;index++){forward=Math.imul(forward^value.charCodeAt(index),16777619);backward=Math.imul(backward^value.charCodeAt(value.length-index-1),16777619)}
+  return `${(forward>>>0).toString(16)}${(backward>>>0).toString(16)}-${value.length}`;
+}
+
+export async function cacheTutorAudioSource(source:TutorAudioSource):Promise<TutorAudioSource>{
+  const FileSystem=require('expo-file-system/legacy');const cacheRoot=String(FileSystem.cacheDirectory||'');
+  if(!cacheRoot)return source;
+  const directory=`${cacheRoot}dome-tutor-audio/`;const destination=`${directory}${tutorAudioCacheKey(source.uri)}.ogg`;const temporary=`${destination}.download`;
+  const existing=await FileSystem.getInfoAsync(destination,{size:true});
+  if(existing.exists&&Number(existing.size||0)>0)return {uri:destination,name:'dome-tutor.ogg'};
+  await FileSystem.makeDirectoryAsync(directory,{intermediates:true});
+  await FileSystem.deleteAsync(temporary,{idempotent:true}).catch(()=>{});
+  const downloaded=await FileSystem.downloadAsync(source.uri,temporary,{headers:source.headers||{}});
+  if(Number(downloaded.status)<200||Number(downloaded.status)>=300){await FileSystem.deleteAsync(temporary,{idempotent:true}).catch(()=>{});throw new Error(`TTS_DOWNLOAD_HTTP_${downloaded.status}`)}
+  const info=await FileSystem.getInfoAsync(temporary,{size:true});
+  if(!info.exists||Number(info.size||0)<=0){await FileSystem.deleteAsync(temporary,{idempotent:true}).catch(()=>{});throw new Error('TTS_DOWNLOAD_EMPTY')}
+  await FileSystem.deleteAsync(destination,{idempotent:true}).catch(()=>{});
+  await FileSystem.moveAsync({from:temporary,to:destination});
+  return {uri:destination,name:'dome-tutor.ogg'};
+}
+
 export class MobileApiError extends Error{
   status:number;
   code?:string;
@@ -190,6 +215,7 @@ export async function ttsSource(text:string,targetLanguage='ru',nativeText='',na
   return {
     uri:`${API_BASE}/api/mobile/tts?${query.toString()}`,
     headers:{Authorization:`Bearer ${await requiredToken()}`},
+    name:'dome-tutor.ogg',
   };
 }
 

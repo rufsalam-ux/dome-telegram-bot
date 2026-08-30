@@ -187,7 +187,7 @@ async def test_mobile_session_auth_resume_progress_translate_and_tts(monkeypatch
         observed_tts = {}
         async def fake_synthesize_bilingual(target_text, target_language, native_text, native_language, _root, _prefix, _delivery_style="warm"):
             observed_tts.update(target_text=target_text,target_language=target_language,native_text=native_text,native_language=native_language)
-            audio = tmp_path / "tts.mp3"
+            audio = tmp_path / "tts.ogg"
             audio.write_bytes((target_text+native_text).encode("utf-8"))
             return audio
 
@@ -253,11 +253,13 @@ async def test_mobile_session_auth_resume_progress_translate_and_tts(monkeypatch
             )
             assert response.status == 401
             response = await client.get(
-                "/api/mobile/tts?text=hello",
+                "/api/mobile/tts.ogg?text=hello",
                 headers=headers,
             )
             assert response.status == 200
             await response.read()
+            assert response.content_type == "audio/ogg"
+            assert response.headers["Content-Disposition"] == 'inline; filename="dome-tutor.ogg"'
             assert observed_tts == {"target_text":"translated:hello","target_language":"ru","native_text":"","native_language":"ru"}
         finally:
             await client.close()

@@ -49,6 +49,12 @@ def _enrich_runtime_layout(slide: dict) -> dict:
 
     if slide.get("moviePhraseId") and not slide.get("required_phrase_id"):
         slide["required_phrase_id"] = str(slide["moviePhraseId"])
+    if slide.get("voice_after_action_optional") is True:
+        slide["requiredForMovie"] = False
+        slide["allow_skip"] = True
+        slide["unskippable"] = False
+        slide["must_wait_for_answer"] = False
+        slide["answer_mode"] = "optional_voice"
     if "requiredForMovie" not in slide and "required_for_movie" not in slide:
         slide["requiredForMovie"] = bool(slide.get("required_phrase_id") and slide.get("allow_skip") is False)
     if slide.get("requiredForMovie") is True or slide.get("required_for_movie") is True:

@@ -21,7 +21,7 @@ from app.services.lesson_runtime import apply_adaptive_assessment,classify_voice
 from app.services.conversational_tutor import TutorTurn,no_speech_turn
 from app.services.lesson_voice_context import authoritative_voice_context,contextual_assessment_goal,selected_item_turn
 from app.services.cartoon_builder import CartoonBuildError
-from app.services.mobile_lesson_movie import MOBILE_MOVIE_VERSION,MOVIE_STALL_TIMEOUT_SECONDS,MovieContractError,MovieRenderInputs,build_mobile_lesson_movie,ensure_movie_voice_slots,load_movie_contract,movie_take_status,record_movie_voice_slot,resolve_movie_voice_slots,select_movie_voice_takes
+from app.services.mobile_lesson_movie import MOBILE_MOVIE_VERSION,MOVIE_STALL_TIMEOUT_SECONDS,MovieContractError,MovieRenderInputs,build_mobile_lesson_movie,ensure_movie_voice_slots,load_movie_contract,movie_take_status,record_movie_voice_slot,required_movie_phrase_ids,resolve_movie_voice_slots,select_movie_voice_takes
 from app.services.email_reports import send_homework_email,_send_with_attachment_sync,send_verification_email,send_password_reset_email
 from app.services.ai_speech import synthesize_bilingual_speech, translate_text
 from app.services.password_auth import hash_password, hash_verification_code, verify_password, verify_verification_code
@@ -774,8 +774,8 @@ async def tts(request:web.Request)->web.StreamResponse:
     if native==target and spoken_native==spoken_target:spoken_native=''
     path=await synthesize_bilingual_speech(spoken_target,target,spoken_native,native,settings.storage_root/'tts-cache-mobile','mobile',style)
     if not path:raise web.HTTPServiceUnavailable(text='TTS unavailable')
-    ready=time.perf_counter();log.info('MOBILE_TTS_LATENCY source=%s target=%s translate_ms=%d synth_or_cache_ms=%d total_ms=%d',source,target,round((translated-started)*1000),round((ready-translated)*1000),round((ready-started)*1000))
-    return web.FileResponse(path)
+    ready=time.perf_counter();content_type={'.ogg':'audio/ogg','.opus':'audio/ogg','.mp3':'audio/mpeg','.wav':'audio/wav','.m4a':'audio/mp4','.aac':'audio/aac'}.get(path.suffix.lower()) or mimetypes.guess_type(path.name)[0] or 'application/octet-stream';log.info('MOBILE_TTS_LATENCY source=%s target=%s translate_ms=%d synth_or_cache_ms=%d total_ms=%d',source,target,round((translated-started)*1000),round((ready-translated)*1000),round((ready-started)*1000));log.info('MOBILE_TTS_RESPONSE target=%s native=%s content_type=%s bytes=%s path_suffix=%s',target,native,content_type,path.stat().st_size,path.suffix.lower())
+    response=web.FileResponse(path);response.content_type=content_type;response.headers['Content-Disposition']=f'inline; filename="dome-tutor{path.suffix.lower()}"';response.headers['Cache-Control']='private, max-age=604800';return response
 
 
 def _spawn_movie_task(coro)->asyncio.Task:
@@ -890,7 +890,7 @@ async def complete(request:web.Request,movie_build_trigger:str='complete')->web.
         if char:await _ensure_character_geometry(char)
         slots=await ensure_movie_voice_slots(db,sid,movie_lesson_data);await db.commit()
     audio_by_phrase,missing_exact=select_movie_voice_takes(voices,movie_lesson_data)
-    required_ids=list(movie_contract.approved_phrase_ids) if movie_contract else []
+    required_ids=required_movie_phrase_ids(movie_lesson_data) if movie_contract else []
     log.info('MOVIE_RECORDING_INVENTORY session=%s recordings=%s required_slots=%s available_slots=%s missing_slots=%s',sid,len(voices),required_ids,sorted(audio_by_phrase),missing_exact)
     if movie_contract and missing_exact:
         raise web.HTTPConflict(text=json.dumps({'error':'Нужно записать все обязательные реплики для мультфильма.','code':'REQUIRED_MOVIE_RECORDINGS_MISSING','missing_phrase_ids':missing_exact},ensure_ascii=False),content_type='application/json')
@@ -932,7 +932,7 @@ async def complete(request:web.Request,movie_build_trigger:str='complete')->web.
                 job_id=job_id or movie.job_id;attempt_id=attempt_id or movie.attempt_id;movie_status=movie.status;movie_stage=movie.stage or 'IDLE';movie_progress=int(movie.progress or 0);movie_error_code=movie.error_code
         if should_render:
             lesson_dir=movie_contract.lesson_dir
-            inputs=MovieRenderInputs(base_video=movie_contract.base_video,character=hero_path,audio_by_phrase=audio_by_phrase,timeline=movie_contract.timeline,output=out,lesson_dir=lesson_dir,target_language=c.target_language or 'ru',approved_phrase_ids=movie_contract.approved_phrase_ids,expected_base_sha256=movie_contract.expected_base_sha256,require_all_phrase_audio=bool(movie_contract.audio_policy.get('require_exact_child_recording',True)),character_metadata=geometry_from_json(char.visual_metadata_json) if char else preset_character_geometry('explorer'))
+            inputs=MovieRenderInputs(base_video=movie_contract.base_video,character=hero_path,audio_by_phrase=audio_by_phrase,timeline=movie_contract.timeline,output=out,lesson_dir=lesson_dir,target_language=c.target_language or 'ru',approved_phrase_ids=movie_contract.approved_phrase_ids,required_phrase_ids=tuple(required_ids),expected_base_sha256=movie_contract.expected_base_sha256,require_all_phrase_audio=bool(movie_contract.audio_policy.get('require_exact_child_recording',True)),character_metadata=geometry_from_json(char.visual_metadata_json) if char else preset_character_geometry('explorer'))
             log.info('MOVIE_BUILD_STARTED session=%s job=%s attempt=%s movie_version=%s',sid,job_id,attempt_id,MOBILE_MOVIE_VERSION)
             _spawn_movie_task(_render_mobile_movie_job(movie_id,job_id,attempt_id,inputs,c.id,sess.lesson_id,course,par.email if par else None,bool(par and par.email_reports_enabled),run_no,str(lesson_data.get('title') or sess.lesson_id)))
             movie_status='QUEUED';movie_stage='VALIDATING_RECORDINGS';movie_progress=max(2,movie_progress)
@@ -1131,4 +1131,4 @@ def register_mobile_routes(app:web.Application):
     app.router.add_get('/api/mobile/hero/file/{child_id}/{character_id}',hero_file);app.router.add_post('/api/mobile/child/{child_id}/hero/preset',hero_preset);app.router.add_post('/api/mobile/child/{child_id}/hero/upload',hero_upload);app.router.add_patch('/api/mobile/child/{child_id}/hero/{character_id}/geometry',hero_geometry_confirm)
     app.router.add_get('/api/mobile/child/{child_id}/subscription',subscription_overview);app.router.add_post('/api/mobile/child/{child_id}/subscription/plan-change/preview',subscription_plan_change_preview);app.router.add_post('/api/mobile/child/{child_id}/subscription/plan-change',subscription_plan_change_confirm);app.router.add_delete('/api/mobile/child/{child_id}/subscription/plan-change',subscription_plan_change_cancel)
     app.router.add_post('/api/mobile/session/start',session_start);app.router.add_post('/api/mobile/session/{session_id}/progress',session_progress);app.router.add_post('/api/mobile/session/{session_id}/voice',voice);app.router.add_post('/api/mobile/session/{session_id}/interactive',interactive);app.router.add_post('/api/mobile/session/{session_id}/complete',complete);app.router.add_get('/api/mobile/session/{session_id}/movie',movie_status);app.router.add_post('/api/mobile/session/{session_id}/movie/retry',retry_movie)
-    app.router.add_get('/api/mobile/tts',tts);app.router.add_post('/api/mobile/translate',translate);app.router.add_patch('/api/mobile/child/{child_id}/language',update_child_language);app.router.add_get('/api/mobile/child/{child_id}/movies',movies);app.router.add_get('/api/mobile/movie/{child_id}/{filename}',movie_file)
+    app.router.add_get('/api/mobile/tts',tts);app.router.add_get('/api/mobile/tts.ogg',tts);app.router.add_post('/api/mobile/translate',translate);app.router.add_patch('/api/mobile/child/{child_id}/language',update_child_language);app.router.add_get('/api/mobile/child/{child_id}/movies',movies);app.router.add_get('/api/mobile/movie/{child_id}/{filename}',movie_file)

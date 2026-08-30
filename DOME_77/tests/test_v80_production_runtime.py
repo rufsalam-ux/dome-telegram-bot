@@ -11,7 +11,7 @@ from app.services.authored_content import normalized_media_sequence, validate_co
 from app.services.conversational_tutor import adaptive_follow_up_policy
 from app.services.lesson_loader import LessonConfigurationError, load_lesson
 from app.services.lesson_runtime import correction_for_assessment
-from app.services.mobile_lesson_movie import ensure_movie_voice_slots, record_movie_voice_slot, required_movie_phrase_ids, resolve_movie_voice_slots
+from app.services.mobile_lesson_movie import all_movie_phrase_ids, ensure_movie_voice_slots, record_movie_voice_slot, required_movie_phrase_ids, resolve_movie_voice_slots
 
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -61,13 +61,14 @@ async def test_movie_voice_slots_allow_only_exact_whitelisted_child_recordings(m
     async with sessions() as db:
         parent=Parent(email='slots@example.com',email_verified=True);db.add(parent);await db.flush();child=Child(parent_id=parent.id,display_name='Slots');db.add(child);await db.flush();session=LessonSession(child_id=child.id,lesson_id='demo_001');db.add(session);await db.flush()
         exact=VoiceAttempt(lesson_session_id=session.id,phrase_id=required[0],attempt_number=1,audio_path=str(exact_audio),status='ACCEPTED_CORRECT',transcript=by_id[required[0]]['target_text']);compatible=VoiceAttempt(lesson_session_id=session.id,phrase_id='warmup_non_movie',attempt_number=1,audio_path=str(compatible_audio),status='ACCEPTED_CORRECT',transcript=by_id[required[1]]['target_text']);db.add_all([exact,compatible]);await db.flush()
-        slots=await ensure_movie_voice_slots(db,session.id,lesson);assert len(slots)==len(required) and all(slot.status=='EXPECTED' for slot in slots)
+        slots=await ensure_movie_voice_slots(db,session.id,lesson);assert len(slots)==len(all_movie_phrase_ids(lesson)) and all(slot.status=='EXPECTED' for slot in slots)
         assert await record_movie_voice_slot(db,session.id,required[0],exact,lesson) is True;await db.commit()
         immediate=await db.scalar(select(MovieVoiceSlot).where(MovieVoiceSlot.lesson_session_id==session.id,MovieVoiceSlot.required_voice_id==required[0]));assert immediate.status=='RECORDED' and immediate.source_attempt_id==exact.id
         resolved,diagnostics=await resolve_movie_voice_slots(db,session.id,[exact,compatible],lesson,'ru',tmp_path/'cache');await db.commit()
         assert resolved=={required[0]:exact_audio}
         assert diagnostics[0]['strategy']=='exact_child_recording'
-        assert all(item['strategy']=='missing_required_child_recording' for item in diagnostics[1:])
+        assert all(item['strategy'] in {'missing_required_child_recording','optional_child_choice_skipped'} for item in diagnostics[1:])
+        assert any(item['required_voice_id']=='take_trip' and item['status']=='OPTIONAL_SKIPPED' for item in diagnostics)
         assert all(item['required_voice_id']!=required[1] or item['status']=='MISSING_REQUIRED' for item in diagnostics)
     await engine.dispose()
 

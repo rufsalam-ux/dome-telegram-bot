@@ -24,7 +24,7 @@ def test_movie_job_schema_has_explicit_durable_lifecycle_fields():
         "error_code", "error_message", "attempt_count", "started_at",
         "heartbeat_at", "finished_at",
     } <= set(LessonMovie.__table__.columns.keys())
-    assert MOBILE_MOVIE_VERSION == "mobile-movie-v5"
+    assert MOBILE_MOVIE_VERSION == "mobile-movie-v6"
 
 
 def test_retry_preserves_durable_job_id_and_issues_a_new_attempt_id(tmp_path):

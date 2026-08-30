@@ -66,6 +66,7 @@ import {buildRuntimeOrder} from '../src/data/lessonInteractions.ts';
 import {beginVisualAssetLoad,failVisualAsset,loadVisualAssetWithRetry,useLocalizedVisualAsset,visualAssetSourceForKey} from '../src/engine/visualAsset.ts';
 import {markPreSlideVideoShown,normalizePreSlideVideo,preSlideVideoKey,preSlideVideoTargetIndex,shouldShowPreSlideVideo} from '../src/engine/preSlideVideo.ts';
 import {canonicalTaskType,expectedTargetId,initialPuzzleOrder,isStableTaskTemplate,memoryDeck,moveSequenceItem,puzzleSolved,sequenceSolved,swapPuzzlePieces,taskPairs} from '../src/engine/taskTemplateRuntime.ts';
+import {homeMenuFitsWithoutScroll,homeMenuLayoutPolicy} from '../src/engine/homeRuntime.ts';
 
 const greeting={type:'guided_speaking',answer_mode:'required_voice',adaptive:true,bot_says_target:'Привет! Я рада тебя видеть. Как ты сегодня себя чувствуешь?',simplified_text:'Привет! У меня всё хорошо.'};
 const cards={slide_id:'slide_09',type:'card_selector',answer_mode:'none',card_question_sets:{A:[{id:'A1',text:'Назови три прилагательных.',pre_a1_text:'Ты добрый или весёлый?'},{id:'A2',text:'Второй?'},{id:'A3',text:'Третий?'}]}};
@@ -132,7 +133,23 @@ test('audio watchdog never unlocks while speech is playing but prevents a missed
   assert.equal(tutorAudioWatchdogStage('AI_SPEAKING',{playing:true,isBuffering:false},'WAITING_VOICE'),'AI_SPEAKING');
   assert.equal(tutorAudioWatchdogStage('AI_SPEAKING',{playing:false,isBuffering:true},'WAITING_VOICE'),'AI_SPEAKING');
   assert.equal(tutorAudioWatchdogStage('AI_SPEAKING',{playing:false,isBuffering:false},'WAITING_VOICE'),'AI_SPEAKING');
-  assert.equal(tutorAudioWatchdogStage('AI_SPEAKING',{playing:false,isBuffering:false},'WAITING_VOICE',true),'WAITING_VOICE');
+  assert.equal(tutorAudioWatchdogStage('AI_SPEAKING',{playing:false,isBuffering:false},'WAITING_VOICE',true),'AI_SPEAKING');
+  assert.equal(tutorAudioWatchdogStage('AI_SPEAKING',{playing:false,isBuffering:false},'WAITING_VOICE',true,true),'WAITING_VOICE');
+});
+
+test('home menu is a fixed responsive grid that fits common Android and iPhone viewports',()=>{
+  for(const [width,height,bottom] of [[360,640,24],[390,844,34],[430,932,34],[800,360,10]] as const){
+    const layout=homeMenuLayoutPolicy(width,height,bottom);assert.equal(homeMenuFitsWithoutScroll(width,height,bottom),true);assert.ok(layout.columns>=2);assert.ok(layout.estimatedHeight<=layout.availableHeight);
+  }
+  const root=readFileSync(new URL('../src/screens/RootApp.tsx',import.meta.url),'utf8');const start=root.indexOf('function HomeMenu(');const end=root.indexOf('export function RootApp');const home=root.slice(start,end);
+  assert.match(home,/testID='home-menu-grid'/);assert.doesNotMatch(home,/<ScrollView/);assert.match(root,/if\(s\.screen==='home'\)return <HomeMenu/);
+});
+
+test('native tutor audio is cached with an explicit OGG extension and cannot silently unlock recording',()=>{
+  const api=readFileSync(new URL('../src/api/mobile.ts',import.meta.url),'utf8');const player=readFileSync(new URL('../src/screens/LessonPlayer.tsx',import.meta.url),'utf8');
+  assert.match(api,/\/api\/mobile\/tts\?/);assert.match(api,/dome-tutor-audio/);assert.match(api,/\.ogg`/);assert.match(api,/downloadAsync/);
+  assert.match(player,/cacheTutorAudioSource/);assert.match(player,/TUTOR_AUDIO_PLAYBACK_ERROR/);assert.match(player,/!tutorVoiceError&&answerEnabled/);assert.match(player,/!tutorVoiceError&&nextEnabled/);
+  assert.doesNotMatch(player,/можно продолжить по тексту/);
 });
 
 test('transient Android player idle cannot truncate tutor speech mid-sentence',()=>{
@@ -286,7 +303,8 @@ test('voice context contains only current visual state and suitcase has no hidde
   assert.deepEqual(context.selected_items,['fish']);assert.deepEqual(context.removed_items,['camera']);
   assert.equal('correct_item_ids' in suitcase,false);assert.equal('incorrect_item_ids' in suitcase,false);
   assert.ok(suitcase.drag_items.every((item:any)=>!('useful' in item)));
-  assert.equal(nextEnabled('WAITING_VOICE',true,{requiredForMovie:true,hasValidRecording:true}),true);
+  assert.equal(isRequiredForMovie(suitcase),false);
+  assert.equal(nextEnabled('WAITING_VOICE',true,{requiredForMovie:isRequiredForMovie(suitcase),hasValidRecording:false}),true);
   assert.equal(answerEnabled('WAITING_VOICE',suitcase,true,false,false),true);
 });
 
@@ -367,7 +385,7 @@ test('regression: requiredForMovie cannot be skipped by exhausting retries',()=>
 test('regression: failed AI/backend work has a bounded timeout and a deterministic recovery stage',async()=>{
   await assert.rejects(withLessonTimeout(new Promise(()=>{}),'voice assessment',5),error=>error instanceof LessonRuntimeTimeoutError&&error.operation==='voice assessment');
   assert.equal(recoveryStageAfterFailure(greeting,true),'WAITING_VOICE');
-  assert.equal(tutorAudioWatchdogStage('AI_SPEAKING',{playing:true,isBuffering:true},'WAITING_VOICE',true),'WAITING_VOICE');
+  assert.equal(tutorAudioWatchdogStage('AI_SPEAKING',{playing:true,isBuffering:true},'WAITING_VOICE',true),'AI_SPEAKING');
   for(const operation of ['recording','answer','completion'] as const){const message=childSafeRuntimeMessage(operation);assert.doesNotMatch(message,/timeout|HTTP|FFmpeg|Railway|exit code/i)}
 });
 

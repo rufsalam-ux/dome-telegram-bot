@@ -87,20 +87,21 @@ export function answerEnabled(stage:RuntimeStage,slide:any,hasSelection=false,bu
   return ['WAITING_VOICE','FEEDBACK','RETRY','FOLLOW_UP','COMPLETE'].includes(stage);
 }
 
-export type TutorAudioStatus={playing?:boolean;isBuffering?:boolean;didJustFinish?:boolean;currentTime?:number;duration?:number};
+export type TutorAudioStatus={playing?:boolean;isBuffering?:boolean;isLoaded?:boolean;didJustFinish?:boolean;currentTime?:number;duration?:number;error?:string|null};
 export type TutorAudioTransition={stage:RuntimeStage;sawPlayback:boolean;finished:boolean};
 
 export function tutorAudioTransition(stage:RuntimeStage,status:TutorAudioStatus,sawPlayback:boolean,after:RuntimeStage):TutorAudioTransition{
   if(stage!=='AI_SPEAKING')return {stage,sawPlayback,finished:false};
-  const observed=sawPlayback||Boolean(status.playing)||Boolean(status.isBuffering);
+  const observed=sawPlayback||Boolean(status.playing)||Number(status.currentTime||0)>0||Boolean(status.didJustFinish);
   const duration=Number(status.duration||0);const current=Number(status.currentTime||0);
   const reachedEnd=observed&&duration>0&&current>=Math.max(0,duration-.12)&&!status.playing&&!status.isBuffering;
   const finished=Boolean(status.didJustFinish)||reachedEnd;
   return {stage:finished?after:stage,sawPlayback:finished?false:observed,finished};
 }
 
-export function tutorAudioWatchdogStage(stage:RuntimeStage,status:TutorAudioStatus,after:RuntimeStage,hardDeadline=false):RuntimeStage{
-  return stage==='AI_SPEAKING'&&(hardDeadline||(!status.playing&&!status.isBuffering&&Boolean(status.didJustFinish)))?after:stage;
+export function tutorAudioWatchdogStage(stage:RuntimeStage,status:TutorAudioStatus,after:RuntimeStage,hardDeadline=false,sawPlayback=false):RuntimeStage{
+  const finished=Boolean(status.didJustFinish)||(hardDeadline&&sawPlayback&&!status.playing&&!status.isBuffering);
+  return stage==='AI_SPEAKING'&&finished?after:stage;
 }
 
 export type RecordingGateState={speechStarted:boolean;silenceStartedAt:number|null;stopReason:'SPEECH_COMPLETE'|'SAFETY_LIMIT'|null};
@@ -114,7 +115,10 @@ export function recordingGate(previous:RecordingGateState,durationMillis:number,
   return {speechStarted:true,silenceStartedAt,stopReason:durationMillis>=900&&nowMillis-silenceStartedAt>=silenceMillis?'SPEECH_COMPLETE':null};
 }
 
-export function isRequiredForMovie(slide:any):boolean{return slide?.requiredForMovie===true||slide?.required_for_movie===true||Boolean(slide?.required_phrase_id&&slide?.allow_skip===false)}
+export function isRequiredForMovie(slide:any):boolean{
+  if(slide?.voice_after_action_optional===true)return false;
+  return slide?.requiredForMovie===true||slide?.required_for_movie===true||Boolean(slide?.required_phrase_id&&slide?.allow_skip===false);
+}
 
 export function nextEnabled(stage:RuntimeStage,visualReady=true,policy:NextPolicy={requiredForMovie:true}):boolean{
   if(!visualReady)return false;

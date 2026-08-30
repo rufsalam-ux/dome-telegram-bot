@@ -1,5 +1,6 @@
 import React,{useEffect,useRef,useState} from 'react';
-import {Alert,Image,Pressable,ScrollView,Share,Text,View} from 'react-native';
+import {Alert,Image,Pressable,ScrollView,Share,Text,useWindowDimensions,View} from 'react-native';
+import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import {Body,Button,Card,H1,H2} from '../components/Ui';
 import {MoviePlayer} from '../components/MoviePlayer';
 import {useAppStore} from '../store/AppStore';
@@ -8,6 +9,7 @@ import {BootStage,logStartupStage,startupFailure,StartupFailure,withStartupTimeo
 import {AuthScreen} from './AuthScreen';
 import {playExperience} from '../experience/experience';
 import {movieIdentity,normalizeMovieState,MOVIE_ACTIVE_STATES,MOVIE_RETRY_STATES,MOVIE_SUCCESS_STATES} from '../engine/movieRuntime';
+import {homeMenuLayoutPolicy} from '../engine/homeRuntime';
 
 // Optional native screens use synchronous, statically analyzable Metro requires.
 // Their code is part of the main bundle, but native media modules are evaluated
@@ -28,6 +30,33 @@ type RootAppProps={
   retryCount:number;
   onRetryReceived:()=>number;
 };
+
+type HomeMenuItem={title:string;onPress:()=>void;disabled?:boolean};
+
+function HomeMenu({store,activeLesson,lessonsLoading,lessonsError,openLesson}:{store:ReturnType<typeof useAppStore>;activeLesson:any;lessonsLoading:boolean;lessonsError:string;openLesson:(lessonId:string)=>void}){
+  const dimensions=useWindowDimensions();const insets=useSafeAreaInsets();const layout=homeMenuLayoutPolicy(dimensions.width,dimensions.height,insets.bottom);const child=store.selectedChild;
+  const items:HomeMenuItem[]=[
+    {title:'📚 Мои уроки',onPress:()=>store.setScreen('lessons')},
+    {title:'🌍 Языки',onPress:()=>store.setScreen('language')},
+    {title:'🎭 Мой герой',onPress:()=>store.setScreen('hero')},
+    {title:'🎬 Мультфильмы',onPress:()=>store.setScreen('movies')},
+    {title:'💳 Тарифы',onPress:()=>store.setScreen('plans')},
+    {title:'🔊 Звук',onPress:()=>store.setScreen('experience_settings')},
+    {title:'📊 Успехи',onPress:()=>Alert.alert('Прогресс','Данные берутся с сервера DOME.')},
+    {title:'👨‍👩‍👧 Сменить ребёнка',onPress:()=>store.setScreen('children')},
+  ];
+  const rows=Array.from({length:Math.ceil(items.length/layout.columns)},(_,row)=>items.slice(row*layout.columns,(row+1)*layout.columns));
+  const heroUri=child?.heroUrl?(child.heroUrl.startsWith('http')?child.heroUrl:API_BASE+child.heroUrl):'';
+  return <View testID='home-menu-screen' style={{flex:1,padding:layout.contentPadding,paddingBottom:layout.contentPadding+insets.bottom,gap:layout.gap}}>
+    <View style={{height:layout.heroSize,flexDirection:'row',alignItems:'center',justifyContent:'space-between',gap:10}}>
+      <View style={{flex:1}}><H1 compact={layout.compact}>{child?.name||'DOME'}</H1><Body compact={layout.compact} muted>Изучаемый: {child?.learningLanguage||'ru'} · объяснения: {child?.nativeLanguage||'ru'}</Body></View>
+      {heroUri?<Image source={{uri:heroUri}} style={{height:layout.heroSize,width:layout.heroSize,resizeMode:'contain'}}/>:null}
+    </View>
+    <Card compact><Body compact={layout.compact}>{activeLesson?`${activeLesson.resume_step!==null?'Можно продолжить':'Следующий урок'}: ${activeLesson.title}`:lessonsError||'Обновляем каталог уроков…'}</Body></Card>
+    <Button compact disabled={lessonsLoading||!activeLesson} title={lessonsLoading?'Загружаю уроки…':activeLesson?.resume_step!==null?'▶ Продолжить урок':'▶ Начать урок'} onPress={()=>activeLesson&&openLesson(activeLesson.lesson_id)}/>
+    <View testID='home-menu-grid' style={{flex:1,justifyContent:'center',gap:layout.gap}}>{rows.map((row,rowIndex)=><View key={rowIndex} style={{flexDirection:'row',gap:layout.gap}}>{row.map(item=><View key={item.title} style={{flex:1,minHeight:layout.tileHeight}}><Button compact secondary title={item.title} disabled={item.disabled} onPress={item.onPress}/></View>)}{Array.from({length:layout.columns-row.length},(_,index)=><View key={`empty-${index}`} style={{flex:1}}/>)}</View>)}</View>
+  </View>;
+}
 
 export function RootApp({onBootStage,retryCount,onRetryReceived}:RootAppProps){
   const s=useAppStore();
@@ -148,7 +177,7 @@ export function RootApp({onBootStage,retryCount,onRetryReceived}:RootAppProps){
     return <ScrollView contentContainerStyle={{padding:24}}><H1>🌍 Изменить языки</H1><Card><H2>Изучаемый язык</H2>{LANGUAGES.map(([code,label])=><Button key={'t'+code} secondary={target!==code} title={`${target===code?'✓ ':''}${label}`} onPress={()=>setTarget(code)}/>)}</Card><Card><H2>Язык объяснений</H2><Body>На этом языке ребёнок получает пояснение после фразы на изучаемом языке.</Body>{LANGUAGES.map(([code,label])=><Button key={'n'+code} secondary={native!==code} title={`${native===code?'✓ ':''}${label}`} onPress={()=>setNative(code)}/>)}</Card><Button disabled={savingLang} title={savingLang?'Сохраняю…':'Сохранить языки'} onPress={save}/><Button secondary title='Назад' onPress={()=>s.setScreen('home')}/></ScrollView>
   }
 
-  if(s.screen==='home')return <ScrollView contentContainerStyle={{padding:24}}><H1>{s.selectedChild?.name||'DOME'}</H1>{s.selectedChild?.heroUrl?<Image source={{uri:s.selectedChild.heroUrl.startsWith('http')?s.selectedChild.heroUrl:API_BASE+s.selectedChild.heroUrl}} style={{height:150,width:'100%',resizeMode:'contain'}}/>:null}<Card><Body>Изучаемый: {s.selectedChild?.learningLanguage||'ru'} · объяснения: {s.selectedChild?.nativeLanguage||'ru'}</Body>{activeLesson?<Body muted>{activeLesson.resume_step!==null?'Можно продолжить:':'Следующий урок:'} {activeLesson.title}</Body>:null}{lessonsError?<Body>Не удалось обновить каталог: {lessonsError}</Body>:null}</Card><Button disabled={lessonsLoading||!activeLesson} title={lessonsLoading?'Загружаю уроки…':activeLesson?.resume_step!==null?'▶ Продолжить урок':'▶ Начать урок'} onPress={()=>activeLesson&&openLesson(activeLesson.lesson_id)}/><Button title='📚 Мои уроки' onPress={()=>s.setScreen('lessons')}/><Button title='🌍 Изменить языки' secondary onPress={()=>s.setScreen('language')}/><Button title='🎭 Мой герой' secondary onPress={()=>s.setScreen('hero')}/><Button title='🎬 Мои мультфильмы' secondary onPress={()=>s.setScreen('movies')}/><Button title='💳 Тарифы и подписка' secondary onPress={()=>s.setScreen('plans')}/><Button title='🔊 Звук и отклик' secondary onPress={()=>s.setScreen('experience_settings')}/><Button title='📊 Мои успехи' secondary onPress={()=>Alert.alert('Прогресс','Данные берутся с сервера DOME.')}/><Button secondary title='Сменить ребёнка' onPress={()=>s.setScreen('children')}/></ScrollView>;
+  if(s.screen==='home')return <HomeMenu store={s} activeLesson={activeLesson} lessonsLoading={lessonsLoading} lessonsError={lessonsError} openLesson={openLesson}/>;
   if(s.screen==='experience_settings'){const {ExperienceSettingsScreen}=require('./ExperienceSettingsScreen');return <ExperienceSettingsScreen/>}
   if(s.screen==='plans'||s.screen==='purchase'){const {PurchaseScreen}=require('./PurchaseScreen');return <PurchaseScreen/>}
   if(s.screen==='lessons')return <ScrollView contentContainerStyle={{padding:24}}><H1>Мои уроки</H1><Button secondary disabled={lessonsLoading} title={lessonsLoading?'Обновляю…':'↻ Обновить каталог'} onPress={()=>setCatalogReloadNonce(value=>value+1)}/>{lessonsLoading?<Card><Body>Обновляю опубликованный каталог…</Body></Card>:null}{lessonsError?<Card><Body>{lessonsError}</Body></Card>:null}{lessons.map(item=><Card key={`${item.course_id}:${item.lesson_id}`}><H2>{item.title}</H2><Body>{item.description||item.course_title}</Body><Body muted>Пройдено: {item.completed_runs}/{item.max_completed_runs}{item.resume_step!==null?' · есть сохранённый прогресс':''}</Body><Button disabled={!item.available} title={item.available?(item.resume_step!==null?'Продолжить':'Начать'):'🔒 Недоступен'} onPress={()=>openLesson(item.lesson_id)}/></Card>)}{!lessonsLoading&&!lessons.length?<Card><Body>Опубликованных уроков пока нет.</Body></Card>:null}<Button secondary title='Назад' onPress={()=>s.setScreen('home')}/></ScrollView>;

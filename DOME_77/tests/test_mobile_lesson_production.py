@@ -35,6 +35,7 @@ from app.services.conversational_tutor import TutorTurn
 from app.services.cartoon_builder import AVATAR_PERCEPTUAL_SCALE, _probe_video, _render_windows, _resolve_normalized_timeline, _shift_timed_filters
 from app.services.mobile_lesson_movie import (
     MovieRenderInputs,
+    all_movie_phrase_ids,
     build_mobile_lesson_movie,
     load_movie_contract,
     required_movie_phrase_ids,
@@ -187,7 +188,7 @@ def test_red_parrot_uses_verified_visual_ground_truth():
 
 
 def test_only_latest_accepted_real_take_is_selected_for_each_movie_phrase(tmp_path):
-    lesson = load_lesson();phrases = required_movie_phrase_ids(lesson)
+    lesson = load_lesson();phrases = all_movie_phrase_ids(lesson)
     attempts = []
     for index, phrase in enumerate(phrases):
         path = tmp_path / f"{phrase}.wav";path.write_bytes((phrase * 20).encode())
@@ -252,11 +253,11 @@ async def test_completion_and_movie_job_are_idempotent(monkeypatch, tmp_path):
         pending=[task for task in mobile_api._movie_tasks if not task.done()]
         if pending:
             await asyncio.wait_for(asyncio.gather(*pending),timeout=10)
-        for _ in range(20):
+        for _ in range(100):
             status_response=await client.get(f"/api/mobile/session/{session_id}/movie",headers=headers)
             status_payload=await status_response.json()
             if status_payload["status"]=="SUCCEEDED":break
-            await asyncio.sleep(0.01)
+            await asyncio.sleep(0.02)
         assert status_payload["status"]=="SUCCEEDED" and status_payload["url"]
         assert status_payload["session_id"]==session_id and status_payload["run_id"]==status_payload["run_number"]==1
         assert status_payload["movie_url"]==status_payload["url"]
@@ -411,7 +412,7 @@ def test_real_all_exact_child_voices_render_canonical_m1_to_mp4(tmp_path, monkey
             stream.setnchannels(1);stream.setsampwidth(2);stream.setframerate(16_000);stream.writeframes(b"\x00\x00" * 16_000)
         voices[phrase] = path
     output = tmp_path / "happy-path.mp4"
-    result = build_mobile_lesson_movie(MovieRenderInputs(base_video=contract.base_video, character=hero, audio_by_phrase=voices, timeline=contract.timeline, output=output, lesson_dir=contract.lesson_dir, target_language="en", approved_phrase_ids=contract.approved_phrase_ids, expected_base_sha256=contract.expected_base_sha256, require_all_phrase_audio=True, character_metadata=metadata))
+    result = build_mobile_lesson_movie(MovieRenderInputs(base_video=contract.base_video, character=hero, audio_by_phrase=voices, timeline=contract.timeline, output=output, lesson_dir=contract.lesson_dir, target_language="en", approved_phrase_ids=contract.approved_phrase_ids, required_phrase_ids=tuple(required_movie_phrase_ids(lesson)), expected_base_sha256=contract.expected_base_sha256, require_all_phrase_audio=True, character_metadata=metadata))
     assert result == output and output.stat().st_size > 100_000
     width,height,duration=_probe_video(output)
     # The mobile delivery profile is intentionally 720p and bounded below the

@@ -20,7 +20,7 @@ from app.services.lesson_loader import load_lesson
 
 
 log = logging.getLogger("dome.mobile_movie")
-MOBILE_MOVIE_VERSION = "mobile-movie-v5"
+MOBILE_MOVIE_VERSION = "mobile-movie-v6"
 MOVIE_JOB_TIMEOUT_SECONDS = 720
 MOVIE_STALL_TIMEOUT_SECONDS = 360
 MOVIE_MIN_FREE_BYTES = 48_000_000
@@ -38,6 +38,7 @@ class MovieRenderInputs:
     lesson_dir: Path
     target_language: str
     approved_phrase_ids: tuple[str, ...] = ()
+    required_phrase_ids: tuple[str, ...] = ()
     expected_base_sha256: str = ""
     require_all_phrase_audio: bool = True
     character_metadata: dict | None = None
@@ -182,14 +183,37 @@ async def recover_interrupted_mobile_movie_jobs() -> int:
     return recovered
 
 
-def required_movie_phrase_ids(lesson: dict) -> list[str]:
-    """Return the authored movie phrases in timeline order."""
+def all_movie_phrase_ids(lesson: dict) -> list[str]:
+    """Return every authored movie phrase in timeline order."""
 
     return [
         str(item["phrase_id"])
         for item in lesson.get("timeline", [])
         if str(item.get("phrase_id") or "").strip()
     ]
+
+
+def optional_movie_phrase_ids(lesson: dict) -> set[str]:
+    """Return authored movie phrases the child may explicitly skip."""
+
+    configured = {
+        str(value)
+        for value in (lesson.get("movie_audio_policy") or {}).get("optional_phrase_ids", [])
+        if str(value or "").strip()
+    }
+    configured.update(
+        str(slide.get("required_phrase_id"))
+        for slide in lesson.get("slides", [])
+        if slide.get("voice_after_action_optional") is True and str(slide.get("required_phrase_id") or "").strip()
+    )
+    return configured.intersection(all_movie_phrase_ids(lesson))
+
+
+def required_movie_phrase_ids(lesson: dict) -> list[str]:
+    """Return only movie phrases that must have an exact child recording."""
+
+    optional = optional_movie_phrase_ids(lesson)
+    return [phrase_id for phrase_id in all_movie_phrase_ids(lesson) if phrase_id not in optional]
 
 
 def select_movie_voice_takes(voice_attempts: Iterable[object], lesson: dict) -> tuple[dict[str, Path], list[str]]:
@@ -200,7 +224,7 @@ def select_movie_voice_takes(voice_attempts: Iterable[object], lesson: dict) -> 
     """
 
     required = required_movie_phrase_ids(lesson)
-    wanted = set(required)
+    wanted = set(all_movie_phrase_ids(lesson))
     selected: dict[str, Path] = {}
     for attempt in voice_attempts:
         phrase_id = str(getattr(attempt, "phrase_id", "") or "")
@@ -223,23 +247,25 @@ async def ensure_movie_voice_slots(db, session_id: int, lesson: dict) -> list[Mo
         row.required_voice_id: row
         for row in (await db.scalars(select(MovieVoiceSlot).where(MovieVoiceSlot.lesson_session_id == session_id))).all()
     }
-    for phrase_id in required_movie_phrase_ids(lesson):
+    phrase_ids = all_movie_phrase_ids(lesson)
+    optional = optional_movie_phrase_ids(lesson)
+    for phrase_id in phrase_ids:
         if phrase_id not in existing:
             row = MovieVoiceSlot(
                 lesson_session_id=session_id,
                 required_voice_id=phrase_id,
                 status="EXPECTED",
-                diagnostics_json=json.dumps({"expected": True, "strategy": "pending"}),
+                diagnostics_json=json.dumps({"expected": True, "optional": phrase_id in optional, "strategy": "pending"}),
             )
             db.add(row);existing[phrase_id]=row
     await db.flush()
-    return [existing[value] for value in required_movie_phrase_ids(lesson)]
+    return [existing[value] for value in phrase_ids]
 
 
 async def record_movie_voice_slot(db, session_id: int, phrase_id: str, attempt: object, lesson: dict) -> bool:
     """Save an accepted exact take immediately, never only at completion."""
 
-    if phrase_id not in set(required_movie_phrase_ids(lesson)) or not movie_take_status(getattr(attempt, "status", "")):
+    if phrase_id not in set(all_movie_phrase_ids(lesson)) or not movie_take_status(getattr(attempt, "status", "")):
         return False
     await ensure_movie_voice_slots(db, session_id, lesson)
     slot = await db.scalar(select(MovieVoiceSlot).where(
@@ -261,20 +287,21 @@ async def resolve_movie_voice_slots(db, session_id: int, voice_attempts: Iterabl
     """
 
     del target_language, cache_root
-    attempts=list(voice_attempts);required=set(required_movie_phrase_ids(lesson))
+    attempts=list(voice_attempts);required=set(required_movie_phrase_ids(lesson));wanted=set(all_movie_phrase_ids(lesson));optional=optional_movie_phrase_ids(lesson)
     slots=await ensure_movie_voice_slots(db,session_id,lesson);audio_by_phrase:dict[str,Path]={}
     exact:dict[str,object]={}
     for attempt in attempts:
         phrase_id=str(getattr(attempt,"phrase_id","") or "");path=Path(str(getattr(attempt,"audio_path","") or ""))
-        if phrase_id in required and movie_take_status(getattr(attempt,"status","")) and path.exists() and path.stat().st_size>0:exact[phrase_id]=attempt
+        if phrase_id in wanted and movie_take_status(getattr(attempt,"status","")) and path.exists() and path.stat().st_size>0:exact[phrase_id]=attempt
     for slot in slots:
         phrase_id=slot.required_voice_id;attempt=exact.get(phrase_id)
         if attempt:
             path=Path(str(getattr(attempt,"audio_path")));attempt_id=int(getattr(attempt,"id",0) or 0);audio_by_phrase[phrase_id]=path
             slot.status="RECORDED";slot.source_attempt_id=attempt_id or None;slot.audio_path=str(path);slot.diagnostics_json=json.dumps({"expected":True,"recorded":True,"strategy":"exact_child_recording","track_role":"child_recording"})
             continue
-        slot.status="MISSING_REQUIRED";slot.audio_path=None;slot.source_attempt_id=None
-        slot.diagnostics_json=json.dumps({"expected":True,"recorded":False,"strategy":"missing_required_child_recording","track_role":None})
+        is_optional=phrase_id in optional
+        slot.status="OPTIONAL_SKIPPED" if is_optional else "MISSING_REQUIRED";slot.audio_path=None;slot.source_attempt_id=None
+        slot.diagnostics_json=json.dumps({"expected":True,"optional":is_optional,"recorded":False,"strategy":"optional_child_choice_skipped" if is_optional else "missing_required_child_recording","track_role":None})
     await db.flush()
     diagnostics=[]
     for slot in slots:
@@ -305,7 +332,8 @@ def build_mobile_lesson_movie(inputs: MovieRenderInputs) -> Path:
     if not injected <= approved_set:
         log.error("Rejected non-whitelisted movie audio roles: %s", sorted(injected - approved_set))
         raise MovieContractError(SAFE_MOVIE_CONTRACT_ERROR)
-    missing = [phrase_id for phrase_id in approved if phrase_id not in injected]
+    required = tuple(inputs.required_phrase_ids) or approved
+    missing = [phrase_id for phrase_id in required if phrase_id not in injected]
     if inputs.require_all_phrase_audio and missing:
         log.error("Required child movie recordings are missing: %s", missing)
         raise MovieContractError(SAFE_MOVIE_CONTRACT_ERROR)

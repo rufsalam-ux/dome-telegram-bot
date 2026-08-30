@@ -9,7 +9,8 @@ by_id = {s['slide_id']: s for s in slides}
 assert by_id['slide_19']['character_box'], 'slide_19 character box missing'
 assert by_id['slide_20']['character_box'], 'slide_20 character box missing'
 assert by_id['slide_24']['interactive_task'] == 'suitcase'
-assert by_id['slide_24']['allow_skip'] is False
+assert by_id['slide_24']['allow_skip'] is True
+assert by_id['slide_24']['voice_after_action_optional'] is True
 assert all(not (25 <= int(s.get('order',0)) <= 39) for s in slides), 'slides 25-39 must be physically absent'
 for name in ['background.png','compass.png','camera.png','phone.png','teddy.png','flower.png','telescope.png','fish.png','jacket.png']:
     assert (ROOT/'app/webapp/static/assets/suitcase'/name).exists(), name
