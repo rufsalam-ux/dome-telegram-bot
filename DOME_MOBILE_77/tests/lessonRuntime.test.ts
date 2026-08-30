@@ -46,6 +46,14 @@ import {
   visualRequiredForSlide,
   withLessonTimeout,
 } from '../src/engine/lessonRuntime.ts';
+
+test('movie completion polling exposes retry and receipt diagnostics',()=>{
+  const player=readFileSync(new URL('../src/screens/LessonPlayer.tsx',import.meta.url),'utf8');
+  assert.match(player,/MOVIE_RETRY_STARTED/);
+  assert.match(player,/MOVIE_MOBILE_RECEIVED/);
+  assert.match(player,/getMovieStatus\(session\)/);
+  assert.match(player,/movie_url:result\.url\|\|current\.movie_url/);
+});
 import {avatarCanvasStyle,avatarFacing,avatarGroundRatio,avatarRenderTrace,avatarScaleX,canonicalChildAvatarUri,lessonAvatarConfig,slideAvatarConfig,sourceAvatarFacing,visibleCharacterAspect,visibleCharacterBox} from '../src/engine/avatarRuntime.ts';
 import {CAT_ACTIVITY_STATES,catProcessingState,catStateForStage} from '../src/engine/catRuntime.ts';
 import {mediaPhaseAfterEnd,normalizeMediaSequence,usesGenericMediaRuntime} from '../src/engine/mediaRuntime.ts';

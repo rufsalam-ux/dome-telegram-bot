@@ -104,6 +104,14 @@ def movie_render_work_root(configured: Path | None = None) -> Path:
     return root
 
 
+def _persistent_publish_capacity(output_mp4: Path, reserve_bytes: int) -> tuple[int, int, int]:
+    """Return writable bytes, current free bytes and safely reclaimable bytes."""
+
+    free = movie_storage_free_bytes(output_mp4)
+    reclaimable = output_mp4.stat().st_size if output_mp4.exists() else 0
+    return max(0, free + reclaimable - reserve_bytes), free, reclaimable
+
+
 def _publish_final_movie(final_tmp: Path, output_mp4: Path, *, reserve_bytes: int = 4_000_000) -> None:
     """Publish one verified MP4 to persistent storage without moving work files.
 
@@ -116,13 +124,15 @@ def _publish_final_movie(final_tmp: Path, output_mp4: Path, *, reserve_bytes: in
     output_mp4.parent.mkdir(parents=True, exist_ok=True)
     uploading = output_mp4.with_suffix(output_mp4.suffix + ".uploading")
     uploading.unlink(missing_ok=True)
-    free = movie_storage_free_bytes(output_mp4)
-    reclaimable = output_mp4.stat().st_size if output_mp4.exists() else 0
-    if free + reclaimable < size + reserve_bytes:
+    capacity, free, reclaimable = _persistent_publish_capacity(output_mp4, reserve_bytes)
+    if capacity < size:
         raise CartoonBuildError(
             code="MOVIE_STORAGE_EXHAUSTED",
             stage="UPLOADING",
-            technical_message=f"insufficient persistent storage for final movie: free={free} size={size}",
+            technical_message=(
+                "insufficient persistent storage for final movie: "
+                f"free={free} reclaimable={reclaimable} reserve={reserve_bytes} size={size}"
+            ),
         )
     # Replacing the same session's older movie is safe after the new artifact
     # has already been rendered and validated in ephemeral storage.
@@ -139,6 +149,101 @@ def _publish_final_movie(final_tmp: Path, output_mp4: Path, *, reserve_bytes: in
     except Exception:
         uploading.unlink(missing_ok=True)
         raise
+
+
+def _fit_final_movie_for_storage(
+    final_tmp: Path,
+    output_mp4: Path,
+    work: Path,
+    render_threads: int,
+    timeout: float,
+    *,
+    reserve_bytes: int = 4_000_000,
+) -> Path:
+    """Create a bounded delivery rendition when the volume is nearly full.
+
+    All authored scenes, timings, child audio and avatar animation are already
+    present in ``final_tmp``. This step adjusts only the delivery bitrate and
+    stays on ephemeral storage until the MP4 has been verified.
+    """
+
+    capacity, free, reclaimable = _persistent_publish_capacity(output_mp4, reserve_bytes)
+    source_size = final_tmp.stat().st_size
+    if source_size <= capacity:
+        return final_tmp
+
+    cfg = _cartoon_config()
+    minimum_capacity = max(1_000_000, int(cfg.get("storage_fit_minimum_bytes", 9_000_000)))
+    if capacity < minimum_capacity:
+        raise CartoonBuildError(
+            code="MOVIE_STORAGE_EXHAUSTED",
+            stage="UPLOADING",
+            technical_message=(
+                "persistent storage cannot hold the minimum playable movie rendition: "
+                f"free={free} reclaimable={reclaimable} reserve={reserve_bytes} capacity={capacity}"
+            ),
+        )
+
+    _width, _height, duration = _probe_video(final_tmp)
+    duration = max(0.1, duration)
+    has_audio = _has_audio_stream(final_tmp)
+    audio_kbps = max(64, min(160, int(cfg.get("storage_fit_audio_kbps", 96)))) if has_audio else 0
+    safety_ratio = max(0.65, min(0.90, float(cfg.get("storage_fit_safety_ratio", 0.82))))
+    total_kbps = int((capacity * 8 / duration / 1000) * safety_ratio)
+    video_kbps = total_kbps - audio_kbps
+    minimum_video_kbps = max(320, int(cfg.get("storage_fit_min_video_kbps", 450)))
+    if video_kbps < minimum_video_kbps:
+        raise CartoonBuildError(
+            code="MOVIE_STORAGE_EXHAUSTED",
+            stage="UPLOADING",
+            technical_message=(
+                "persistent storage is below the minimum safe movie bitrate: "
+                f"capacity={capacity} duration={duration:.3f} video_kbps={video_kbps}"
+            ),
+        )
+
+    fitted = work / "final-storage-fit.mp4"
+    fitted.unlink(missing_ok=True)
+    log.warning(
+        "MOVIE_STORAGE_FIT_STARTED source_bytes=%s capacity=%s free=%s duration=%.3f video_kbps=%s audio_kbps=%s",
+        source_size,
+        capacity,
+        free,
+        duration,
+        video_kbps,
+        audio_kbps,
+    )
+    cmd = [
+        settings.ffmpeg_bin, "-y", "-hide_banner", "-loglevel", "warning",
+        "-threads", str(render_threads), "-filter_threads", "1", "-filter_complex_threads", "1",
+        "-i", str(final_tmp), "-map", "0:v:0", "-c:v", "libx264", "-preset", "veryfast",
+        "-b:v", f"{video_kbps}k", "-maxrate", f"{video_kbps}k", "-bufsize", f"{video_kbps * 2}k",
+        "-pix_fmt", "yuv420p",
+    ]
+    if has_audio:
+        cmd += ["-map", "0:a:0", "-c:a", "aac", "-b:a", f"{audio_kbps}k"]
+    else:
+        cmd += ["-an"]
+    cmd += ["-movflags", "+faststart", "-t", f"{duration:.3f}", str(fitted)]
+    _run_ffmpeg_step(cmd, step="storage_fit", work=work, timeout=timeout)
+
+    fitted_size = fitted.stat().st_size if fitted.exists() else 0
+    if fitted_size < 10_000 or fitted_size > capacity:
+        raise CartoonBuildError(
+            code="MOVIE_STORAGE_EXHAUSTED",
+            stage="UPLOADING",
+            technical_message=(
+                "storage-fit rendition did not meet the publish bound: "
+                f"capacity={capacity} source={source_size} fitted={fitted_size}"
+            ),
+        )
+    log.info(
+        "MOVIE_STORAGE_FIT_SUCCESS source_bytes=%s fitted_bytes=%s capacity=%s",
+        source_size,
+        fitted_size,
+        capacity,
+    )
+    return fitted
 
 
 def _probe_video(path: Path) -> tuple[int, int, float]:
@@ -498,6 +603,7 @@ def _build_voice_track(
     work: Path,
     render_threads: int,
     timeout: float,
+    audio_bitrate: str,
 ) -> Path:
     """Stream voices in authored order; never allocate ten full delayed tracks."""
 
@@ -540,7 +646,7 @@ def _build_voice_track(
     filters.append(f"{''.join(pieces)}concat=n={len(pieces)}:v=0:a=1[aout]")
     cmd += [
         "-filter_complex", ";".join(filters), "-map", "[aout]",
-        "-c:a", "aac", "-b:a", "128k", "-t", f"{duration:.3f}", str(output),
+        "-c:a", "aac", "-b:a", audio_bitrate, "-t", f"{duration:.3f}", str(output),
     ]
     _run_ffmpeg_step(cmd, step="voice_track", work=work, timeout=timeout)
     return output
@@ -759,6 +865,7 @@ def build_timeline_cartoon(
 
         voice_track: Path | None = None
         if audio_segments:
+            audio_bitrate = str(cfg.get("audio_bitrate", "96k"))
             voice_track = _build_voice_track(
                 audio_segments,
                 render_duration,
@@ -766,6 +873,7 @@ def build_timeline_cartoon(
                 work,
                 render_threads,
                 remaining_timeout(),
+                audio_bitrate,
             )
 
         _publish_progress(progress_callback, "FFMPEG_RENDER", 82, render_strategy)
@@ -785,10 +893,10 @@ def build_timeline_cartoon(
                 f"[2:a]atrim=0:{render_duration:.3f},asetpts=PTS-STARTPTS[voice];"
                 "[basea][voice]amix=inputs=2:normalize=0:dropout_transition=0,alimiter=limit=0.891[aout]"
             )
-            final_cmd += ["-filter_complex", audio_filter, "-map", "0:v:0", "-map", "[aout]", "-c:a", "aac", "-b:a", "128k"]
+            final_cmd += ["-filter_complex", audio_filter, "-map", "0:v:0", "-map", "[aout]", "-c:a", "aac", "-b:a", str(cfg.get("audio_bitrate", "96k"))]
         elif base_has_audio:
             audio_filter = f"[1:a]apad=pad_dur={max(0.0, render_duration - base_duration) + 0.05:.3f},atrim=0:{render_duration:.3f}[aout]"
-            final_cmd += ["-filter_complex", audio_filter, "-map", "0:v:0", "-map", "[aout]", "-c:a", "aac", "-b:a", "128k"]
+            final_cmd += ["-filter_complex", audio_filter, "-map", "0:v:0", "-map", "[aout]", "-c:a", "aac", "-b:a", str(cfg.get("audio_bitrate", "96k"))]
         elif voice_track:
             final_cmd += ["-map", "0:v:0", "-map", "2:a:0", "-c:a", "copy"]
         else:
@@ -801,7 +909,14 @@ def build_timeline_cartoon(
             log.error("Final movie artifact is missing or empty: %s", final_tmp)
             raise CartoonBuildError(SAFE_MOVIE_ERROR)
         _publish_progress(progress_callback, "UPLOADING", 96, render_strategy)
-        _publish_final_movie(final_tmp, output_mp4)
+        publish_source = _fit_final_movie_for_storage(
+            final_tmp,
+            output_mp4,
+            work,
+            render_threads,
+            remaining_timeout(),
+        )
+        _publish_final_movie(publish_source, output_mp4)
 
     _publish_progress(progress_callback, "FINALIZING", 98, render_strategy)
     log.info("Cartoon ready: %s bytes=%s", output_mp4, output_mp4.stat().st_size)

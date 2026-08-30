@@ -7,6 +7,7 @@ from app.db.models import LessonMovie
 from app.services import mobile_lesson_movie
 from app.services.cartoon_builder import (
     CartoonBuildError,
+    _fit_final_movie_for_storage,
     _publish_final_movie,
     _run_ffmpeg_step,
     cleanup_stale_render_dirs,
@@ -22,7 +23,7 @@ def test_movie_job_schema_has_explicit_durable_lifecycle_fields():
         "error_code", "error_message", "attempt_count", "started_at",
         "heartbeat_at", "finished_at",
     } <= set(LessonMovie.__table__.columns.keys())
-    assert MOBILE_MOVIE_VERSION == "mobile-movie-v2"
+    assert MOBILE_MOVIE_VERSION == "mobile-movie-v3"
 
 
 def test_retry_preserves_durable_job_id_and_issues_a_new_attempt_id(tmp_path):
@@ -128,3 +129,69 @@ def test_low_storage_skips_rich_animation_but_keeps_safe_movie(monkeypatch, tmp_
     monkeypatch.setattr(mobile_lesson_movie, "build_timeline_cartoon", render)
     assert mobile_lesson_movie.build_mobile_lesson_movie(_inputs(tmp_path)).read_bytes() == b"safe"
     assert calls == ["safe"]
+
+
+def test_storage_fit_creates_verified_bounded_delivery_file(monkeypatch, tmp_path):
+    source = tmp_path / "final.mp4";source.write_bytes(b"source" * 4_000_000)
+    output = tmp_path / "persistent" / "movie.mp4";output.parent.mkdir()
+    work = tmp_path / "work";work.mkdir()
+    monkeypatch.setattr(
+        "app.services.cartoon_builder._persistent_publish_capacity",
+        lambda *_args: (14_000_000, 18_000_000, 0),
+    )
+    monkeypatch.setattr("app.services.cartoon_builder._probe_video", lambda _path: (1280, 720, 100.0))
+    monkeypatch.setattr("app.services.cartoon_builder._has_audio_stream", lambda _path: True)
+    commands = []
+
+    def fit(cmd, *, step, work, timeout):
+        commands.append((cmd, step, timeout))
+        Path(cmd[-1]).write_bytes(b"f" * 11_500_000)
+
+    monkeypatch.setattr("app.services.cartoon_builder._run_ffmpeg_step", fit)
+    result = _fit_final_movie_for_storage(source, output, work, 1, 60)
+    assert result.name == "final-storage-fit.mp4" and result.stat().st_size == 11_500_000
+    assert commands[0][1] == "storage_fit"
+    assert "-map" in commands[0][0] and "0:a:0" in commands[0][0]
+    assert result.stat().st_size < 14_000_000
+
+
+def test_publish_storage_failure_does_not_repeat_the_full_render(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(mobile_lesson_movie, "cleanup_stale_render_dirs", lambda *_args: (0, 0))
+    monkeypatch.setattr(mobile_lesson_movie, "movie_storage_free_bytes", lambda _path: 500_000_000)
+    monkeypatch.setattr(mobile_lesson_movie, "cartoon_text_filters", lambda *_args: [])
+
+    def render(*_args, render_strategy, **_kwargs):
+        calls.append(render_strategy)
+        raise CartoonBuildError(
+            code="MOVIE_STORAGE_EXHAUSTED",
+            stage="UPLOADING",
+            technical_message="delivery file does not fit",
+        )
+
+    monkeypatch.setattr(mobile_lesson_movie, "build_timeline_cartoon", render)
+    with pytest.raises(CartoonBuildError) as caught:
+        mobile_lesson_movie.build_mobile_lesson_movie(_inputs(tmp_path))
+    assert caught.value.stage == "UPLOADING"
+    assert calls == ["rich"]
+
+
+def test_movie_pipeline_exposes_every_required_diagnostic_stage():
+    backend = Path("app/webapp/mobile_api.py").read_text(encoding="utf-8")
+    mobile = (
+        Path("../DOME_MOBILE_77/src/screens/LessonPlayer.tsx").read_text(encoding="utf-8")
+        + Path("../DOME_MOBILE_77/src/screens/RootApp.tsx").read_text(encoding="utf-8")
+    )
+    for marker in {
+        "MOVIE_BUILD_REQUEST",
+        "MOVIE_ASSETS_READY",
+        "MOVIE_AUDIO_READY",
+        "MOVIE_AVATAR_READY",
+        "MOVIE_RENDER_STARTED",
+        "MOVIE_RENDER_SUCCESS",
+        "MOVIE_RENDER_FAILED",
+        "MOVIE_URL_SAVED",
+        "MOVIE_RETRY_STARTED",
+    }:
+        assert marker in backend
+    assert "MOVIE_MOBILE_RECEIVED" in backend and "MOVIE_MOBILE_RECEIVED" in mobile

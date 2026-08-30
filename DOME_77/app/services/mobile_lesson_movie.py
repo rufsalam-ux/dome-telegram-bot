@@ -20,7 +20,7 @@ from app.services.lesson_loader import load_lesson
 
 
 log = logging.getLogger("dome.mobile_movie")
-MOBILE_MOVIE_VERSION = "mobile-movie-v2"
+MOBILE_MOVIE_VERSION = "mobile-movie-v3"
 MOVIE_JOB_TIMEOUT_SECONDS = 720
 MOVIE_STALL_TIMEOUT_SECONDS = 360
 MOVIE_MIN_FREE_BYTES = 48_000_000
@@ -365,7 +365,9 @@ def build_mobile_lesson_movie(inputs: MovieRenderInputs) -> Path:
                 exc.stage,
                 exc.technical_message,
             )
-            if exc.code in {"MOVIE_FFMPEG_UNAVAILABLE", "MOVIE_RENDER_TIMED_OUT"}:
+            # A storage-only publish failure cannot be repaired by rendering
+            # the same authored movie again with a different animation mode.
+            if exc.code in {"MOVIE_FFMPEG_UNAVAILABLE", "MOVIE_RENDER_TIMED_OUT"} or exc.stage == "UPLOADING":
                 break
         except OSError as exc:
             cleanup_stale_render_dirs(inputs.output, work_root)

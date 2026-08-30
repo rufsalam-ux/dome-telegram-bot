@@ -395,4 +395,4 @@ def test_real_all_exact_child_voices_render_canonical_m1_to_mp4(tmp_path, monkey
     # The mobile delivery profile is intentionally 720p and bounded below the
     # remaining Railway-volume budget; the canonical movie timeline stays full.
     assert (width,height)==(1280,720) and duration>=99.9
-    assert output.stat().st_size<24_000_000
+    assert output.stat().st_size<16_000_000
