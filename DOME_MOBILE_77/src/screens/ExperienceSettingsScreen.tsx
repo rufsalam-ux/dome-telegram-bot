@@ -5,7 +5,7 @@ import {loadExperiencePreferences,setExperiencePreferences,subscribeExperiencePr
 import {useAppStore} from '../store/AppStore';
 
 export function ExperienceSettingsScreen(){
-  const store=useAppStore();const[prefs,setPrefs]=useState<ExperiencePreferences>({soundEffects:true,haptics:true});
+  const store=useAppStore();const[prefs,setPrefs]=useState<ExperiencePreferences>({soundEffects:true,haptics:true,uiSoundVolume:.16});
   useEffect(()=>{const unsubscribe=subscribeExperiencePreferences(setPrefs);void loadExperiencePreferences().then(setPrefs);return unsubscribe},[]);
   const update=(value:Partial<ExperiencePreferences>)=>void setExperiencePreferences(value).then(setPrefs);
   return <ScrollView contentContainerStyle={{padding:24}}><H1>Звук и отклик</H1>

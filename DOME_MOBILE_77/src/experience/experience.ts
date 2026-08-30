@@ -1,14 +1,16 @@
 import {Vibration} from 'react-native';
 
 export type ExperienceEvent=
-  |'BUTTON_TAP'|'CORRECT'|'EXCELLENT'|'TRY_AGAIN'|'DRAG_PICKUP'
+  |'BUTTON_TAP'|'BUTTON_CONTINUE'|'RECORDING_START'|'CORRECT'|'EXCELLENT'|'TRY_AGAIN'|'DRAG_PICKUP'
   |'DROP_CORRECT'|'PUZZLE_SNAP'|'TASK_COMPLETE'|'LESSON_COMPLETE'
   |'CAT_APPEAR'|'CAT_ACTION'|'WORLD_TRANSITION'|'MOVIE_START';
 
-export type ExperiencePreferences={soundEffects:boolean;haptics:boolean};
+export type ExperiencePreferences={soundEffects:boolean;haptics:boolean;uiSoundVolume:number};
+export type ExperienceFeedbackOptions={sound?:boolean;haptics?:boolean};
 
 const STORAGE_KEY='dome_experience_preferences_v1';
-const DEFAULTS:ExperiencePreferences={soundEffects:true,haptics:true};
+export const DEFAULT_UI_SOUND_VOLUME=.16;
+const DEFAULTS:ExperiencePreferences={soundEffects:true,haptics:true,uiSoundVolume:DEFAULT_UI_SOUND_VOLUME};
 const clickAsset=require('../../assets/sounds/soft-click.wav');
 const successAsset=require('../../assets/sounds/suitcase-pop.wav');
 const gentleAsset=require('../../assets/sounds/suitcase-return.wav');
@@ -18,6 +20,7 @@ let loaded=false;
 let loadPromise:Promise<void>|null=null;
 const listeners=new Set<(value:ExperiencePreferences)=>void>();
 const players:Record<string,any>={};
+const audioSuppressions=new Set<string>();
 
 function secureStore():any{
   try{return require('expo-secure-store')}catch(error){console.warn('DOME_EXPERIENCE_STORAGE_UNAVAILABLE',error);return null}
@@ -27,7 +30,7 @@ export async function loadExperiencePreferences():Promise<ExperiencePreferences>
   if(!loadPromise)loadPromise=(async()=>{
     try{
       const store=secureStore();const raw=store?await store.getItemAsync(STORAGE_KEY):null;
-      if(raw){const parsed=JSON.parse(raw);preferences={soundEffects:parsed.soundEffects!==false,haptics:parsed.haptics!==false}}
+      if(raw){const parsed=JSON.parse(raw);const volume=Number(parsed.uiSoundVolume);preferences={soundEffects:parsed.soundEffects!==false,haptics:parsed.haptics!==false,uiSoundVolume:Number.isFinite(volume)?Math.max(0,Math.min(.45,volume)):DEFAULT_UI_SOUND_VOLUME}}
     }catch(error){console.warn('DOME_EXPERIENCE_LOAD_FAILED',error)}finally{loaded=true;listeners.forEach(listener=>listener({...preferences}))}
   })();
   await loadPromise;return {...preferences};
@@ -49,27 +52,33 @@ function vibrationFor(event:ExperienceEvent):number|number[]{
   if(event==='DROP_CORRECT'||event==='PUZZLE_SNAP')return 18;
   if(event==='TRY_AGAIN')return [0,6,28,6];
   if(event==='DRAG_PICKUP'||event==='BUTTON_TAP'||event==='CAT_ACTION')return 8;
+  if(event==='BUTTON_CONTINUE'||event==='RECORDING_START')return 9;
   return 12;
 }
 
 function assetFor(event:ExperienceEvent):any{
   if(event==='TRY_AGAIN'||event==='WORLD_TRANSITION')return gentleAsset;
-  if(['CORRECT','EXCELLENT','DROP_CORRECT','PUZZLE_SNAP','TASK_COMPLETE','LESSON_COMPLETE','MOVIE_START'].includes(event))return successAsset;
+  if(['BUTTON_CONTINUE','CORRECT','EXCELLENT','DROP_CORRECT','PUZZLE_SNAP','TASK_COMPLETE','LESSON_COMPLETE','MOVIE_START'].includes(event))return successAsset;
   return clickAsset;
 }
 
 async function playSound(event:ExperienceEvent):Promise<void>{
   try{
+    if(audioSuppressions.size>0)return;
     const asset=assetFor(event);const key=String(asset);let player=players[key];
     if(!player){const {createAudioPlayer}=require('expo-audio');player=createAudioPlayer(asset,{keepAudioSessionActive:true});players[key]=player}
-    await player.seekTo(0);player.play();
+    player.volume=preferences.uiSoundVolume;await player.seekTo(0);player.play();
   }catch(error){console.warn('DOME_EXPERIENCE_AUDIO_FAILED',{event,error})}
 }
 
-export function playExperience(event:ExperienceEvent):void{
+export function setExperienceAudioSuppressed(reason:string,suppressed:boolean):void{
+  if(suppressed)audioSuppressions.add(reason);else audioSuppressions.delete(reason);
+}
+
+export function playExperience(event:ExperienceEvent,options:ExperienceFeedbackOptions={}):void{
   void (async()=>{
     if(!loaded)await loadExperiencePreferences();
-    if(preferences.haptics)try{Vibration.vibrate(vibrationFor(event))}catch(error){console.warn('DOME_EXPERIENCE_HAPTIC_FAILED',{event,error})}
-    if(preferences.soundEffects)await playSound(event);
+    if(options.haptics!==false&&preferences.haptics)try{Vibration.vibrate(vibrationFor(event))}catch(error){console.warn('DOME_EXPERIENCE_HAPTIC_FAILED',{event,error})}
+    if(options.sound!==false&&preferences.soundEffects)await playSound(event);
   })();
 }

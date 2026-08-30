@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
 import {readFileSync} from 'node:fs';
 import test from 'node:test';
 
@@ -67,10 +68,22 @@ import {beginVisualAssetLoad,failVisualAsset,loadVisualAssetWithRetry,useLocaliz
 import {markPreSlideVideoShown,normalizePreSlideVideo,preSlideVideoKey,preSlideVideoTargetIndex,shouldShowPreSlideVideo} from '../src/engine/preSlideVideo.ts';
 import {canonicalTaskType,expectedTargetId,initialPuzzleOrder,isStableTaskTemplate,memoryDeck,moveSequenceItem,puzzleSolved,sequenceSolved,swapPuzzlePieces,taskPairs} from '../src/engine/taskTemplateRuntime.ts';
 import {homeMenuFitsWithoutScroll,homeMenuLayoutPolicy} from '../src/engine/homeRuntime.ts';
+import {DOME_LESSON_SHELL_SIZE,lessonShellLayout,shellContentIsClearOfControls} from '../src/engine/lessonShellLayout.ts';
 
 const greeting={type:'guided_speaking',answer_mode:'required_voice',adaptive:true,bot_says_target:'Привет! Я рада тебя видеть. Как ты сегодня себя чувствуешь?',simplified_text:'Привет! У меня всё хорошо.'};
 const cards={slide_id:'slide_09',type:'card_selector',answer_mode:'none',card_question_sets:{A:[{id:'A1',text:'Назови три прилагательных.',pre_a1_text:'Ты добрый или весёлый?'},{id:'A2',text:'Второй?'},{id:'A3',text:'Третий?'}]}};
 const mila={slide_id:'slide_20',answer_mode:'required_voice',interaction_kind:'gift_selector',selection_options:[{id:'book'}],hero_placement:'left_of_mila',hero_box:[0.04,0.35,0.24,0.61]};
+
+test('portrait lesson shell preserves the supplied artwork and central safe panel',()=>{
+  const asset=readFileSync(new URL('../assets/lesson-shell/dome-lesson-shell.jpg',import.meta.url));
+  assert.equal(createHash('sha256').update(asset).digest('hex'),'e2c3df3d906eedd982dc505c63a66225606725a864a09ccff0a6a9ef23a40844');
+  for(const [width,height] of [[320,568],[360,640],[360,800],[390,844],[430,932]]){
+    const shell=lessonShellLayout(width,height);assert.ok(Math.abs(shell.image.width/shell.image.height-DOME_LESSON_SHELL_SIZE.width/DOME_LESSON_SHELL_SIZE.height)<1e-12);
+    assert.ok(shell.content.left>=4&&shell.content.left+shell.content.width<=width-4,`${width}x${height} content must remain visible`);
+    assert.ok(shell.content.width>width*.75&&shell.content.height>height*.38,`${width}x${height} central panel is too small`);
+    assert.equal(shellContentIsClearOfControls(width,height),true);
+  }
+});
 
 test('movie identity is stable across completion, polling and library response shapes',()=>{
   const completion=normalizeMovieState({session_id:14,run_id:14,movie_status:'QUEUED',movie_job_id:'job-14',movie_attempt_id:'attempt-1'},14);
