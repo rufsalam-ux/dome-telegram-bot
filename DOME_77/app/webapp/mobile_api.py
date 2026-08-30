@@ -57,7 +57,11 @@ def _utcnow() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
 
 def _base(request:web.Request)->str:
-    return f'{request.scheme}://{request.host}'
+    configured=settings.effective_webapp_base_url
+    if configured:return configured
+    forwarded=str(request.headers.get('X-Forwarded-Proto') or '').split(',',1)[0].strip().lower()
+    scheme=forwarded if forwarded in {'http','https'} else request.scheme
+    return f'{scheme}://{request.host}'
 
 async def _optional_translation(text:str,source_language:str,target_language:str,field:str)->str:
     """Translate response enrichment without making a saved voice attempt fail."""

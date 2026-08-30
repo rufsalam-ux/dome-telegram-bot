@@ -149,6 +149,24 @@ def test_mobile_interactions_cover_selection_suitcase_animals_audio_level_and_mo
     assert by_id["slide_20"]["image"].endswith("slide-20-repaired.png")
 
 
+def test_public_mobile_media_urls_use_configured_https_origin(monkeypatch):
+    from app.webapp.mobile_api import _base
+
+    class Request:
+        scheme = "http"
+        host = "internal.railway"
+        headers = {}
+
+    monkeypatch.setattr("app.webapp.mobile_api.settings.webapp_base_url", "")
+    monkeypatch.setattr("app.webapp.mobile_api.settings.railway_public_domain", "dome.example")
+    assert _base(Request()) == "https://dome.example"
+
+    monkeypatch.setattr("app.webapp.mobile_api.settings.railway_public_domain", "")
+    Request.headers = {"X-Forwarded-Proto": "https"}
+    Request.host = "public.example"
+    assert _base(Request()) == "https://public.example"
+
+
 def test_suitcase_mobile_assets_are_exact_authored_transparent_crops():
     lesson = load_lesson();slide = next(row for row in lesson["slides"] if row["slide_id"] == "slide_24")
     root = ROOT.parent / "DOME_MOBILE_77/assets/lesson/demo_001/suitcase-authored"
