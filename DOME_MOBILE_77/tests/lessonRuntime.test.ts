@@ -7,9 +7,11 @@ import {
   adaptiveModelPhrase,
   advanceAfterAssessment,
   answerEnabled,
+  buildVoiceRuntimeContext,
   cardQuestions,
   cardSelectionAllowed,
   cardVoiceKey,
+  childIdeaPrompt,
   childSafeRuntimeMessage,
   completeHelperLanguage,
   computeHeroScale,
@@ -247,7 +249,37 @@ test('DOME cat is an independent companion and reward star stays in its own laye
   assert.equal(catProcessingState(1499),'thinking');assert.equal(catProcessingState(1500),'idle');assert.equal(catProcessingState(4000),'waiting');
   const cat=readFileSync(new URL('../src/components/CatActivityLayer.tsx',import.meta.url),'utf8');const reward=readFileSync(new URL('../src/components/RewardEffectLayer.tsx',import.meta.url),'utf8');const player=readFileSync(new URL('../src/screens/LessonPlayer.tsx',import.meta.url),'utf8');
   assert.doesNotMatch(cat,/star\.png|gameActive|cat-mini-game-star|assets\/heroes\/cat\.png/);assert.match(cat,/dome-splash-v2\.png/);assert.match(cat,/const focused=stage==='AI_SPEAKING'\|\|stage==='PROCESSING'/);assert.doesNotMatch(cat,/return null/);assert.match(reward,/star\.png/);assert.match(player,/<CatActivityLayer/);
-  assert.match(player,/droppedObjectTutorPrompt\(labelTarget,targetText\)/);
+  assert.match(player,/childIdeaPrompt\(labelRu,'suitcase'\)/);
+  assert.match(player,/sendVoice\([^\n]+voiceRuntimeContext\)/);
+});
+
+test('accepted optional conversation keeps Continue and Answer independently enabled',()=>{
+  const optional={type:'open_dialogue',answer_mode:'optional_voice',allow_skip:true};
+  assert.equal(nextEnabled('COMPLETE',true,{requiredForMovie:false,hasValidRecording:true}),true);
+  assert.equal(answerEnabled('COMPLETE',optional,true,false,false),true);
+  assert.equal(answerEnabled('AI_SPEAKING',optional,true,false,false),false);
+  assert.equal(answerEnabled('WAITING_VOICE',optional,true,false,false),true);
+});
+
+test('voice context contains only current visual state and suitcase has no hidden correct set',()=>{
+  const suitcase=(bundledLesson.slides as any[]).find(slide=>slide.interactive_task==='suitcase');
+  const items=suitcase.drag_items.map((item:any)=>({id:item.id,labelTarget:item.label_en,labelNative:item.label_ru}));
+  const context=buildVoiceRuntimeContext(suitcase,items,['fish','passport'],['camera','boots'],'en','ru');
+  assert.equal(context.selection_policy,'child_choice');
+  assert.deepEqual(context.selected_items,['fish']);assert.deepEqual(context.removed_items,['camera']);
+  assert.equal('correct_item_ids' in suitcase,false);assert.equal('incorrect_item_ids' in suitcase,false);
+  assert.ok(suitcase.drag_items.every((item:any)=>!('useful' in item)));
+  assert.equal(nextEnabled('WAITING_VOICE',true,{requiredForMovie:true,hasValidRecording:true}),true);
+  assert.equal(answerEnabled('WAITING_VOICE',suitcase,true,false,false),true);
+});
+
+test('animal selection asks for the child idea before any model sentence',()=>{
+  const animal=(bundledLesson.slides as any[]).find(slide=>slide.type==='animal_compare');const first=animal.animal_questions[0];
+  assert.match(childIdeaPrompt(first.label_ru,'animal_compare'),/Что ты хочешь сказать/);
+  assert.notEqual(first.idea_prompt_ru,first.example_ru);
+  const player=readFileSync(new URL('../src/screens/LessonPlayer.tsx',import.meta.url),'utf8');
+  assert.match(player,/question\.idea_prompt_ru\|\|question\.prompt_ru\|\|childIdeaPrompt/);
+  assert.doesNotMatch(player,/question\.example_ru\|\|question\.prompt_ru/);
 });
 
 test('regression: selected child avatar identity persists across slide transitions',()=>{

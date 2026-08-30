@@ -50,6 +50,7 @@
       "allow_ai_followup": true,
       "suppress_ai_followup": false,
       "max_ai_followups": 1,
+      "conversation_goal": "Discuss only the visible suitcase items the child actually selected and optionally ask why one selected item is useful.",
       "conversation_goal": "React to how the child feels, then ask one short connected question about why or what happened."
     },
     {
@@ -570,6 +571,8 @@
       "next_slide": "slide_40",
       "adaptive": true,
       "interactive_task": "suitcase",
+      "selection_policy": "child_choice",
+      "follow_up_policy": "optional",
       "voice_after_action_optional": true,
       "speak_dropped_object": true,
       "allow_help": false,
@@ -579,36 +582,23 @@
       "must_wait_for_answer": true,
       "expects_answer": true,
       "reasoning_task": true,
-      "correct_item_ids": [
-        "jacket",
-        "binoculars",
-        "water",
-        "compass",
-        "camera",
-        "telescope",
-        "notebook",
-        "sunglasses"
-      ],
-      "incorrect_item_ids": [
-        "teddy",
-        "fish"
-      ],
       "drag_source_asset": "lesson-images/slide-24.png",
       "drag_target_asset": "suitcase-authored/suitcase-target.png",
       "drag_items": [
-        {"id": "jacket", "label_en": "Jacket", "label_ru": "куртка", "useful": true, "asset": "jacket.png"},
-        {"id": "binoculars", "label_en": "Binoculars", "label_ru": "бинокль", "useful": true, "asset": "binoculars.png"},
-        {"id": "water", "label_en": "Water bottle", "label_ru": "бутылка воды", "useful": true, "asset": "water.png"},
-        {"id": "compass", "label_en": "Compass", "label_ru": "компас", "useful": true, "asset": "compass.png"},
-        {"id": "teddy", "label_en": "Teddy bear", "label_ru": "мишка", "useful": false, "asset": "teddy.png"},
-        {"id": "camera", "label_en": "Camera", "label_ru": "фотоаппарат", "useful": true, "asset": "camera.png"},
-        {"id": "telescope", "label_en": "Telescope", "label_ru": "телескоп", "useful": true, "asset": "telescope.png"},
-        {"id": "fish", "label_en": "Fish", "label_ru": "рыба", "useful": false, "asset": "fish.png"},
-        {"id": "notebook", "label_en": "Notebook", "label_ru": "блокнот", "useful": true, "asset": "notebook.png"},
-        {"id": "sunglasses", "label_en": "Sunglasses", "label_ru": "солнцезащитные очки", "useful": true, "asset": "sunglasses.png"}
+        {"id": "jacket", "label_en": "Jacket", "label_ru": "куртка", "asset": "jacket.png"},
+        {"id": "binoculars", "label_en": "Binoculars", "label_ru": "бинокль", "asset": "binoculars.png"},
+        {"id": "water", "label_en": "Water bottle", "label_ru": "бутылка воды", "asset": "water.png"},
+        {"id": "compass", "label_en": "Compass", "label_ru": "компас", "asset": "compass.png"},
+        {"id": "teddy", "label_en": "Teddy bear", "label_ru": "мишка", "asset": "teddy.png"},
+        {"id": "camera", "label_en": "Camera", "label_ru": "фотоаппарат", "asset": "camera.png"},
+        {"id": "telescope", "label_en": "Telescope", "label_ru": "телескоп", "asset": "telescope.png"},
+        {"id": "fish", "label_en": "Fish", "label_ru": "рыба", "asset": "fish.png"},
+        {"id": "notebook", "label_en": "Notebook", "label_ru": "блокнот", "asset": "notebook.png"},
+        {"id": "sunglasses", "label_en": "Sunglasses", "label_ru": "солнцезащитные очки", "asset": "sunglasses.png"}
       ],
-      "allow_ai_followup": false,
-      "suppress_ai_followup": true,
+      "allow_ai_followup": true,
+      "suppress_ai_followup": false,
+      "max_ai_followups": 1,
       "max_voice_seconds": 5,
       "blocking_interaction": true
     },
@@ -728,8 +718,8 @@
       "advance_after_required_phrase": true,
       "pair_question_count": 2,
       "animal_questions": [
-        {"id": "penguin", "correct_id": "penguin", "phrase_id": "penguin", "prompt_ru": "Сначала выбери пингвина. Скажи про него одну короткую фразу.", "example_ru": "Пингвин любит холод."},
-        {"id": "parrot", "correct_id": "parrot", "phrase_id": "parrot", "prompt_ru": "Теперь выбери попугая. Скажи про него одну короткую фразу.", "example_ru": "Попугай красный и красивый."}
+        {"id": "penguin", "correct_id": "penguin", "phrase_id": "penguin", "label_ru": "пингвина", "label_en": "penguin", "prompt_ru": "Сначала выбери пингвина. Скажи про него одну короткую фразу.", "idea_prompt_ru": "Что ты хочешь сказать про пингвина?", "example_ru": "Пингвин любит холод."},
+        {"id": "parrot", "correct_id": "parrot", "phrase_id": "parrot", "label_ru": "попугая", "label_en": "parrot", "prompt_ru": "Теперь выбери попугая. Скажи про него одну короткую фразу.", "idea_prompt_ru": "Что ты хочешь сказать про попугая?", "example_ru": "Попугай красный и красивый."}
       ],
       "blocking_interaction": true
     },
@@ -789,7 +779,7 @@
       "advance_after_required_phrase": true,
       "pair_question_count": 1,
       "animal_questions": [
-        {"id": "lion", "correct_id": "lion", "phrase_id": "lion", "prompt_ru": "Выбери льва. Скажи про него одну короткую фразу.", "example_ru": "Лев сильный."}
+        {"id": "lion", "correct_id": "lion", "phrase_id": "lion", "label_ru": "льва", "label_en": "lion", "prompt_ru": "Выбери льва. Скажи про него одну короткую фразу.", "idea_prompt_ru": "Что ты хочешь сказать про льва?", "example_ru": "Лев сильный."}
       ],
       "blocking_interaction": true
     },

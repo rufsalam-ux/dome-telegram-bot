@@ -12,6 +12,7 @@ from app.services.cartoon_builder import (
     _run_ffmpeg_step,
     cleanup_stale_render_dirs,
     movie_render_work_root,
+    reclaim_regenerable_movie_storage,
 )
 from app.services.mobile_lesson_movie import MOBILE_MOVIE_VERSION, MovieRenderInputs
 from app.webapp.mobile_api import _queue_movie_row
@@ -23,7 +24,7 @@ def test_movie_job_schema_has_explicit_durable_lifecycle_fields():
         "error_code", "error_message", "attempt_count", "started_at",
         "heartbeat_at", "finished_at",
     } <= set(LessonMovie.__table__.columns.keys())
-    assert MOBILE_MOVIE_VERSION == "mobile-movie-v3"
+    assert MOBILE_MOVIE_VERSION == "mobile-movie-v4"
 
 
 def test_retry_preserves_durable_job_id_and_issues_a_new_attempt_id(tmp_path):
@@ -65,6 +66,29 @@ def test_ephemeral_work_cleanup_and_streamed_final_publish_preserve_persistent_i
     assert removed == 1 and not stale.exists()
     assert output.read_bytes() == b"v" * 20_000
     assert voice.read_bytes() == b"child recording"
+
+
+def test_storage_reclaim_removes_only_rebuildable_cache_and_duplicate_recorder_sources(monkeypatch, tmp_path):
+    storage = tmp_path / "storage"
+    cartoons = storage / "children/1/cartoons";cartoons.mkdir(parents=True)
+    voices = storage / "children/1/mobile-voice/14";voices.mkdir(parents=True)
+    tts = storage / "tts-cache-mobile/target";tts.mkdir(parents=True)
+    localized = storage / "lesson-asset-cache";localized.mkdir(parents=True)
+    final = cartoons / "old.mp4";final.write_bytes(b"existing movie")
+    uploading = cartoons / "failed.mp4.uploading";uploading.write_bytes(b"partial")
+    raw = voices / "voice_abc.m4a";raw.write_bytes(b"redundant recorder source")
+    wav = voices / "voice_abc.wav";wav.write_bytes(b"durable db-linked voice")
+    tts_file = tts / "mobile_old.ogg";tts_file.write_bytes(b"rebuildable tts")
+    localized_file = localized / "english.png";localized_file.write_bytes(b"persistent localized asset")
+    monkeypatch.setattr("app.services.cartoon_builder.settings.storage_root", storage)
+
+    stats = reclaim_regenerable_movie_storage(cartoons / "new.mp4", 10**18)
+
+    assert stats["voice_sources"] == 1 and stats["tts_cache"] == 1 and stats["uploading"] == 1
+    assert not raw.exists() and not tts_file.exists() and not uploading.exists()
+    assert wav.read_bytes() == b"durable db-linked voice"
+    assert final.read_bytes() == b"existing movie"
+    assert localized_file.read_bytes() == b"persistent localized asset"
 
 
 def test_ffmpeg_disk_full_is_classified_without_exposing_technical_child_message(monkeypatch, tmp_path):
@@ -184,6 +208,9 @@ def test_movie_pipeline_exposes_every_required_diagnostic_stage():
     )
     for marker in {
         "MOVIE_BUILD_REQUEST",
+        "MOVIE_BUILD_REQUESTED",
+        "MOVIE_BUILD_STARTED",
+        "MOVIE_RECORDING_INVENTORY",
         "MOVIE_ASSETS_READY",
         "MOVIE_AUDIO_READY",
         "MOVIE_AVATAR_READY",

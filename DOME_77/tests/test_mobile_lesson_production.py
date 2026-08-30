@@ -276,8 +276,8 @@ async def test_scripted_mobile_demo_traverses_real_endpoints_and_reaches_ready_m
     lesson=load_lesson();by_id={slide["slide_id"]:slide for slide in lesson["slides"]};audio=base64.b64encode(b"real-recording"*200).decode()
     async def post_interactive(session_id,slide_id,task,result):
         response=await client.post(f"/api/mobile/session/{session_id}/interactive",headers=headers,json={"slide_id":slide_id,"task_type":task,"result":result});assert response.status==200
-    async def post_voice(session_id,slide_id,phrase_id,prompt,conversation_turn=0):
-        response=await client.post(f"/api/mobile/session/{session_id}/voice",headers=headers,json={"audio_base64":audio,"slide_id":slide_id,"phrase_id":phrase_id,"prompt":prompt,"conversation_turn":conversation_turn});assert response.status==200;payload=await response.json();assert payload["accepted"] is True and payload["tutor_turn"]["reason"]=="accepted";assert payload["task_goal"]==prompt;assert {"target_response","helper_translation","feedback","follow_up_question","model_phrase"}<=payload.keys();return payload
+    async def post_voice(session_id,slide_id,phrase_id,prompt,conversation_turn=0,runtime_context=None):
+        response=await client.post(f"/api/mobile/session/{session_id}/voice",headers=headers,json={"audio_base64":audio,"slide_id":slide_id,"phrase_id":phrase_id,"prompt":prompt,"conversation_turn":conversation_turn,"runtime_context":runtime_context or {}});assert response.status==200;payload=await response.json();assert payload["accepted"] is True and payload["tutor_turn"]["reason"] in {"accepted","selected_item_response"};assert prompt in payload["task_goal"];assert {"target_response","helper_translation","feedback","follow_up_question","model_phrase","semantic_response","runtime_context"}<=payload.keys();return payload
     try:
         started=await client.post("/api/mobile/session/start",headers=headers,json={"child_id":child_id,"lesson_id":"demo_001"});assert started.status==200;session_id=(await started.json())["session_id"]
         await post_interactive(session_id,"slide_09","card_selector",{"selected_card_id":"A","card_question_index":0,"completed":False})
@@ -285,9 +285,9 @@ async def test_scripted_mobile_demo_traverses_real_endpoints_and_reaches_ready_m
             await post_voice(session_id,"slide_09",f"slide_09:A:{question['id']}",question.get("pre_a1_text") or question["text"])
             await post_interactive(session_id,"slide_09","card_selector",{"selected_card_id":"A","card_question_index":index+1,"completed":index==2})
         await post_voice(session_id,"slide_19","lesha_clothes","Why are you dressed so warmly?")
-        await post_interactive(session_id,"slide_20","gift_selector",{"selected_gift_id":"book"});await post_voice(session_id,"slide_20","mila_gift","What did Mila bring you?")
+        await post_interactive(session_id,"slide_20","gift_selector",{"selected_gift_id":"book"});await post_voice(session_id,"slide_20","mila_gift","What did Mila bring you?",runtime_context={"visible_items":["teddy","book","flowers","backpack"],"selected_items":["book"]})
         packed_items=["jacket","water","camera"]
-        await post_interactive(session_id,"slide_24","suitcase",{"packed_items":packed_items,"selected":packed_items,"completed":True});await post_voice(session_id,"slide_24","take_trip","What will you take and why?")
+        await post_interactive(session_id,"slide_24","suitcase",{"packed_items":packed_items,"selected":packed_items,"completed":True});suitcase_voice=await post_voice(session_id,"slide_24","take_trip","What will you take and why?",runtime_context={"task_type":"suitcase","visible_items":[item["id"] for item in by_id["slide_24"]["drag_items"]],"selected_items":packed_items,"removed_items":["fish"]});assert suitcase_voice["runtime_context"]["selection_policy"]=="child_choice" and "passport" not in json.dumps(suitcase_voice)
         video_key="slide_20:media/mila-intro.mp4";await post_interactive(session_id,"slide_20","pre_slide_video",{"video_key":video_key,"outcome":"ended","completed":True})
         resumed=await client.post("/api/mobile/session/start",headers=headers,json={"child_id":child_id,"lesson_id":"demo_001"});assert resumed.status==200
         resumed_payload=await resumed.json();assert resumed_payload["session_id"]==session_id and resumed_payload["resumed"] is True
@@ -296,9 +296,9 @@ async def test_scripted_mobile_demo_traverses_real_endpoints_and_reaches_ready_m
         assert resumed_payload["pre_slide_video_state"]=={"attempt":[video_key],"ever":[video_key]}
         await post_voice(session_id,"slide_47","zebra","Tell me about the zebra.")
         for phrase,prompt in (("penguin","What can a penguin do?"),("parrot","What color is the parrot?")):
-            await post_interactive(session_id,"slide_46","animal_compare",{"selected_animal_id":phrase});await post_voice(session_id,"slide_46",phrase,prompt)
+            await post_interactive(session_id,"slide_46","animal_compare",{"selected_animal_id":phrase});await post_voice(session_id,"slide_46",phrase,prompt,runtime_context={"visible_items":["penguin","parrot"],"selected_items":[phrase]})
         for phrase,prompt in (("lion","What can a lion do?"),("slide_51:turtle","What can a turtle do?")):
-            await post_interactive(session_id,"slide_51","animal_compare",{"selected_animal_id":phrase});await post_voice(session_id,"slide_51",phrase,prompt)
+            await post_interactive(session_id,"slide_51","animal_compare",{"selected_animal_id":phrase});await post_voice(session_id,"slide_51",phrase,prompt,runtime_context={"visible_items":["lion","turtle"],"selected_items":[phrase.split(":")[-1]]})
         await post_interactive(session_id,"slide_45","animal_riddle",{"selected_animal_id":"giraffe"});await post_voice(session_id,"slide_45","giraffe","Tell me about the giraffe.")
         await post_voice(session_id,"slide_42","polar_bear","Tell me about the polar bear.");await post_voice(session_id,"slide_44","parrot","Tell me about the red parrot.")
         follow_up=await post_voice(session_id,"slide_44","parrot:followup:1","Where does this parrot live?",1);assert follow_up["movie_take_accepted"] is False and follow_up["task_goal_source"]=="active_follow_up"

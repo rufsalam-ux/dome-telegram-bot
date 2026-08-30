@@ -3,7 +3,7 @@ import {Animated,Image,PanResponder,Pressable,Text,useWindowDimensions,View} fro
 import {movedPixelRect,suitcaseDropAccepted,suitcaseDropOutcome,suitcaseTapFallbackAvailable,updatePackedItems,validPixelRect,type PixelPoint,type PixelRect} from '../engine/lessonRuntime';
 import {playExperience} from '../experience/experience';
 
-export type SuitcaseItem={id:string;label:string;useful:boolean;image:any};
+export type SuitcaseItem={id:string;label:string;image:any};
 
 type NativeView=React.ElementRef<typeof View>;
 

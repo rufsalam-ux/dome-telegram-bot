@@ -13,6 +13,7 @@ import httpx
 from app.core.config import settings
 from app.core.i18n import language_name
 from app.services.conversational_tutor import TutorTurn, adaptive_follow_up_policy, build_assessed_turn
+from app.services.lesson_voice_context import referenced_items_are_visible
 
 log = logging.getLogger("dome.speech")
 
@@ -194,7 +195,7 @@ async def _evaluate_with_chat(prompt: dict) -> dict | None:
         "You are a careful child language tutor. Evaluate a short spoken answer. "
         "Return valid JSON only with keys: detected_language_code, semantic_match, grammar_errors, "
         "pronunciation_errors, feedback_native, corrected_target, reaction_target, response_native, "
-        "follow_up_target, model_answer_target, native_hint, emotion, decision. "
+        "follow_up_target, model_answer_target, native_hint, referenced_item_ids, emotion, decision. "
         "decision must be CORRECT, RETRY, WRONG_LANGUAGE, or TECHNICAL_UNCERTAINTY. "
         "Do not punish likely transcription errors. Accept correct close paraphrases. Preserve the child's chosen meaning and nouns: never replace cat with dog or one chosen animal/object with another. "
         "reaction_target must react to the ACTUAL meaning of this answer with genuine delight, curiosity, surprise, support, or a gentle correction. "
@@ -207,6 +208,10 @@ async def _evaluate_with_chat(prompt: dict) -> dict | None:
         "At low difficulty accept one-word/very short answers. Never invite an extra reason, detail, comparison or dialogue unless the CURRENT goal explicitly requests it. "
         "For PRE_A1 use no more than two very short sentences and at most one question in the whole turn. "
         "corrected_target and model_answer_target must be valid direct answers to the CURRENT goal, never praise. "
+        "When runtime_context.visible_items is present, referenced_item_ids must list every visible item ID referred to in your response. "
+        "Never mention, request, recommend, correct toward, or invent an item absent from runtime_context.visible_items. "
+        "When selection_policy is child_choice, the child's selected_items are valid by definition: there is no hidden correct set. "
+        "If the child answers in native_language, preserve the child's exact idea and selected nouns when helping express it in target_language. "
         "response_native/native_hint are brief and only needed for wrong-language, off-topic, confused, or explicitly requested progressive help. "
         "emotion must be one of warm, happy, curious, surprised, encouraging, gentle_correction."
     )
@@ -250,6 +255,7 @@ async def assess_speech(
     max_follow_ups: int = 0,
     follow_up_count: int = 0,
     conversation_goal: str = "",
+    runtime_context: dict | None = None,
 ) -> SpeechAssessment:
     transcript, detected, confidence = await transcribe_audio(wav_path, target_language, native_language, goal)
     if is_non_speech_transcript(transcript) or confidence < 0.35:
@@ -292,6 +298,7 @@ async def assess_speech(
         "transcription_detected_language": detected,
         "goal": goal,
         "conversation_goal": conversation_goal or goal,
+        "runtime_context": runtime_context or {},
         "accepted_meaning": accepted_meaning or [],
         "attempt_number": attempt_number,
         "child_name": child_name,
@@ -313,6 +320,23 @@ async def assess_speech(
     result = await _evaluate_with_chat(prompt)
     if not result:
         return SpeechAssessment(transcript=transcript, detected_language=detected, confidence=confidence)
+    if runtime_context and not referenced_items_are_visible(result, runtime_context):
+        log.error(
+            "MOBILE_VOICE_CONTEXT_REJECTED visible=%s referenced=%s",
+            [item.get("id") for item in runtime_context.get("visible_items") or []],
+            result.get("referenced_item_ids") or result.get("referenced_items"),
+        )
+        result = {
+            **result,
+            "decision": "RETRY",
+            "semantic_match": 0,
+            "reaction_target": "",
+            "follow_up_target": "",
+            "corrected_target": "",
+            "model_answer_target": "",
+            "response_native": "",
+            "native_hint": "",
+        }
 
     decision = str(result.get("decision", "TECHNICAL_UNCERTAINTY")).upper()
     status = {

@@ -43,6 +43,7 @@
   "video_maxrate": "950k",
   "video_bufsize": "1900k",
   "audio_bitrate": "96k",
+  "storage_reclaim_target_free_bytes": 64000000,
   "storage_fit_minimum_bytes": 9000000,
   "storage_fit_min_video_kbps": 450,
   "storage_fit_audio_kbps": 96,

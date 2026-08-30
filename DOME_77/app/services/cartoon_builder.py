@@ -112,6 +112,58 @@ def _persistent_publish_capacity(output_mp4: Path, reserve_bytes: int) -> tuple[
     return max(0, free + reclaimable - reserve_bytes), free, reclaimable
 
 
+def reclaim_regenerable_movie_storage(output_mp4: Path, target_free_bytes: int) -> dict[str, int]:
+    """Reclaim only disposable duplicates/caches before publishing a movie.
+
+    Final movies, child WAV takes, avatar sources, localized lesson images and
+    authored content are never candidates. Successful voice uploads leave a WAV
+    as the durable DB-linked take, so a same-stem recorder source is redundant.
+    TTS files are a cache and can be synthesized again when needed.
+    """
+
+    output_mp4 = Path(output_mp4)
+    storage_root = Path(settings.storage_root)
+    target = max(0, int(target_free_bytes))
+    before = movie_storage_free_bytes(output_mp4)
+    stats = {"before": before, "after": before, "files": 0, "bytes": 0, "voice_sources": 0, "tts_cache": 0, "uploading": 0}
+    if before >= target or not storage_root.exists():
+        return stats
+
+    candidates: list[tuple[str, Path]] = []
+    for candidate in storage_root.glob("children/*/cartoons/*.uploading"):
+        if candidate.is_file():
+            candidates.append(("uploading", candidate))
+    for candidate in storage_root.glob("children/*/mobile-voice/**/*.m4a"):
+        if candidate.is_file() and candidate.with_suffix(".wav").is_file():
+            candidates.append(("voice_sources", candidate))
+    tts_root = storage_root / "tts-cache-mobile"
+    if tts_root.exists():
+        tts_files = [item for item in tts_root.rglob("*") if item.is_file() and ".tmp." not in item.name]
+        tts_files.sort(key=lambda item: (item.stat().st_mtime, str(item)))
+        candidates.extend(("tts_cache", item) for item in tts_files)
+
+    for category, candidate in candidates:
+        if movie_storage_free_bytes(output_mp4) >= target:
+            break
+        try:
+            size = candidate.stat().st_size
+            candidate.unlink()
+            stats["files"] += 1
+            stats["bytes"] += size
+            stats[category] += 1
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            log.warning("MOVIE_STORAGE_RECLAIM_FILE_FAILED category=%s path=%s error=%s", category, candidate, exc)
+    stats["after"] = movie_storage_free_bytes(output_mp4)
+    log.warning(
+        "MOVIE_STORAGE_RECLAIM before=%s after=%s target=%s files=%s bytes=%s voice_sources=%s tts_cache=%s uploading=%s",
+        stats["before"], stats["after"], target, stats["files"], stats["bytes"],
+        stats["voice_sources"], stats["tts_cache"], stats["uploading"],
+    )
+    return stats
+
+
 def _publish_final_movie(final_tmp: Path, output_mp4: Path, *, reserve_bytes: int = 4_000_000) -> None:
     """Publish one verified MP4 to persistent storage without moving work files.
 
@@ -167,12 +219,17 @@ def _fit_final_movie_for_storage(
     stays on ephemeral storage until the MP4 has been verified.
     """
 
-    capacity, free, reclaimable = _persistent_publish_capacity(output_mp4, reserve_bytes)
     source_size = final_tmp.stat().st_size
+    cfg = _cartoon_config()
+    reclaim_target = max(
+        source_size + reserve_bytes,
+        int(cfg.get("storage_reclaim_target_free_bytes", 64_000_000)),
+    )
+    reclaim_regenerable_movie_storage(output_mp4, reclaim_target)
+    capacity, free, reclaimable = _persistent_publish_capacity(output_mp4, reserve_bytes)
     if source_size <= capacity:
         return final_tmp
 
-    cfg = _cartoon_config()
     minimum_capacity = max(1_000_000, int(cfg.get("storage_fit_minimum_bytes", 9_000_000)))
     if capacity < minimum_capacity:
         raise CartoonBuildError(

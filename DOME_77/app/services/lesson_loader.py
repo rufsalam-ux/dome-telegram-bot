@@ -36,6 +36,17 @@ def _runtime_slides(slides: list[dict], lesson_id: str, *, content_engine: str =
 def _enrich_runtime_layout(slide: dict) -> dict:
     """Give every slide a common collision/layout contract."""
 
+    if slide.get("interactive_task") == "suitcase":
+        # Suitcase is a child-choice conversation, never a hidden scored set.
+        # Normalize old persistent DOME 77 copies as well as the bundled file.
+        slide["selection_policy"] = "child_choice"
+        slide["follow_up_policy"] = "optional"
+        slide.pop("correct_item_ids", None)
+        slide.pop("incorrect_item_ids", None)
+        for item in slide.get("drag_items") or []:
+            if isinstance(item, dict):
+                item.pop("useful", None)
+
     if slide.get("moviePhraseId") and not slide.get("required_phrase_id"):
         slide["required_phrase_id"] = str(slide["moviePhraseId"])
     if "requiredForMovie" not in slide and "required_for_movie" not in slide:

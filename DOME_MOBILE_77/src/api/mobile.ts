@@ -166,9 +166,9 @@ export function saveSessionProgress(sessionId:number,currentStep:number){
   return request(`/api/mobile/session/${sessionId}/progress`,jsonInit('POST',{current_step:currentStep}));
 }
 
-export async function sendVoice(sessionId:number,uri:string,slideId:string,phraseId:string|undefined,prompt:string,conversationTurn=0){
+export async function sendVoice(sessionId:number,uri:string,slideId:string,phraseId:string|undefined,prompt:string,conversationTurn=0,runtimeContext:Record<string,unknown>={}){
   const audio_base64=await readUriBase64(uri);
-  return request(`/api/mobile/session/${sessionId}/voice`,jsonInit('POST',{audio_base64,slide_id:slideId,phrase_id:phraseId||null,prompt:prompt||'',conversation_turn:conversationTurn}));
+  return request(`/api/mobile/session/${sessionId}/voice`,jsonInit('POST',{audio_base64,slide_id:slideId,phrase_id:phraseId||null,prompt:prompt||'',conversation_turn:conversationTurn,runtime_context:runtimeContext}));
 }
 
 export function sendInteractive(sessionId:number,slideId:string,taskType:string,result:any){

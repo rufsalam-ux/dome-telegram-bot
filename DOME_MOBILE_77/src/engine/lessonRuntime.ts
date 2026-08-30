@@ -34,6 +34,39 @@ export function requiresVoice(slide:any):boolean{
   return ['required_voice','optional_voice'].includes(String(slide?.answer_mode||''))||['voice_answer','required_movie_phrase','repeat','repeat_phrase','speak','dialogue','open_dialogue','roleplay','retell','continue_story','read_aloud','echo_reading','shared_reading','read_roles'].includes(String(slide?.type||''))||slide?.type==='card_selector'||slide?.type==='animal_compare';
 }
 
+export type VoiceRuntimeItem={id:string;labelTarget:string;labelNative:string};
+export type VoiceRuntimeContext={
+  task_type:string;
+  selection_policy:string;
+  target_language:string;
+  interface_language:string;
+  visible_items:string[];
+  selected_items:string[];
+  removed_items:string[];
+};
+
+export function buildVoiceRuntimeContext(slide:any,items:VoiceRuntimeItem[],selectedIds:string[],removedIds:string[],targetLanguage:string,interfaceLanguage:string):VoiceRuntimeContext{
+  const visible=new Set(items.map(item=>String(item.id)));
+  const selected=Array.from(new Set(selectedIds.map(String))).filter(id=>visible.has(id));
+  const selectedSet=new Set(selected);
+  return {
+    task_type:String(slide?.interactive_task||slide?.interaction_kind||slide?.type||'voice'),
+    selection_policy:String(slide?.selection_policy||(slide?.interactive_task==='suitcase'?'child_choice':'authored_choice')),
+    target_language:String(targetLanguage||''),
+    interface_language:String(interfaceLanguage||''),
+    visible_items:[...visible],
+    selected_items:selected,
+    removed_items:Array.from(new Set(removedIds.map(String))).filter(id=>visible.has(id)&&!selectedSet.has(id)),
+  };
+}
+
+export function childIdeaPrompt(itemLabel:string,taskType:string):string{
+  const label=String(itemLabel||'').trim();
+  if(String(taskType)==='animal_compare')return label?`Что ты хочешь сказать про ${label}?`:'Что ты хочешь сказать про это животное?';
+  if(String(taskType)==='suitcase')return label?`Ты выбрал ${label}. Что ты хочешь сказать про свой выбор?`:'Что ты хочешь сказать про свой выбор?';
+  return label?`Что ты хочешь сказать про ${label}?`:'Что ты хочешь сказать?';
+}
+
 export function stageAfterTutorSpeech(slide:any,hasSelection=false):RuntimeStage{
   if(requiresSelection(slide)&&!hasSelection)return 'WAITING_ACTION';
   if(requiresVoice(slide))return 'WAITING_VOICE';
