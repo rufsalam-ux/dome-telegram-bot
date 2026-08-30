@@ -20,7 +20,7 @@ from app.services.lesson_loader import load_lesson
 
 
 log = logging.getLogger("dome.mobile_movie")
-MOBILE_MOVIE_VERSION = "mobile-movie-v4"
+MOBILE_MOVIE_VERSION = "mobile-movie-v5"
 MOVIE_JOB_TIMEOUT_SECONDS = 720
 MOVIE_STALL_TIMEOUT_SECONDS = 360
 MOVIE_MIN_FREE_BYTES = 48_000_000

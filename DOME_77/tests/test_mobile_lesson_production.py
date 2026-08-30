@@ -243,6 +243,7 @@ async def test_completion_and_movie_job_are_idempotent(monkeypatch, tmp_path):
         first = await client.post(f"/api/mobile/session/{session_id}/complete", headers=headers, json={})
         assert first.status == 200
         first_payload=await first.json();assert first_payload["movie_status"] in {"QUEUED","RUNNING","SUCCEEDED"}
+        assert first_payload["session_id"]==session_id and first_payload["run_id"]==first_payload["run_number"]==1
         duplicate = await client.post(f"/api/mobile/session/{session_id}/movie/retry", headers=headers, json={})
         duplicate_payload = await duplicate.json()
         assert duplicate.status == 200 and duplicate_payload["movie_job_id"] == first_payload["movie_job_id"]
@@ -257,6 +258,8 @@ async def test_completion_and_movie_job_are_idempotent(monkeypatch, tmp_path):
             if status_payload["status"]=="SUCCEEDED":break
             await asyncio.sleep(0.01)
         assert status_payload["status"]=="SUCCEEDED" and status_payload["url"]
+        assert status_payload["session_id"]==session_id and status_payload["run_id"]==status_payload["run_number"]==1
+        assert status_payload["movie_url"]==status_payload["url"]
         second = await client.post(f"/api/mobile/session/{session_id}/complete", headers=headers, json={})
         assert (await second.json())["movie_status"] == "SUCCEEDED"
     finally:
@@ -331,6 +334,7 @@ async def test_scripted_mobile_demo_traverses_real_endpoints_and_reaches_ready_m
         pending=[task for task in mobile_api._movie_tasks if not task.done()]
         if pending:await asyncio.wait_for(asyncio.gather(*pending),timeout=10)
         status=await client.get(f"/api/mobile/session/{session_id}/movie",headers=headers);movie=await status.json();assert movie["status"]=="SUCCEEDED" and movie["url"]
+        assert movie["session_id"]==session_id and movie["run_id"]==movie["run_number"]==1 and movie["movie_url"]==movie["url"]
         next_attempt=await client.post("/api/mobile/session/start",headers=headers,json={"child_id":child_id,"lesson_id":"demo_001"});next_payload=await next_attempt.json();assert next_attempt.status==200 and next_payload["session_id"]!=session_id
         assert next_payload["pre_slide_video_state"]=={"attempt":[],"ever":[video_key]}
     finally:await client.close()

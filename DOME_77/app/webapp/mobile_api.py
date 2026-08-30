@@ -63,6 +63,18 @@ def _base(request:web.Request)->str:
     scheme=forwarded if forwarded in {'http','https'} else request.scheme
     return f'{scheme}://{request.host}'
 
+def _movie_public_url(child_id:int,path:Path,base_url:str='')->str:
+    value=f'movie:{child_id}:{path.name}';token=signed_media_token(value,86400*30)
+    base=(base_url or settings.effective_webapp_base_url).rstrip('/')
+    route=f'/api/mobile/movie/{child_id}/{path.name}?t={token}'
+    return f'{base}{route}' if base else route
+
+def _movie_identity_payload(movie:LessonMovie,url:str|None=None)->dict:
+    return {
+        'session_id':movie.lesson_session_id,'run_id':movie.run_number,'run_number':movie.run_number,
+        'job_id':movie.job_id,'attempt_id':movie.attempt_id,'movie_url':url,
+    }
+
 async def _optional_translation(text:str,source_language:str,target_language:str,field:str)->str:
     """Translate response enrichment without making a saved voice attempt fail."""
     if not text:return ''
@@ -826,6 +838,8 @@ async def _render_mobile_movie_job(movie_id:int,job_id:str,attempt_id:str,inputs
         log.info('MOVIE_AUDIO_READY session=%s job=%s attempt=%s recordings=%s slots=%s',session_id,job_id,attempt_id,len(resolved),len(diagnostics))
         log.info('MOVIE_RENDER_STARTED session=%s job=%s attempt=%s output=%s',session_id,job_id,attempt_id,inputs.output)
         await asyncio.to_thread(build_mobile_lesson_movie,inputs)
+        if not inputs.output.exists() or inputs.output.stat().st_size<10_000:
+            raise CartoonBuildError(code='MOVIE_OUTPUT_MISSING',stage='FINALIZING',technical_message=f'published movie is missing or empty: {inputs.output}')
         committed=False
         async with SessionLocal() as db:
             movie=await db.get(LessonMovie,movie_id)
@@ -833,18 +847,23 @@ async def _render_mobile_movie_job(movie_id:int,job_id:str,attempt_id:str,inputs
                 movie.status='SUCCEEDED';movie.stage='READY';movie.progress=100;movie.output_path=str(inputs.output);movie.error=None;movie.error_code=None;movie.error_message=None;movie.finished_at=_utcnow();movie.heartbeat_at=_utcnow();await db.commit();committed=True
             elif not movie or movie.job_id!=job_id or movie.attempt_id!=attempt_id:return
         if not committed:return
-        output_size=inputs.output.stat().st_size if inputs.output.exists() else 0
+        output_size=inputs.output.stat().st_size;movie_url=_movie_public_url(child_id,inputs.output)
         log.info('MOVIE_RENDER_SUCCESS session=%s job=%s attempt=%s bytes=%s output=%s',session_id,job_id,attempt_id,output_size,inputs.output)
-        log.info('MOVIE_URL_SAVED session=%s job=%s attempt=%s media_path=%s',session_id,job_id,attempt_id,inputs.output)
+        log.info('MOVIE_FILE_EXISTS session_id=%s run_id=%s attempt_id=%s job_id=%s movie_url=%s exists=true bytes=%s',session_id,run_no,attempt_id,job_id,movie_url,output_size)
+        log.info('MOVIE_PUBLISHED session_id=%s run_id=%s attempt_id=%s job_id=%s movie_url=%s',session_id,run_no,attempt_id,job_id,movie_url)
+        log.info('MOVIE_URL_SAVED session_id=%s run_id=%s attempt_id=%s job_id=%s movie_url=%s',session_id,run_no,attempt_id,job_id,movie_url)
+        log.info('MOVIE_STATUS_READY session_id=%s run_id=%s attempt_id=%s job_id=%s movie_url=%s',session_id,run_no,attempt_id,job_id,movie_url)
         await mark_cartoon_generated(child_id,lesson_id,course_id)
         if email_enabled and parent_email:
             subject=f'DOME — мультфильм после прохождения {run_no}: {lesson_title}'
             body=f'Прохождение {run_no} завершено. Персональный мультфильм прикреплён к письму.'
-            try:await asyncio.to_thread(_send_with_attachment_sync,parent_email,subject,body,str(inputs.output))
+            try:
+                await asyncio.to_thread(_send_with_attachment_sync,parent_email,subject,body,str(inputs.output))
+                log.info('MOVIE_EMAIL_DELIVERED session_id=%s run_id=%s attempt_id=%s job_id=%s movie_url=%s',session_id,run_no,attempt_id,job_id,movie_url)
             except Exception as exc:log.warning('Mobile movie email failed: %s',exc)
     except Exception as exc:
         code,stage,safe_message,technical=_movie_failure(exc)
-        log.exception('MOVIE_RENDER_FAILED job=%s attempt=%s code=%s stage=%s detail=%s',job_id,attempt_id,code,stage,technical)
+        log.exception('MOVIE_RENDER_FAILED session_id=%s run_id=%s job_id=%s attempt_id=%s code=%s stage=%s detail=%s',session_id if 'session_id' in locals() else 0,run_no,job_id,attempt_id,code,stage,technical)
         async with SessionLocal() as db:
             movie=await db.get(LessonMovie,movie_id)
             if movie and movie.job_id==job_id and movie.attempt_id==attempt_id and movie.status in MOVIE_ACTIVE_STATES:
@@ -919,7 +938,7 @@ async def complete(request:web.Request,movie_build_trigger:str='complete')->web.
             movie_status='QUEUED';movie_stage='VALIDATING_RECORDINGS';movie_progress=max(2,movie_progress)
         if movie_status in MOVIE_SUCCESS_STATES and out.exists():
             await mark_cartoon_generated(c.id,sess.lesson_id,course)
-            val=f'movie:{c.id}:{out.name}';mt=signed_media_token(val,86400*30);movie_url=f'{_base(request)}/api/mobile/movie/{c.id}/{out.name}?t={mt}'
+            movie_url=_movie_public_url(c.id,out,_base(request))
     elif movie_configured:
         movie_status='FAILED';movie_stage='LOADING_AVATAR';movie_error_code='MOVIE_AVATAR_MISSING'
     homework_sent=False
@@ -932,7 +951,7 @@ async def complete(request:web.Request,movie_build_trigger:str='complete')->web.
         if homework_sent and par and par.email_reports_enabled and par.email:
             try:await send_homework_email(par.email,c.display_name,lesson_data.get('title') or sess.lesson_id,body,None)
             except Exception as exc:log.warning('Mobile homework email failed: %s',exc)
-    return web.json_response({'ok':True,'run_number':run_no,'movie_url':movie_url,'movie_status':movie_status,'movie_job_id':job_id,'movie_attempt_id':attempt_id,'movie_stage':movie_stage,'movie_progress':movie_progress,'movie_error_code':movie_error_code,'missing_voice_phrases':missing_exact,'missing_exact_voice_phrases':missing_exact,'movie_voice_diagnostics':voice_diagnostics,'hero_fallback_used':not bool(char),'homework_sent':homework_sent,'completed_runs':ent.completed_runs,'max_runs':ent.max_completed_runs})
+    return web.json_response({'ok':True,'session_id':sid,'run_id':run_no,'run_number':run_no,'movie_url':movie_url,'movie_status':movie_status,'movie_job_id':job_id,'movie_attempt_id':attempt_id,'movie_stage':movie_stage,'movie_progress':movie_progress,'movie_error_code':movie_error_code,'missing_voice_phrases':missing_exact,'missing_exact_voice_phrases':missing_exact,'movie_voice_diagnostics':voice_diagnostics,'hero_fallback_used':not bool(char),'homework_sent':homework_sent,'completed_runs':ent.completed_runs,'max_runs':ent.max_completed_runs})
 
 
 async def movie_status(request:web.Request)->web.Response:
@@ -942,18 +961,23 @@ async def movie_status(request:web.Request)->web.Response:
         if not sess or not c or c.parent_id!=p.id:raise web.HTTPForbidden()
         movie=await db.scalar(select(LessonMovie).where(LessonMovie.lesson_session_id==sid));slots=(await db.scalars(select(MovieVoiceSlot).where(MovieVoiceSlot.lesson_session_id==sid).order_by(MovieVoiceSlot.id))).all()
         if movie:await _expire_stalled_movie(db,movie)
-    if not movie:return web.json_response({'status':'NOT_CREATED','url':None})
+    if not movie:
+        log.info('MOVIE_STATUS_RESPONSE session_id=%s run_id=None attempt_id=None job_id=None movie_url=None status=NOT_CREATED',sid)
+        return web.json_response({'session_id':sid,'run_id':None,'run_number':None,'status':'NOT_CREATED','url':None,'movie_url':None})
     url=None;path=Path(movie.output_path) if movie.output_path else None
     if movie.status in MOVIE_SUCCESS_STATES and path and path.exists():
-        value=f'movie:{c.id}:{path.name}';token=signed_media_token(value,86400*30);url=f'{_base(request)}/api/mobile/movie/{c.id}/{path.name}?t={token}'
-        log.info('MOVIE_MOBILE_RECEIVED session=%s job=%s attempt=%s media_path=%s',sid,movie.job_id,movie.attempt_id,path)
+        url=_movie_public_url(c.id,path,_base(request))
     diagnostics=[]
     for slot in slots:
         try:detail=json.loads(slot.diagnostics_json or '{}')
         except (TypeError,ValueError,json.JSONDecodeError):detail={}
         diagnostics.append({'required_voice_id':slot.required_voice_id,'status':slot.status,**detail})
     failed=movie.status in MOVIE_RETRY_STATES
-    return web.json_response({'status':movie.status,'job_id':movie.job_id,'attempt_id':movie.attempt_id,'movie_version':movie.movie_version,'stage':movie.stage,'progress':int(movie.progress or 0),'strategy':movie.strategy,'url':url,'error':movie.error_message or (MOVIE_RETRY_MESSAGE if failed else None),'error_code':movie.error_code,'error_message':movie.error_message if failed else None,'can_retry':failed,'run_number':movie.run_number,'attempt_count':int(movie.attempt_count or 0),'voice_diagnostics':diagnostics})
+    identity=_movie_identity_payload(movie,url)
+    log.info('MOVIE_STATUS_RESPONSE session_id=%s run_id=%s attempt_id=%s job_id=%s movie_url=%s status=%s stage=%s',identity['session_id'],identity['run_id'],identity['attempt_id'],identity['job_id'],url,movie.status,movie.stage)
+    if movie.status in MOVIE_SUCCESS_STATES and url:
+        log.info('MOVIE_STATUS_READY session_id=%s run_id=%s attempt_id=%s job_id=%s movie_url=%s',identity['session_id'],identity['run_id'],identity['attempt_id'],identity['job_id'],url)
+    return web.json_response({**identity,'status':movie.status,'job_id':movie.job_id,'attempt_id':movie.attempt_id,'movie_version':movie.movie_version,'stage':movie.stage,'progress':int(movie.progress or 0),'strategy':movie.strategy,'url':url,'error':movie.error_message or (MOVIE_RETRY_MESSAGE if failed else None),'error_code':movie.error_code,'error_message':movie.error_message if failed else None,'can_retry':failed,'attempt_count':int(movie.attempt_count or 0),'voice_diagnostics':diagnostics})
 
 
 async def retry_movie(request:web.Request)->web.Response:
@@ -976,8 +1000,10 @@ async def movies(request:web.Request)->web.Response:
     for movie in rows:
         path=Path(movie.output_path) if movie.output_path else None;url=None
         if movie.status in MOVIE_SUCCESS_STATES and path and path.exists():
-            value=f'movie:{cid}:{path.name}';token=signed_media_token(value,86400*30);url=f'{_base(request)}/api/mobile/movie/{cid}/{path.name}?t={token}'
-        items.append({'filename':path.name if path else None,'title':f'{movie.lesson_id} · прохождение {movie.run_number}','created_at':movie.created_at.isoformat() if movie.created_at else '','url':url,'status':movie.status,'job_id':movie.job_id,'attempt_id':movie.attempt_id,'stage':movie.stage,'progress':int(movie.progress or 0),'error_code':movie.error_code,'can_retry':movie.status in MOVIE_RETRY_STATES,'session_id':movie.lesson_session_id})
+            url=_movie_public_url(cid,path,_base(request))
+        identity=_movie_identity_payload(movie,url)
+        log.info('MOVIE_STATUS_RESPONSE session_id=%s run_id=%s attempt_id=%s job_id=%s movie_url=%s status=%s stage=%s source=library',identity['session_id'],identity['run_id'],identity['attempt_id'],identity['job_id'],url,movie.status,movie.stage)
+        items.append({**identity,'filename':path.name if path else None,'title':f'{movie.lesson_id} · прохождение {movie.run_number}','created_at':movie.created_at.isoformat() if movie.created_at else '','url':url,'status':movie.status,'job_id':movie.job_id,'attempt_id':movie.attempt_id,'stage':movie.stage,'progress':int(movie.progress or 0),'error_code':movie.error_code,'error_message':movie.error_message,'can_retry':movie.status in MOVIE_RETRY_STATES})
     return web.json_response({'movies':items})
 
 

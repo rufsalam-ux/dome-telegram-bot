@@ -166,6 +166,7 @@
     {
       "phrase_id": "mila_gift",
       "visible_start": 39.0,
+      "partner_side": "RIGHT",
       "talk_start": 39.0,
       "end": 44.0,
       "height_norm": 0.44,
@@ -187,6 +188,7 @@
     {
       "phrase_id": "take_trip",
       "visible_start": 54.0,
+      "partner_side": "RIGHT",
       "talk_start": 54.0,
       "end": 59.0,
       "height_norm": 0.44,
@@ -205,6 +207,7 @@
     {
       "phrase_id": "polar_bear",
       "visible_start": 64.0,
+      "partner_side": "RIGHT",
       "talk_start": 64.0,
       "end": 69.0,
       "height_norm": 0.40,
@@ -243,6 +246,7 @@
     {
       "phrase_id": "parrot",
       "visible_start": 75.0,
+      "partner_side": "RIGHT",
       "talk_start": 75.0,
       "end": 80.0,
       "height_norm": 0.42,
@@ -261,6 +265,7 @@
     {
       "phrase_id": "giraffe",
       "visible_start": 80.0,
+      "partner_side": "RIGHT",
       "talk_start": 80.0,
       "end": 85.0,
       "height_norm": 0.42,
@@ -279,6 +284,7 @@
     {
       "phrase_id": "penguin",
       "visible_start": 85.0,
+      "partner_side": "RIGHT",
       "talk_start": 85.0,
       "end": 90.0,
       "height_norm": 0.40,
@@ -299,6 +305,7 @@
     {
       "phrase_id": "zebra",
       "visible_start": 90.0,
+      "partner_side": "RIGHT",
       "talk_start": 90.0,
       "end": 95.0,
       "height_norm": 0.40,

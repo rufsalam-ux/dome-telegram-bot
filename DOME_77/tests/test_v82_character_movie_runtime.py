@@ -8,6 +8,7 @@ from app.db.models import Character
 from app.services.cartoon_builder import (
     MOVIE_AVATAR_PERCEPTUAL_SCALE,
     _desired_facing,
+    _resolved_facing,
     _resolve_normalized_timeline,
     _scheduled_voice_duration,
     _should_hflip,
@@ -145,6 +146,23 @@ def test_visible_bbox_drives_scale_baseline_and_source_orientation(tmp_path):
     assert placed["x"] + round(placed["height"] * aspect) < 450
 
 
+def test_wide_confirmed_avatar_uses_frame_aspect_when_width_bounded():
+    timeline=[{"phrase_id":"mila_gift","height_norm":.44,"max_width_norm":.5,"floor_y_norm":.94,"x_norm":.14,"partner_side":"RIGHT"}]
+    placed=_resolve_normalized_timeline(timeline,1920,1080,character_aspect=2.002277,ground_ratio=.914)[0]
+    assert placed["height"]>400
+    assert placed["height"]*2.002277/1920<=.5
+    assert _desired_facing(placed)=="RIGHT"
+    assert _resolved_facing(placed,"LEFT")=="RIGHT"
+    assert _should_hflip(placed,"LEFT",False) is True
+
+
+def test_confirmed_side_profile_is_not_hallucinated_into_front_view():
+    front={"animation":"stand_front_talk"}
+    assert _desired_facing(front)=="FRONT"
+    assert _resolved_facing(front,"LEFT")=="LEFT"
+    assert _should_hflip(front,"LEFT",False) is False
+
+
 def test_avatar_animation_library_is_cache_first_and_versioned(tmp_path):
     avatar=tmp_path/"avatar.png";_head_left_dinosaur(avatar);clip=tmp_path/"talk.mp4";clip.write_bytes(b"x"*12000)
     library=CharacterMotionLibrary(tmp_path,avatar,avatar_id=77)
@@ -257,6 +275,8 @@ def test_lyosha_mila_parrot_and_required_movie_contract_remain_authored():
     assert timeline["mila_gift"]["x_norm"] == pytest.approx(.14)
     assert timeline["mila_gift"]["placement_side"] == "left"
     assert timeline["mila_gift"]["height_norm"] >= .42
+    for phrase in ("mila_gift","take_trip","polar_bear","parrot","giraffe","penguin","zebra"):
+        assert timeline[phrase]["partner_side"]=="RIGHT"
     for phrase in ("penguin", "zebra"):
         assert timeline[phrase]["x_norm"] == pytest.approx(.07)
         assert timeline[phrase]["protected_boxes_norm"] == [[.76, .81, .23, .19]]

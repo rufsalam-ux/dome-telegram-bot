@@ -334,6 +334,8 @@ def _resolve_normalized_timeline(timeline: list[dict], frame_width: int, frame_h
     """Convert authored placement using visible-body size and the saved feet anchor."""
 
     resolved: list[dict] = []
+    frame_ratio=frame_height/max(1,frame_width)
+    normalized_visual_aspect=max(.01,character_aspect*frame_ratio)
     for source in timeline:
         segment = dict(source)
         if "height_norm" in segment:
@@ -343,8 +345,8 @@ def _resolve_normalized_timeline(timeline: list[dict], frame_width: int, frame_h
             # then apply the authored safe-zone width as a final bound.
             height_norm=authored_height/(max(1.0,character_aspect)**0.32)
             max_width_norm=float(segment.get("max_width_norm") or 0.56)
-            if character_aspect>0 and height_norm*character_aspect>max_width_norm:
-                height_norm=max_width_norm/character_aspect
+            if height_norm*normalized_visual_aspect>max_width_norm:
+                height_norm=max_width_norm/normalized_visual_aspect
             segment["height"] = max(1, round(height_norm * frame_height))
         height = int(segment.get("height", 225))
         if "floor_y_norm" in segment:
@@ -389,6 +391,8 @@ def _visible_character_asset(source: Path, metadata: dict | None, output: Path) 
 
 
 def _desired_facing(segment: dict) -> str:
+    explicit=str(segment.get("hero_facing") or "").upper()
+    if explicit in {"LEFT","RIGHT","FRONT"}:return explicit
     view=str((segment.get("character_animation") or {}).get("view") or "").lower()
     if view.endswith("_left"):return "LEFT"
     if view.endswith("_right"):return "RIGHT"
@@ -403,8 +407,19 @@ def _desired_facing(segment: dict) -> str:
     return "FRONT"
 
 
+def _resolved_facing(segment: dict, source_facing: str) -> str:
+    """Resolve an authored view without inventing a view absent from the drawing."""
+
+    requested=_desired_facing(segment);source=str(source_facing or "UNKNOWN").upper()
+    if requested=="FRONT" and source in {"LEFT","RIGHT"}:
+        return source
+    if requested in {"LEFT","RIGHT","FRONT"}:
+        return requested
+    return source
+
+
 def _should_hflip(segment: dict, source_facing: str, legacy_mirror: bool) -> bool:
-    desired=_desired_facing(segment);source=str(source_facing or "UNKNOWN").upper()
+    desired=_resolved_facing(segment,source_facing);source=str(source_facing or "UNKNOWN").upper()
     if desired=="FRONT" or source=="FRONT":return False
     if source in {"LEFT","RIGHT"} and desired in {"LEFT","RIGHT"}:return source!=desired
     return legacy_mirror
@@ -793,9 +808,10 @@ def build_timeline_cartoon(
         source_facing=_source_facing(character_metadata)
         log.info("MOVIE_AVATAR_METADATA source_facing=%s confirmed=%s version=%s",source_facing,(character_metadata or {}).get("userConfirmed") is True,(character_metadata or {}).get("analysisVersion") or "legacy")
         for segment in timeline:
-            action=primary_motion_action(segment);desired=_desired_facing(segment);applied_flip=_should_hflip(segment,source_facing,bool(animation_profile(action, settings.storage_root / "animation-library").get("mirror",False)))
+            action=primary_motion_action(segment);desired=_desired_facing(segment);resolved_facing=_resolved_facing(segment,source_facing);applied_flip=_should_hflip(segment,source_facing,bool(animation_profile(action, settings.storage_root / "animation-library").get("mirror",False)))
             displayed=("RIGHT" if source_facing=="LEFT" else "LEFT") if applied_flip and source_facing in {"LEFT","RIGHT"} else source_facing
-            log.info("MOVIE_AVATAR_RENDER phrase=%s action=%s source=%s desired=%s flip=%s displayed=%s height=%s",segment.get("phrase_id"),action,source_facing,desired,applied_flip,displayed,segment.get("height"))
+            orientation_source="parent_confirmed" if (character_metadata or {}).get("userConfirmed") is True else "saved_analysis"
+            log.info("MOVIE_AVATAR_SCENE scene_id=%s asset_id=%s metadata_version=%s requested_facing=%s resolved_facing=%s source_facing=%s orientation_source=%s scale=%.5f x=%s y=%s ground_anchor=%s fallback=%s flip=%s displayed=%s",segment.get("phrase_id"),character_png.name,(character_metadata or {}).get("metadataVersion") or (character_metadata or {}).get("analysisVersion") or "legacy",desired,resolved_facing,source_facing,orientation_source,float(segment.get("height",0))/max(1,frame_height),segment.get("x",segment.get("x_start")),segment.get("y"),(character_metadata or {}).get("groundAnchor") or (character_metadata or {}).get("feetAnchor"),desired!=resolved_facing,applied_flip,displayed)
         _publish_progress(progress_callback, "RENDERING_AVATAR_MOTION", 42, render_strategy)
         ai_clips: list[Path | None] = []
         for index, segment in enumerate(timeline):
@@ -804,7 +820,7 @@ def build_timeline_cartoon(
                 continue
             try:
                 phrase_audio = Path(audio_by_phrase[segment["phrase_id"]]) if audio_by_phrase.get(segment["phrase_id"]) else None
-                animation_segment = {**segment, "resolved_facing": _desired_facing(segment).lower()}
+                animation_segment = {**segment, "resolved_facing": _resolved_facing(segment,source_facing).lower()}
                 ai_clips.append(prepare_character_animation(
                     character_png, animation_segment, work / "ai-animation", phrase_audio,
                     metadata=character_metadata, allow_generate=allow_generate,

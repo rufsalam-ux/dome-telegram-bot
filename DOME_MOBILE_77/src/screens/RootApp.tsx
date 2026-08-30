@@ -1,11 +1,13 @@
 import React,{useEffect,useRef,useState} from 'react';
-import {Alert,Image,Linking,Pressable,ScrollView,Share,Text,View} from 'react-native';
+import {Alert,Image,Pressable,ScrollView,Share,Text,View} from 'react-native';
 import {Body,Button,Card,H1,H2} from '../components/Ui';
+import {MoviePlayer} from '../components/MoviePlayer';
 import {useAppStore} from '../store/AppStore';
 import {bootstrap,isUnauthorizedError,listLessons,listMovies,API_BASE,restoreApiToken,retryMovieBuild,updateChildLanguages} from '../api/mobile';
 import {BootStage,logStartupStage,startupFailure,StartupFailure,withStartupTimeout} from '../engine/startup';
 import {AuthScreen} from './AuthScreen';
 import {playExperience} from '../experience/experience';
+import {movieIdentity,normalizeMovieState,MOVIE_ACTIVE_STATES,MOVIE_RETRY_STATES,MOVIE_SUCCESS_STATES} from '../engine/movieRuntime';
 
 // Optional native screens use synchronous, statically analyzable Metro requires.
 // Their code is part of the main bundle, but native media modules are evaluated
@@ -16,6 +18,11 @@ const LANGUAGES=[
   ['it','Italiano'],['pt','Português'],['tr','Türkçe'],['ar','العربية'],['zh','中文']
 ] as const;
 
+function normalizedListedMovie(raw:any):any{
+  const movie=normalizeMovieState(raw,Number(raw?.session_id||0));
+  return {...raw,...movie,url:movie.movie_url,status:movie.status,job_id:movie.job_id,attempt_id:movie.attempt_id,stage:movie.stage,progress:movie.progress,error_code:movie.error_code,error_message:movie.error_message};
+}
+
 type RootAppProps={
   onBootStage:(stage:BootStage,failure?:StartupFailure|null)=>void;
   retryCount:number;
@@ -25,6 +32,7 @@ type RootAppProps={
 export function RootApp({onBootStage,retryCount,onRetryReceived}:RootAppProps){
   const s=useAppStore();
   const[movies,setMovies]=useState<any[]>([]);
+  const[openedMovie,setOpenedMovie]=useState<any|null>(null);
   const[target,setTarget]=useState('ru');
   const[native,setNative]=useState('ru');
   const[savingLang,setSavingLang]=useState(false);
@@ -36,6 +44,7 @@ export function RootApp({onBootStage,retryCount,onRetryReceived}:RootAppProps){
   const[lessonsError,setLessonsError]=useState('');
   const[activeLessonId,setActiveLessonId]=useState('');
   const[catalogReloadNonce,setCatalogReloadNonce]=useState(0);
+  const[movieReloadNonce,setMovieReloadNonce]=useState(0);
   const firstScreenLoggedForAttempt=useRef(-1);
   const visibleChildren=s.children.filter(child=>Boolean(child?.id&&child?.name?.trim()));
 
@@ -89,16 +98,17 @@ export function RootApp({onBootStage,retryCount,onRetryReceived}:RootAppProps){
     return()=>cancelAnimationFrame(frame);
   },[bootAttempt,onBootStage,sessionReady,startupError,s.screen]);
   useEffect(()=>{if(s.selectedChild){setTarget(s.selectedChild.learningLanguage||'ru');setNative(s.selectedChild.nativeLanguage||'ru')}},[s.selectedChild?.id]);
-  useEffect(()=>{if(s.screen!=='movies'||!s.selectedChild||!movies.some((movie:any)=>['QUEUED','RUNNING','PROCESSING'].includes(String(movie.status))))return;let active=true;const timer=setTimeout(()=>{void listMovies(s.selectedChild!.id).then(result=>{if(!active)return;const received=(result.movies||[]).filter((movie:any)=>['SUCCEEDED','READY'].includes(String(movie.status))&&movie.url);for(const movie of received)console.info('MOVIE_MOBILE_RECEIVED',{session_id:movie.session_id,job_id:movie.job_id,attempt_id:movie.attempt_id,url:movie.url});setMovies(result.movies||[]) }).catch(()=>{})},2500);return()=>{active=false;clearTimeout(timer)}},[movies,s.screen,s.selectedChild?.id]);
+  useEffect(()=>{if(s.screen!=='movies'||!s.selectedChild)return;let active=true;let timer:any;const poll=async()=>{console.info('MOVIE_MOBILE_POLL_START',{child_id:s.selectedChild!.id,source:'MOVIE_LIBRARY'});try{const result=await listMovies(s.selectedChild!.id);if(!active)return;const items=(result.movies||[]).map(normalizedListedMovie);console.info('MOVIE_MOBILE_POLL_RESPONSE',{child_id:s.selectedChild!.id,count:items.length,statuses:items.map((movie:any)=>({session_id:movie.session_id,run_id:movie.run_id,status:movie.status,job_id:movie.job_id,attempt_id:movie.attempt_id,movie_url:movie.movie_url}))});for(const movie of items.filter((item:any)=>MOVIE_SUCCESS_STATES.has(item.status)&&item.movie_url)){console.info('MOVIE_MOBILE_READY_RECEIVED',movieIdentity(movie));console.info('MOVIE_MOBILE_URL_SET',movieIdentity(movie))}setMovies(items);setOpenedMovie((current:any)=>{if(current){const updated=items.find((item:any)=>item.session_id===current.session_id);if(updated?.movie_url)return updated}return items.find((item:any)=>MOVIE_SUCCESS_STATES.has(item.status)&&item.movie_url)||null});if(items.some((item:any)=>MOVIE_ACTIVE_STATES.has(item.status)))timer=setTimeout(poll,2500)}catch(error:any){console.warn('MOVIE_MOBILE_POLL_RESPONSE',{child_id:s.selectedChild!.id,status:'NETWORK_ERROR',error:String(error?.message||error)});if(active)timer=setTimeout(poll,4000)}};void poll();return()=>{active=false;if(timer)clearTimeout(timer)}},[s.screen,s.selectedChild?.id,movieReloadNonce]);
   useEffect(()=>{let active=true;const child=s.selectedChild;if(!child){setLessons([]);setActiveLessonId('');return}setLessonsLoading(true);setLessonsError('');void listLessons(child.id).then(data=>{if(!active)return;const items=Array.isArray(data?.lessons)?data.lessons:[];setLessons(items);const first=items.find((item:any)=>item.available&&item.resume_step!==null)||items.find((item:any)=>item.available);setActiveLessonId(current=>items.some((item:any)=>item.lesson_id===current&&item.available)?current:String(first?.lesson_id||''))}).catch(error=>{if(active&&!isUnauthorizedError(error)){setLessons([]);setActiveLessonId('');setLessonsError(error.message||'Не удалось загрузить уроки')}}).finally(()=>{if(active)setLessonsLoading(false)});return()=>{active=false}},[s.selectedChild?.id,catalogReloadNonce]);
   const openLesson=(lessonId:string)=>{setActiveLessonId(lessonId);s.setScreen('lesson')};
   const retryListedMovie=async(movie:any)=>{
-    console.info('MOVIE_RETRY_STARTED',{session_id:movie.session_id});
+    if(!MOVIE_RETRY_STATES.has(String(movie.status||'')))return;
+    console.info('MOVIE_RETRY_STARTED',movieIdentity(normalizeMovieState(movie,Number(movie.session_id))));
     playExperience('MOVIE_START');
     setMovies(items=>items.map(item=>item.session_id===movie.session_id?{...item,status:'QUEUED',stage:'VALIDATING_RECORDINGS',progress:2,can_retry:false,error_code:null}:item));
     try{
-      const result=await retryMovieBuild(Number(movie.session_id));
-      setMovies(items=>items.map(item=>item.session_id===movie.session_id?{...item,status:result.movie_status||'QUEUED',stage:result.movie_stage||'VALIDATING_RECORDINGS',progress:Number(result.movie_progress||2),job_id:result.movie_job_id||item.job_id,attempt_id:result.movie_attempt_id||item.attempt_id,can_retry:false}:item));
+      const result=normalizeMovieState(await retryMovieBuild(Number(movie.session_id)),Number(movie.session_id));
+      setMovies(items=>items.map(item=>item.session_id===movie.session_id?normalizedListedMovie({...item,...result}):item));
     }catch{
       setMovies(items=>items.map(item=>item.session_id===movie.session_id?{...item,status:'FAILED',can_retry:true}:item));
       Alert.alert('Не удалось повторить сборку','Все записи сохранены. Проверьте интернет и попробуйте ещё раз.');
@@ -138,12 +148,12 @@ export function RootApp({onBootStage,retryCount,onRetryReceived}:RootAppProps){
     return <ScrollView contentContainerStyle={{padding:24}}><H1>🌍 Изменить языки</H1><Card><H2>Изучаемый язык</H2>{LANGUAGES.map(([code,label])=><Button key={'t'+code} secondary={target!==code} title={`${target===code?'✓ ':''}${label}`} onPress={()=>setTarget(code)}/>)}</Card><Card><H2>Язык объяснений</H2><Body>На этом языке ребёнок получает пояснение после фразы на изучаемом языке.</Body>{LANGUAGES.map(([code,label])=><Button key={'n'+code} secondary={native!==code} title={`${native===code?'✓ ':''}${label}`} onPress={()=>setNative(code)}/>)}</Card><Button disabled={savingLang} title={savingLang?'Сохраняю…':'Сохранить языки'} onPress={save}/><Button secondary title='Назад' onPress={()=>s.setScreen('home')}/></ScrollView>
   }
 
-  if(s.screen==='home')return <ScrollView contentContainerStyle={{padding:24}}><H1>{s.selectedChild?.name||'DOME'}</H1>{s.selectedChild?.heroUrl?<Image source={{uri:s.selectedChild.heroUrl.startsWith('http')?s.selectedChild.heroUrl:API_BASE+s.selectedChild.heroUrl}} style={{height:150,width:'100%',resizeMode:'contain'}}/>:null}<Card><Body>Изучаемый: {s.selectedChild?.learningLanguage||'ru'} · объяснения: {s.selectedChild?.nativeLanguage||'ru'}</Body>{activeLesson?<Body muted>{activeLesson.resume_step!==null?'Можно продолжить:':'Следующий урок:'} {activeLesson.title}</Body>:null}{lessonsError?<Body>Не удалось обновить каталог: {lessonsError}</Body>:null}</Card><Button disabled={lessonsLoading||!activeLesson} title={lessonsLoading?'Загружаю уроки…':activeLesson?.resume_step!==null?'▶ Продолжить урок':'▶ Начать урок'} onPress={()=>activeLesson&&openLesson(activeLesson.lesson_id)}/><Button title='📚 Мои уроки' onPress={()=>s.setScreen('lessons')}/><Button title='🌍 Изменить языки' secondary onPress={()=>s.setScreen('language')}/><Button title='🎭 Мой герой' secondary onPress={()=>s.setScreen('hero')}/><Button title='🎬 Мои мультфильмы' secondary onPress={async()=>{if(s.selectedChild)try{const r=await listMovies(s.selectedChild.id);setMovies(r.movies||[])}catch{}s.setScreen('movies')}}/><Button title='💳 Тарифы и подписка' secondary onPress={()=>s.setScreen('plans')}/><Button title='🔊 Звук и отклик' secondary onPress={()=>s.setScreen('experience_settings')}/><Button title='📊 Мои успехи' secondary onPress={()=>Alert.alert('Прогресс','Данные берутся с сервера DOME.')}/><Button secondary title='Сменить ребёнка' onPress={()=>s.setScreen('children')}/></ScrollView>;
+  if(s.screen==='home')return <ScrollView contentContainerStyle={{padding:24}}><H1>{s.selectedChild?.name||'DOME'}</H1>{s.selectedChild?.heroUrl?<Image source={{uri:s.selectedChild.heroUrl.startsWith('http')?s.selectedChild.heroUrl:API_BASE+s.selectedChild.heroUrl}} style={{height:150,width:'100%',resizeMode:'contain'}}/>:null}<Card><Body>Изучаемый: {s.selectedChild?.learningLanguage||'ru'} · объяснения: {s.selectedChild?.nativeLanguage||'ru'}</Body>{activeLesson?<Body muted>{activeLesson.resume_step!==null?'Можно продолжить:':'Следующий урок:'} {activeLesson.title}</Body>:null}{lessonsError?<Body>Не удалось обновить каталог: {lessonsError}</Body>:null}</Card><Button disabled={lessonsLoading||!activeLesson} title={lessonsLoading?'Загружаю уроки…':activeLesson?.resume_step!==null?'▶ Продолжить урок':'▶ Начать урок'} onPress={()=>activeLesson&&openLesson(activeLesson.lesson_id)}/><Button title='📚 Мои уроки' onPress={()=>s.setScreen('lessons')}/><Button title='🌍 Изменить языки' secondary onPress={()=>s.setScreen('language')}/><Button title='🎭 Мой герой' secondary onPress={()=>s.setScreen('hero')}/><Button title='🎬 Мои мультфильмы' secondary onPress={()=>s.setScreen('movies')}/><Button title='💳 Тарифы и подписка' secondary onPress={()=>s.setScreen('plans')}/><Button title='🔊 Звук и отклик' secondary onPress={()=>s.setScreen('experience_settings')}/><Button title='📊 Мои успехи' secondary onPress={()=>Alert.alert('Прогресс','Данные берутся с сервера DOME.')}/><Button secondary title='Сменить ребёнка' onPress={()=>s.setScreen('children')}/></ScrollView>;
   if(s.screen==='experience_settings'){const {ExperienceSettingsScreen}=require('./ExperienceSettingsScreen');return <ExperienceSettingsScreen/>}
   if(s.screen==='plans'||s.screen==='purchase'){const {PurchaseScreen}=require('./PurchaseScreen');return <PurchaseScreen/>}
   if(s.screen==='lessons')return <ScrollView contentContainerStyle={{padding:24}}><H1>Мои уроки</H1><Button secondary disabled={lessonsLoading} title={lessonsLoading?'Обновляю…':'↻ Обновить каталог'} onPress={()=>setCatalogReloadNonce(value=>value+1)}/>{lessonsLoading?<Card><Body>Обновляю опубликованный каталог…</Body></Card>:null}{lessonsError?<Card><Body>{lessonsError}</Body></Card>:null}{lessons.map(item=><Card key={`${item.course_id}:${item.lesson_id}`}><H2>{item.title}</H2><Body>{item.description||item.course_title}</Body><Body muted>Пройдено: {item.completed_runs}/{item.max_completed_runs}{item.resume_step!==null?' · есть сохранённый прогресс':''}</Body><Button disabled={!item.available} title={item.available?(item.resume_step!==null?'Продолжить':'Начать'):'🔒 Недоступен'} onPress={()=>openLesson(item.lesson_id)}/></Card>)}{!lessonsLoading&&!lessons.length?<Card><Body>Опубликованных уроков пока нет.</Body></Card>:null}<Button secondary title='Назад' onPress={()=>s.setScreen('home')}/></ScrollView>;
   if(s.screen==='lesson'){if(activeLessonId){const {LessonPlayer}=require('./LessonPlayer');return <LessonPlayer lessonId={activeLessonId}/>}return <View style={{flex:1,alignItems:'center',justifyContent:'center',padding:24}}><Body>Урок не выбран.</Body><Button title='К списку уроков' onPress={()=>s.setScreen('lessons')}/></View>}
-  if(s.screen==='movies')return <ScrollView contentContainerStyle={{padding:24}}><H1>Мои мультфильмы</H1>{movies.length?movies.map((m:any)=>{const active=['QUEUED','RUNNING','PROCESSING'].includes(String(m.status));const ready=['SUCCEEDED','READY'].includes(String(m.status));const failed=['FAILED','TIMED_OUT'].includes(String(m.status));return <Card key={`${m.session_id}-${m.created_at}`}><Body>{m.title||m.filename}</Body><Body muted>{ready?'Готов':active?`${m.stage||'Сборка'} · ${Number(m.progress||0)}%`:failed?'Нужен повторный запуск':'Ожидает данных'} · {m.created_at||''}</Body>{m.error_code?<Body muted>Код: {m.error_code}</Body>:null}{failed?<Button title='Повторить сборку' onPress={()=>void retryListedMovie(m)}/>:null}{m.url?<><Button title='▶ Смотреть / скачать' onPress={()=>Linking.openURL(m.url)}/><Button secondary title='Поделиться' onPress={()=>Share.share({message:m.url,url:m.url})}/></>:null}</Card>}):<Card><Body>Пока мультфильмов нет.</Body></Card>}<Button secondary title='Обновить' onPress={async()=>{if(s.selectedChild){const r=await listMovies(s.selectedChild.id);setMovies(r.movies||[])}}}/><Button secondary title='Назад' onPress={()=>s.setScreen('home')}/></ScrollView>;
+  if(s.screen==='movies')return <ScrollView contentContainerStyle={{padding:24}}><H1>Мои мультфильмы</H1>{openedMovie?.movie_url?<Card><H2>{openedMovie.title||openedMovie.filename||'Готовый мультфильм'}</H2><MoviePlayer url={openedMovie.movie_url} identity={movieIdentity(openedMovie)}/><Button secondary title='Поделиться' onPress={()=>Share.share({message:openedMovie.movie_url,url:openedMovie.movie_url})}/></Card>:null}{movies.length?movies.map((m:any)=>{const active=MOVIE_ACTIVE_STATES.has(String(m.status));const ready=MOVIE_SUCCESS_STATES.has(String(m.status));const failed=MOVIE_RETRY_STATES.has(String(m.status));return <Card key={`${m.session_id}-${m.created_at}`}><Body>{m.title||m.filename}</Body><Body muted>{ready?'Готов':active?`${m.stage||'Сборка'} · ${Number(m.progress||0)}%`:failed?'Нужен повторный запуск':'Ожидает данных'} · {m.created_at||''}</Body>{m.error_code?<Body muted>Код: {m.error_code}</Body>:null}{failed?<Button title='Повторить сборку' onPress={()=>void retryListedMovie(m)}/>:null}{m.movie_url?<><Button title='▶ Смотреть' onPress={()=>setOpenedMovie(m)}/><Button secondary title='Поделиться' onPress={()=>Share.share({message:m.movie_url,url:m.movie_url})}/></>:null}</Card>}):<Card><Body>Пока мультфильмов нет.</Body></Card>}<Button secondary title='Обновить' onPress={()=>setMovieReloadNonce(value=>value+1)}/><Button secondary title='Назад' onPress={()=>s.setScreen('home')}/></ScrollView>;
   if(s.screen==='admin'){const {AdminScreen}=require('./AdminScreen');return <AdminScreen/>}
   return <View style={{padding:24}}><Text>Неизвестный экран</Text></View>
 }

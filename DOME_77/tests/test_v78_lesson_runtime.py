@@ -300,4 +300,7 @@ def test_mobile_uses_localized_asset_pipeline_without_white_masks():
     assert "runtime-stage-${stage}" in player and "useSafeAreaInsets" in player and "useWindowDimensions" in player
     assert "const initialHint=slide.always_bilingual?" in player
     root_app=(MOBILE_ROOT/"src/screens/RootApp.tsx").read_text("utf-8")
-    assert "Смотреть / скачать" in root_app and "Поделиться" in root_app and "'QUEUED','RUNNING','PROCESSING'" in root_app
+    movie_runtime=(MOBILE_ROOT/"src/engine/movieRuntime.ts").read_text("utf-8")
+    movie_player=(MOBILE_ROOT/"src/components/MoviePlayer.tsx").read_text("utf-8")
+    assert "MoviePlayer" in root_app and "Поделиться" in root_app and "useVideoPlayer" in movie_player
+    assert "'QUEUED','RUNNING','PROCESSING'" in movie_runtime

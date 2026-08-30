@@ -49,14 +49,15 @@ import {
   withLessonTimeout,
 } from '../src/engine/lessonRuntime.ts';
 
-test('movie completion polling exposes retry and receipt diagnostics',()=>{
-  const player=readFileSync(new URL('../src/screens/LessonPlayer.tsx',import.meta.url),'utf8');
-  assert.match(player,/MOVIE_RETRY_STARTED/);
-  assert.match(player,/MOVIE_MOBILE_RECEIVED/);
-  assert.match(player,/getMovieStatus\(session\)/);
-  assert.match(player,/movie_url:result\.url\|\|current\.movie_url/);
+test('movie completion polling exposes normalized identity, retry and player diagnostics',()=>{
+  const lesson=readFileSync(new URL('../src/screens/LessonPlayer.tsx',import.meta.url),'utf8');
+  const root=readFileSync(new URL('../src/screens/RootApp.tsx',import.meta.url),'utf8');
+  const player=readFileSync(new URL('../src/components/MoviePlayer.tsx',import.meta.url),'utf8');
+  for(const marker of ['MOVIE_RETRY_STARTED','MOVIE_MOBILE_POLL_START','MOVIE_MOBILE_POLL_RESPONSE','MOVIE_MOBILE_READY_RECEIVED','MOVIE_MOBILE_URL_SET'])assert.match(lesson+root,new RegExp(marker));
+  assert.match(lesson,/getMovieStatus\(session\)/);assert.match(player,/MOVIE_PLAYER_OPENED/);assert.match(player,/MOVIE_PLAYER_ERROR/);
 });
 import {avatarCanvasStyle,avatarFacing,avatarGroundRatio,avatarRenderTrace,avatarScaleX,canonicalChildAvatarUri,lessonAvatarConfig,slideAvatarConfig,sourceAvatarFacing,visibleCharacterAspect,visibleCharacterBox} from '../src/engine/avatarRuntime.ts';
+import {completedMoviePayload,normalizeMovieState,MOVIE_RETRY_STATES} from '../src/engine/movieRuntime.ts';
 import {CAT_ACTIVITY_STATES,catProcessingState,catStateForStage} from '../src/engine/catRuntime.ts';
 import {mediaPhaseAfterEnd,normalizeMediaSequence,usesGenericMediaRuntime} from '../src/engine/mediaRuntime.ts';
 import {rootRuntimeFailure,startupFailure,StartupTimeoutError,startupErrorText,withStartupTimeout} from '../src/engine/startup.ts';
@@ -69,6 +70,22 @@ import {canonicalTaskType,expectedTargetId,initialPuzzleOrder,isStableTaskTempla
 const greeting={type:'guided_speaking',answer_mode:'required_voice',adaptive:true,bot_says_target:'Привет! Я рада тебя видеть. Как ты сегодня себя чувствуешь?',simplified_text:'Привет! У меня всё хорошо.'};
 const cards={slide_id:'slide_09',type:'card_selector',answer_mode:'none',card_question_sets:{A:[{id:'A1',text:'Назови три прилагательных.',pre_a1_text:'Ты добрый или весёлый?'},{id:'A2',text:'Второй?'},{id:'A3',text:'Третий?'}]}};
 const mila={slide_id:'slide_20',answer_mode:'required_voice',interaction_kind:'gift_selector',selection_options:[{id:'book'}],hero_placement:'left_of_mila',hero_box:[0.04,0.35,0.24,0.61]};
+
+test('movie identity is stable across completion, polling and library response shapes',()=>{
+  const completion=normalizeMovieState({session_id:14,run_id:14,movie_status:'QUEUED',movie_job_id:'job-14',movie_attempt_id:'attempt-1'},14);
+  const polling=normalizeMovieState({session_id:14,run_number:14,status:'SUCCEEDED',job_id:'job-14',attempt_id:'attempt-1',url:'https://example.test/movie.mp4'},14);
+  const merged=completedMoviePayload({...completion,...polling},14);
+  assert.equal(completion.session_id,polling.session_id);assert.equal(completion.run_id,polling.run_id);
+  assert.equal(completion.job_id,polling.job_id);assert.equal(completion.attempt_id,polling.attempt_id);
+  assert.equal(merged.movie_status,'SUCCEEDED');assert.equal(merged.movie_url,'https://example.test/movie.mp4');
+});
+
+test('movie retry is exposed only for terminal retryable states',()=>{
+  assert.equal(normalizeMovieState({status:'RUNNING',can_retry:true},14).can_retry,false);
+  assert.equal(normalizeMovieState({status:'SUCCEEDED',can_retry:true},14).can_retry,false);
+  assert.equal(normalizeMovieState({status:'FAILED',can_retry:true},14).can_retry,true);
+  assert.equal(MOVIE_RETRY_STATES.has('TIMED_OUT'),true);
+});
 
 test('AI speech keeps recording disabled',()=>{
   assert.equal(recordEnabled('AI_SPEAKING',greeting,true),false);

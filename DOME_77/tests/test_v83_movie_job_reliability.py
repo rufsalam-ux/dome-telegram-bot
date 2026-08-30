@@ -24,7 +24,7 @@ def test_movie_job_schema_has_explicit_durable_lifecycle_fields():
         "error_code", "error_message", "attempt_count", "started_at",
         "heartbeat_at", "finished_at",
     } <= set(LessonMovie.__table__.columns.keys())
-    assert MOBILE_MOVIE_VERSION == "mobile-movie-v4"
+    assert MOBILE_MOVIE_VERSION == "mobile-movie-v5"
 
 
 def test_retry_preserves_durable_job_id_and_issues_a_new_attempt_id(tmp_path):
@@ -217,8 +217,16 @@ def test_movie_pipeline_exposes_every_required_diagnostic_stage():
         "MOVIE_RENDER_STARTED",
         "MOVIE_RENDER_SUCCESS",
         "MOVIE_RENDER_FAILED",
+        "MOVIE_FILE_EXISTS",
+        "MOVIE_PUBLISHED",
         "MOVIE_URL_SAVED",
+        "MOVIE_STATUS_READY",
+        "MOVIE_STATUS_RESPONSE",
         "MOVIE_RETRY_STARTED",
     }:
         assert marker in backend
-    assert "MOVIE_MOBILE_RECEIVED" in backend and "MOVIE_MOBILE_RECEIVED" in mobile
+    for marker in {
+        "MOVIE_MOBILE_POLL_START","MOVIE_MOBILE_POLL_RESPONSE","MOVIE_MOBILE_READY_RECEIVED",
+        "MOVIE_MOBILE_URL_SET","MOVIE_PLAYER_OPENED","MOVIE_PLAYER_ERROR",
+    }:
+        assert marker in mobile or marker in Path("../DOME_MOBILE_77/src/components/MoviePlayer.tsx").read_text(encoding="utf-8")

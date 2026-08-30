@@ -33,6 +33,7 @@
   },
   {
     "phrase_id": "mila_gift",
+    "partner_side": "RIGHT",
     "visible_start": 39.0,
     "talk_start": 39.0,
     "end": 44.0,
@@ -54,6 +55,7 @@
   },
   {
     "phrase_id": "take_trip",
+    "partner_side": "RIGHT",
     "visible_start": 54.0,
     "talk_start": 54.0,
     "end": 59.0,
@@ -72,6 +74,7 @@
   },
   {
     "phrase_id": "polar_bear",
+    "partner_side": "RIGHT",
     "visible_start": 64.0,
     "talk_start": 64.0,
     "end": 69.0,
@@ -110,6 +113,7 @@
   },
   {
     "phrase_id": "parrot",
+    "partner_side": "RIGHT",
     "visible_start": 75.0,
     "talk_start": 75.0,
     "end": 80.0,
@@ -128,6 +132,7 @@
   },
   {
     "phrase_id": "giraffe",
+    "partner_side": "RIGHT",
     "visible_start": 80.0,
     "talk_start": 80.0,
     "end": 85.0,
@@ -146,6 +151,7 @@
   },
   {
     "phrase_id": "penguin",
+    "partner_side": "RIGHT",
     "visible_start": 85.0,
     "talk_start": 85.0,
     "end": 90.0,
@@ -166,6 +172,7 @@
   },
   {
     "phrase_id": "zebra",
+    "partner_side": "RIGHT",
     "visible_start": 90.0,
     "talk_start": 90.0,
     "end": 95.0,
