@@ -606,3 +606,12 @@ test('an authored video can be inserted and removed between lesson steps without
   const withoutVideo=buildRuntimeOrder(withVideo.filter(step=>step.slide_id!=='clip'));
   assert.deepEqual(withoutVideo.map(step=>step.slide_id),['before','after']);
 });
+
+test('founder lesson validation and Russian editing manual are shipped with the mobile project',()=>{
+  const pkg=JSON.parse(readFileSync(new URL('../package.json',import.meta.url),'utf8'));
+  const validator=readFileSync(new URL('../scripts/validate-lessons.mjs',import.meta.url),'utf8');
+  const manual=readFileSync(new URL('../../DOME_77/content/lessons/README_RU.md',import.meta.url),'utf8');
+  assert.equal(pkg.scripts['validate-lessons'],'node scripts/validate-lessons.mjs');
+  for(const marker of ['повторяется','не найден','https://','drag/drop','next_slide'])assert.match(validator,new RegExp(marker));
+  for(const heading of ['Как заменить картинку','Как удалить слайд','Как добавить видео','Как изменить реплику ИИ','Как скопировать урок'])assert.match(manual,new RegExp(heading));
+});

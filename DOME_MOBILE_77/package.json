@@ -9,6 +9,7 @@
     "ios": "expo start --ios",
     "check": "tsc --noEmit",
     "test:runtime": "node --experimental-strip-types --test tests/lessonRuntime.test.ts",
+    "validate-lessons": "node scripts/validate-lessons.mjs",
     "build:apk": "eas build -p android --profile preview",
     "build:android-store": "eas build -p android --profile production",
     "build:ios-store": "eas build -p ios --profile production",
