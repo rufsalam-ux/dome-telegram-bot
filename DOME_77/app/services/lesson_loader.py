@@ -3,6 +3,7 @@ from copy import deepcopy
 from pathlib import Path
 from app.core.config import settings
 from app.services.authored_content import (
+    authored_steps,
     bundled_lessons_root,
     normalized_media_sequence,
     persistent_lessons_root,
@@ -153,7 +154,7 @@ def load_lesson(lesson_id: str, *, preview: bool = False) -> dict:
         except Exception:
             pass
     lesson["slides"] = [_enrich_runtime_layout(slide) for slide in _runtime_slides(
-        lesson.get("slides") or [], lesson_id, content_engine=str(lesson.get("engine") or "")
+        authored_steps(lesson), lesson_id, content_engine=str(lesson.get("engine") or "")
     )]
     bad = [s for s in lesson["slides"] if lesson_id == "demo_001" and int(s.get("order", 0) or 0) in REMOVED_ORDERS]
     if bad:

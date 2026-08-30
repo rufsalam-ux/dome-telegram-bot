@@ -268,6 +268,47 @@ def test_stable_task_templates_pre_video_and_movie_phrase_validate():
     assert "requiredForMovie needs moviePhraseId" in " ".join(content_studio.validate_content_lesson(lesson))
 
 
+def test_founder_friendly_steps_extract_to_existing_runtime_without_code_changes():
+    from app.services.authored_content import authored_steps, validate_content_lesson
+
+    lesson = {
+        "engine": "content_v1", "schema_version": "3.0", "status": "published", "active": True,
+        "lesson_id": "founder_001", "course_id": "conversation", "title": "Editable", "order": 7,
+        "max_completed_runs": 2, "expires_after_months": 10,
+        "languages": {"target": "en", "native": "ru"},
+        "steps": [
+            {"id": "hello", "type": "ai_dialogue", "target_phrase": "Hello!", "native_explanation": "Поздоровайся.", "ai_instruction": "Ask one short question."},
+            {"id": "clip", "type": "video", "src": "videos/hello.mp4", "autoplay": True, "autoContinue": True},
+            {"id": "answer", "type": "voice_answer", "target_phrase": "What did you see?", "controls": {"answer": {"enabled": True, "required": True}, "hint": {"enabled": True}}},
+        ],
+    }
+    assert validate_content_lesson(lesson) == []
+    steps = authored_steps(lesson)
+    assert [step["slide_id"] for step in steps] == ["hello", "clip", "answer"]
+    assert [step["order"] for step in steps] == [1, 2, 3]
+    assert steps[0]["type"] == "dialogue"
+    assert steps[1]["video_file"] == "videos/hello.mp4"
+    assert steps[1]["auto_continue"] is True
+    assert steps[2]["answer_mode"] == "required_voice"
+
+
+def test_founder_friendly_validation_reports_language_prompt_and_next_step_errors():
+    from app.services.authored_content import validate_content_lesson
+
+    lesson = {
+        "engine": "content_v1", "schema_version": "3.0", "status": "published", "active": True,
+        "lesson_id": "broken_001", "course_id": "conversation", "title": "Broken", "order": 8,
+        "max_completed_runs": 2, "expires_after_months": 10,
+        "languages": {"target": "english", "native": ""},
+        "steps": [{"id": "answer", "type": "voice_answer", "next_step_id": "missing"}],
+    }
+    errors = validate_content_lesson(lesson)
+    assert any("needs ai_instruction or target_phrase" in error for error in errors)
+    assert any("next step missing does not exist" in error for error in errors)
+    assert any("languages.target" in error for error in errors)
+    assert any("languages.native" in error for error in errors)
+
+
 def test_authoring_assistant_only_returns_editable_declarative_templates():
     proposal = deterministic_proposal("Make a memory game from these pictures", ["media/cat.png", "media/dog.png"])
     assert proposal["type"] == "memory" and len(proposal["pairs"]) >= 2

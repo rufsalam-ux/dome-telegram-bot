@@ -32,6 +32,13 @@ CONTENT_TYPE_ALIASES = {
     "repeat_phrase": "repeat",
     "open_dialogue": "dialogue",
     "required_movie_phrase": "voice_answer",
+    # Founder-facing step names. They intentionally map to the small stable
+    # runtime vocabulary instead of creating a component for every lesson.
+    "slide": "passive",
+    "ai_dialogue": "dialogue",
+    "animal_description": "voice_answer",
+    "break": "passive",
+    "activity": "physical_action",
 }
 
 SUPPORTED_CONTENT_TYPES = {
@@ -63,6 +70,70 @@ def publication_status(data: dict[str, Any]) -> str:
     if explicit in PUBLICATION_STATUSES:
         return explicit
     return "PUBLISHED" if bool(data.get("active", True)) else "DRAFT"
+
+
+def normalize_authored_step(step: dict[str, Any], index: int) -> dict[str, Any]:
+    """Translate friendly lesson.json fields into the existing DOME runtime.
+
+    The authored file stays data-only and may use either the historic
+    ``slide_id`` vocabulary or the shorter ``id``/``src`` vocabulary shown in
+    the founder manual.  This adapter is deliberately deterministic so a
+    future visual editor can write the same contract.
+    """
+
+    out = dict(step)
+    out.setdefault("slide_id", str(out.get("id") or f"step_{index:02d}"))
+    out.setdefault("order", index)
+    raw_kind = str(out.get("type") or "slide").strip().lower()
+    out["authoring_type"] = raw_kind
+    out["type"] = canonical_content_type(raw_kind)
+
+    target_phrase = str(out.get("target_phrase") or "").strip()
+    native_explanation = str(out.get("native_explanation") or "").strip()
+    ai_instruction = str(out.get("ai_instruction") or "").strip()
+    if target_phrase:
+        out.setdefault("bot_says_target", target_phrase)
+        out.setdefault("task_goal", target_phrase)
+    if native_explanation:
+        out.setdefault("bot_says_native", native_explanation)
+        out.setdefault("native_hint", native_explanation)
+    if ai_instruction:
+        out.setdefault("tutor_instruction", ai_instruction)
+
+    source = str(out.get("src") or "").strip()
+    if source and raw_kind == "video":
+        if source.lower().startswith("https://"):
+            out.setdefault("video_url", source)
+        else:
+            out.setdefault("video_file", source)
+        out.setdefault("autoplay", bool(out.get("autoplay", True)))
+        out.setdefault("auto_continue", bool(out.get("autoContinue", out.get("auto_continue", True))))
+        out.setdefault("skippable", bool(out.get("skippable", True)))
+    elif source and raw_kind == "slide":
+        out.setdefault("image", source)
+
+    controls = out.get("controls") if isinstance(out.get("controls"), dict) else {}
+    answer = controls.get("answer") if isinstance(controls.get("answer"), dict) else {}
+    hint = controls.get("hint") if isinstance(controls.get("hint"), dict) else {}
+    follow_up = controls.get("follow_up") if isinstance(controls.get("follow_up"), dict) else {}
+    if answer.get("enabled") is False:
+        out["answer_mode"] = "none"
+    elif answer.get("enabled") is True:
+        out.setdefault("answer_mode", "required_voice" if answer.get("required") else "optional_voice")
+    if "enabled" in hint:
+        out["hint_enabled"] = bool(hint.get("enabled"))
+    if "enabled" in follow_up:
+        out["follow_up_policy"] = "optional" if follow_up.get("enabled") else "none"
+    return out
+
+
+def authored_steps(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return normalized ordered steps from ``steps`` or legacy ``slides``."""
+
+    configured = data.get("steps") if isinstance(data.get("steps"), list) else data.get("slides")
+    if not isinstance(configured, list):
+        return []
+    return [normalize_authored_step(item, index) for index, item in enumerate(configured, 1) if isinstance(item, dict)]
 
 
 def normalized_media_sequence(slide: dict[str, Any]) -> list[dict[str, Any]]:
@@ -434,9 +505,10 @@ def validate_content_lesson(data: dict[str, Any]) -> list[str]:
         errors.append("lesson max_completed_runs must be 2")
     if int(data.get("expires_after_months", 0) or 0) != 10:
         errors.append("lesson expires_after_months must be 10")
-    slides = data.get("slides") or []
-    if not isinstance(slides, list):
-        return errors + ["slides must be a list"]
+    raw_steps = data.get("steps") if "steps" in data else data.get("slides")
+    if not isinstance(raw_steps, list):
+        return errors + ["steps/slides must be a list"]
+    slides = authored_steps(data)
     if not slides:
         errors.append("lesson needs at least one slide")
         return errors
@@ -459,6 +531,25 @@ def validate_content_lesson(data: dict[str, Any]) -> list[str]:
             errors.append(f"slide {i}: duplicate order {order}")
         seen_orders.add(order)
         errors.extend(_validate_slide(slide, i, "slide"))
+    for i, slide in enumerate(slides, 1):
+        next_id = str(slide.get("next_step_id") or slide.get("next") or "").strip()
+        if next_id and next_id not in seen_ids:
+            errors.append(f"slide {i}: next step {next_id} does not exist")
+        raw_kind = str(slide.get("authoring_type") or slide.get("type") or "").lower()
+        if raw_kind in {"ai_dialogue", "voice_answer", "animal_description"} and not any(
+            str(slide.get(key) or "").strip()
+            for key in ("ai_instruction", "tutor_instruction", "target_phrase", "task_goal", "bot_says_target", "question")
+        ):
+            errors.append(f"slide {i}: {raw_kind} needs ai_instruction or target_phrase")
+    languages = data.get("languages")
+    if languages is not None:
+        if not isinstance(languages, dict):
+            errors.append("languages must be an object with target and native")
+        else:
+            for key in ("target", "native"):
+                value = str(languages.get(key) or "").strip().lower()
+                if not value or len(value) not in {2, 3} or not value.isalpha():
+                    errors.append(f"languages.{key} must be a 2-3 letter language code")
     return errors
 
 
