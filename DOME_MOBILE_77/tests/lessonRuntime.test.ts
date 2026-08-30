@@ -60,7 +60,7 @@ test('movie completion polling exposes normalized identity, retry and player dia
 import {avatarCanvasStyle,avatarFacing,avatarGroundRatio,avatarRenderTrace,avatarScaleX,canonicalChildAvatarUri,lessonAvatarConfig,slideAvatarConfig,sourceAvatarFacing,visibleCharacterAspect,visibleCharacterBox} from '../src/engine/avatarRuntime.ts';
 import {completedMoviePayload,normalizeMovieState,MOVIE_RETRY_STATES} from '../src/engine/movieRuntime.ts';
 import {CAT_ACTIVITY_STATES,catProcessingState,catStateForStage} from '../src/engine/catRuntime.ts';
-import {mediaPhaseAfterEnd,normalizeMediaSequence,usesGenericMediaRuntime} from '../src/engine/mediaRuntime.ts';
+import {isStandaloneVideoStep,mediaPhaseAfterEnd,normalizeMediaSequence,usesGenericMediaRuntime,videoStepBehavior} from '../src/engine/mediaRuntime.ts';
 import {rootRuntimeFailure,startupFailure,StartupTimeoutError,startupErrorText,withStartupTimeout} from '../src/engine/startup.ts';
 import bundledLesson from '../src/data/botLesson.json' with {type:'json'};
 import {buildRuntimeOrder} from '../src/data/lessonInteractions.ts';
@@ -594,4 +594,15 @@ test('puzzle and sequence templates require a real completed action',()=>{
 test('disabled Content Studio steps never become child progress steps',()=>{
   const order=buildRuntimeOrder([{slide_id:'one',order:1},{slide_id:'disabled',order:2,enabled:false},{slide_id:'three',order:3}]);
   assert.deepEqual(order.map(step=>step.slide_id),['one','three']);
+});
+
+test('an authored video can be inserted and removed between lesson steps without runtime code',()=>{
+  const video={slide_id:'clip',order:2,type:'video',video_file:'videos/iceland.mp4',autoplay:true,auto_continue:true,skippable:false,replay:true,aspect_ratio:'9:16'};
+  const withVideo=buildRuntimeOrder([{slide_id:'before',order:1,type:'passive'},video,{slide_id:'after',order:3,type:'passive'}]);
+  assert.deepEqual(withVideo.map(step=>step.slide_id),['before','clip','after']);
+  assert.equal(isStandaloneVideoStep(video),true);assert.equal(usesGenericMediaRuntime(video),true);
+  assert.deepEqual(videoStepBehavior(video),{autoplay:true,autoContinue:true,skippable:false,replay:true,aspectRatio:9/16});
+  assert.equal(normalizeMediaSequence(video)[0].src,'videos/iceland.mp4');
+  const withoutVideo=buildRuntimeOrder(withVideo.filter(step=>step.slide_id!=='clip'));
+  assert.deepEqual(withoutVideo.map(step=>step.slide_id),['before','after']);
 });

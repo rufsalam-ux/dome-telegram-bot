@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.config import settings
 from app.db.models import Base, Child, LessonSession, MovieVoiceSlot, Parent, VoiceAttempt
-from app.services.authored_content import normalized_media_sequence, validate_content_lesson
+from app.services.authored_content import authored_steps, normalized_media_sequence, validate_content_lesson
 from app.services.conversational_tutor import adaptive_follow_up_policy
 from app.services.lesson_loader import LessonConfigurationError, load_lesson
 from app.services.lesson_runtime import correction_for_assessment
@@ -24,6 +24,26 @@ def test_content_schema_template_and_video_to_image_sequence_are_publishable():
     assert validate_content_lesson(template)==[]
     media_slide=next(slide for slide in template['slides'] if slide['slide_id']=='step_01_media')
     assert [item['type'] for item in normalized_media_sequence(media_slide)]==['video','image']
+
+
+def test_video_step_can_be_inserted_then_deleted_using_lesson_json_only():
+    lesson={
+        'engine':'content_v1','schema_version':'3.0','status':'published','active':True,
+        'lesson_id':'video_steps','course_id':'conversation','title':'Video steps','order':9,
+        'max_completed_runs':2,'expires_after_months':10,
+        'steps':[
+            {'id':'before','type':'slide','src':'images/before.png'},
+            {'id':'clip','type':'video','src':'videos/iceland.mp4','autoplay':True,'autoContinue':True,'skippable':False,'replay':True,'aspect_ratio':'9:16'},
+            {'id':'after','type':'slide','src':'images/after.png'},
+        ],
+    }
+    assert validate_content_lesson(lesson)==[]
+    steps=authored_steps(lesson);assert [step['slide_id'] for step in steps]==['before','clip','after']
+    video=steps[1];media=normalized_media_sequence(video)[0]
+    assert media['src']=='videos/iceland.mp4' and media['auto_continue'] is True and media['skippable'] is False
+    lesson['steps'].pop(1)
+    assert validate_content_lesson(lesson)==[]
+    assert [step['slide_id'] for step in authored_steps(lesson)]==['before','after']
 
 
 def test_production_loader_falls_back_from_invalid_persistent_edit(monkeypatch,tmp_path):

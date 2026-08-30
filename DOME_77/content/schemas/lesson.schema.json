@@ -50,8 +50,12 @@
         "url": {"type": "string"},
         "animation_id": {"type": "string"},
         "autoplay": {"type": "boolean"},
+        "auto_continue": {"type": "boolean"},
         "advance_on_end": {"type": "boolean"},
-        "poster": {"type": "string"}
+        "skippable": {"type": "boolean"},
+        "replay": {"type": "boolean"},
+        "poster": {"type": "string"},
+        "aspect_ratio": {"type": ["number", "string"]}
       },
       "additionalProperties": true
     },
@@ -64,6 +68,13 @@
         "order": {"type": "integer", "minimum": 1},
         "type": {"enum": ["slide", "video", "ai_dialogue", "voice_answer", "choice", "drag_drop", "animal_description", "break", "activity", "guided_speaking", "presentation", "card_selector", "choice_card", "guided_scene", "transition", "drag_and_drop", "animal_compare", "animal_riddle", "personal_travel_story"]},
         "src": {"type": "string"},
+        "autoplay": {"type": "boolean"},
+        "autoContinue": {"type": "boolean"},
+        "auto_continue": {"type": "boolean"},
+        "skippable": {"type": "boolean"},
+        "replay": {"type": "boolean"},
+        "poster": {"type": "string"},
+        "aspect_ratio": {"type": ["number", "string"]},
         "target_phrase": {"type": "string"},
         "native_explanation": {"type": "string"},
         "ai_instruction": {"type": "string"},

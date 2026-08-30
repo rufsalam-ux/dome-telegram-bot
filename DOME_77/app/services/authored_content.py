@@ -158,6 +158,12 @@ def normalized_media_sequence(slide: dict[str, Any]) -> list[dict[str, Any]]:
             "id": "video",
             "type": "youtube" if "youtu" in value.lower() else "video",
             "src": value,
+            "autoplay": slide.get("autoplay", True),
+            "auto_continue": slide.get("autoContinue", slide.get("auto_continue", True)),
+            "skippable": slide.get("skippable", True),
+            "replay": slide.get("replay", True),
+            "poster": slide.get("poster"),
+            "aspect_ratio": slide.get("aspect_ratio", slide.get("aspectRatio")),
         }]
     if slide.get("audio_file") or slide.get("audio_url"):
         return [{
@@ -538,7 +544,7 @@ def validate_content_lesson(data: dict[str, Any]) -> list[str]:
         raw_kind = str(slide.get("authoring_type") or slide.get("type") or "").lower()
         if raw_kind in {"ai_dialogue", "voice_answer", "animal_description"} and not any(
             str(slide.get(key) or "").strip()
-            for key in ("ai_instruction", "tutor_instruction", "target_phrase", "task_goal", "bot_says_target", "question")
+            for key in ("ai_instruction", "tutor_instruction", "target_phrase", "task_goal", "bot_says_target", "question", "prompt")
         ):
             errors.append(f"slide {i}: {raw_kind} needs ai_instruction or target_phrase")
     languages = data.get("languages")
