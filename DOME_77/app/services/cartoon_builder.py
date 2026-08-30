@@ -17,7 +17,7 @@ from app.core.config import settings
 from app.services.animation_library import animation_profile, ensure_animation_library
 from app.services.animation_engine.rig_loader import load_character_rig
 from app.services.animation_engine.motion_planner import normalize_motion_plan, primary_motion_action
-from app.services.animation_engine.local_motion_cache import ensure_local_motion_cache
+from app.services.animation_engine.local_motion_cache import analyze_hero_for_animation, ensure_local_motion_cache
 from app.services.animation_engine.runtime_provider import prepare_character_animation
 
 log = logging.getLogger("dome.cartoon")
@@ -777,6 +777,8 @@ def build_timeline_cartoon(
     output_mp4.parent.mkdir(parents=True, exist_ok=True)
     ensure_animation_library(settings.storage_root / "animation-library")
     _rig = load_character_rig(character_png, settings.storage_root / "character-rigs", character_metadata if settings.avatar_animation_engine_enabled else None)
+    _animation_analysis=analyze_hero_for_animation(character_metadata,built_in=_rig.provider not in {"fallback_png","metadata_cutout"})
+    log.info("MOVIE_AVATAR_ANIMATION_MODE mode=%s provider=%s capabilities=%s static_fallback=%s",_animation_analysis["mode"],_rig.provider,_animation_analysis["capabilities"],_animation_analysis["static_fallback"])
     _motion_plans = [normalize_motion_plan(item) for item in timeline]
     _publish_progress(progress_callback, "LOADING_ANIMATION_CACHE", 20, render_strategy)
     if render_strategy == "rich" and settings.avatar_animation_engine_enabled:

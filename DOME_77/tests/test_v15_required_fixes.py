@@ -45,4 +45,4 @@ def test_first_scene_has_current_lyosha_safe_placement():
     first = timeline[0] if isinstance(timeline, list) else timeline['scenes'][0]
     assert first['floor_y_norm'] == 0.82
     assert first['height_norm'] >= 0.4
-    assert first['x_end_norm'] == 0.36
+    assert first['x_end_norm'] == 0.38

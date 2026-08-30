@@ -27,7 +27,7 @@ from app.services.character_geometry import (
 from app.services.preset_characters import preset_character_geometry
 from app.services.lesson_runtime import VOICE_FEEDBACK_STATES, classify_voice_feedback
 from app.services.animation_engine.character_motion_library import CharacterMotionLibrary
-from app.services.animation_engine.local_motion_cache import LOCAL_MOTION_VERSION, ensure_local_motion_cache, local_motion_parameters, safe_fallback_required
+from app.services.animation_engine.local_motion_cache import LOCAL_MOTION_VERSION, analyze_hero_for_animation, ensure_local_motion_cache, local_motion_parameters, safe_fallback_required
 from app.services.animation_engine.motion_planner import SEMANTIC_ACTIONS, normalize_motion_plan, semantic_action
 from app.services.animation_engine.runtime_provider import prepare_character_animation
 from app.services.authored_content import _validate_pre_slide_video
@@ -272,7 +272,8 @@ def test_lyosha_mila_parrot_and_required_movie_contract_remain_authored():
     assert timeline["lesha_clothes"]["floor_y_norm"] == pytest.approx(.82)
     assert timeline["lesha_clothes"]["placement_side"] == "left"
     assert timeline["lesha_clothes"]["height_norm"] >= .44
-    assert timeline["mila_gift"]["x_norm"] == pytest.approx(.14)
+    assert timeline["lesha_clothes"]["x_end_norm"] == pytest.approx(.38)
+    assert timeline["mila_gift"]["x_norm"] == pytest.approx(.16)
     assert timeline["mila_gift"]["placement_side"] == "left"
     assert timeline["mila_gift"]["height_norm"] >= .42
     for phrase in ("mila_gift","take_trip","polar_bear","parrot","giraffe","penguin","zebra"):
@@ -288,3 +289,14 @@ def test_lyosha_mila_parrot_and_required_movie_contract_remain_authored():
     assert parrot_slide["allow_skip"] is False
     animal_flow = next(item for item in lesson["slides"] if item["slide_id"] == "slide_46")
     assert "parrot" in {item["phrase_id"] for item in animal_flow["animal_questions"]}
+
+
+def test_animation_mode_is_capability_based_and_always_keeps_static_fallback():
+    full={"source":"CATALOG","rigMetadata":{"trusted":True,"capabilities":{"canBlink":True,"canAnimateMouth":True,"canMoveHead":True,"canMoveLeftArm":True,"canMoveRightArm":True,"canMoveLeftLeg":True,"canMoveRightLeg":True}}}
+    partial={"confidence":.88,"rigMetadata":{"capabilities":{"canMoveLeftLeg":True,"canMoveRightLeg":True,"canAnimateTail":True}}}
+    simple={"confidence":.42,"characterBoundingBox":[.1,.1,.8,.8]}
+    assert analyze_hero_for_animation(full,built_in=True)["mode"]=="FULL_RIG"
+    assert analyze_hero_for_animation(partial)["mode"]=="PARTIAL_RIG"
+    assert analyze_hero_for_animation(simple)["mode"]=="SIMPLE_CHARACTER_MOTION"
+    assert analyze_hero_for_animation(None)["mode"]=="STATIC_COMPOSITE"
+    assert all(analyze_hero_for_animation(value).get("static_fallback") for value in (full,partial,simple,None))

@@ -11,6 +11,26 @@ from .motion_planner import SEMANTIC_ACTIONS
 LOCAL_MOTION_VERSION = "avatar-cutout-v2"
 
 
+def analyze_hero_for_animation(metadata: dict[str, Any] | None, *, built_in: bool = False) -> dict[str, Any]:
+    """Choose the richest safe mode without making animation a movie prerequisite."""
+
+    payload = metadata or {}
+    capabilities = component_capabilities(payload)
+    rig = payload.get("rigMetadata") if isinstance(payload.get("rigMetadata"), dict) else {}
+    trusted = built_in or str(payload.get("source") or "").upper() == "CATALOG" or rig.get("trusted") is True
+    moving_limbs = sum(bool(capabilities[key]) for key in ("canMoveLeftArm","canMoveRightArm","canMoveLeftLeg","canMoveRightLeg"))
+    rich_face = capabilities["canBlink"] and capabilities["canAnimateMouth"] and capabilities["canMoveHead"]
+    if trusted and rich_face and moving_limbs >= 2:
+        mode = "FULL_RIG"
+    elif rich_face or moving_limbs or capabilities["canAnimateTail"] or capabilities["canMoveHead"]:
+        mode = "PARTIAL_RIG"
+    elif payload:
+        mode = "SIMPLE_CHARACTER_MOTION"
+    else:
+        mode = "STATIC_COMPOSITE"
+    return {"mode":mode,"capabilities":capabilities,"trusted":trusted,"static_fallback":True}
+
+
 def component_capabilities(metadata: dict[str, Any] | None) -> dict[str, bool]:
     payload = metadata or {}
     rig = payload.get("rigMetadata") if isinstance(payload.get("rigMetadata"), dict) else {}
