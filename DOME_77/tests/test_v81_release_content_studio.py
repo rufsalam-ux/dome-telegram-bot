@@ -309,6 +309,21 @@ def test_founder_friendly_validation_reports_language_prompt_and_next_step_error
     assert any("languages.native" in error for error in errors)
 
 
+def test_demo_001_is_a_published_editable_content_lesson_without_runtime_loss():
+    from app.services.authored_content import validate_content_lesson
+    from app.services.lesson_loader import load_lesson
+
+    source_path = settings.content_root / "lessons" / "demo_001" / "lesson.json"
+    source = json.loads(source_path.read_text("utf-8"))
+    assert source["engine"] == "content_v1"
+    assert source["schema_version"] == "3.0"
+    assert source["status"] == "published"
+    assert validate_content_lesson(source) == []
+    runtime = load_lesson("demo_001")
+    assert [step["slide_id"] for step in runtime["slides"]] == [step["slide_id"] for step in source["slides"]]
+    assert [step["type"] for step in runtime["slides"]] == [step["type"] for step in source["slides"]]
+
+
 def test_authoring_assistant_only_returns_editable_declarative_templates():
     proposal = deterministic_proposal("Make a memory game from these pictures", ["media/cat.png", "media/dog.png"])
     assert proposal["type"] == "memory" and len(proposal["pairs"]) >= 2

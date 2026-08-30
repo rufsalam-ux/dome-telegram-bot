@@ -1,4 +1,9 @@
 {
+  "engine": "content_v1",
+  "schema_version": "3.0",
+  "status": "published",
+  "content_layout": "ordered_steps",
+  "language_mode": "child_profile",
   "lesson_id": "demo_001",
   "title": "Путешествие: Мадагаскар и Исландия",
   "target_language": "ru",
