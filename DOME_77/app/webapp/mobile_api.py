@@ -18,6 +18,7 @@ from app.services.character_geometry import ANALYSIS_VERSION,analyze_character_g
 from app.services.audio_processing import VoiceActivity, analyze_voice_activity, prepare_child_voice
 from app.services.speech_pipeline import SpeechAssessment, assess_speech
 from app.services.lesson_runtime import apply_adaptive_assessment,classify_voice_feedback,complexity_support,correction_for_assessment,no_speech_feedback,voice_attempt_outcome
+from app.services.adaptive_learning import proficiency_band
 from app.services.conversational_tutor import TutorTurn,no_speech_turn
 from app.services.lesson_voice_context import authoritative_voice_context,contextual_assessment_goal,selected_item_turn
 from app.services.cartoon_builder import CartoonBuildError
@@ -231,8 +232,14 @@ def _session_payload(sess:LessonSession,ent,child:Child,*,resumed:bool,interacti
         'recorded_phrases':recorded_phrases,'pre_slide_video_state':pre_slide_video_state or {'attempt':[],'ever':[]},'adaptive_profile':{
             'language_level':child.language_level or 'PRE_A1',
             'working_difficulty':float(child.working_difficulty or 0.15),
+            'proficiency_band':proficiency_band(float(child.working_difficulty or 0.15)),
         },
     }
+
+
+def _bounded_int(value,maximum:int)->int:
+    try:return max(0,min(maximum,int(value or 0)))
+    except (TypeError,ValueError):return 0
 
 async def bootstrap(request:web.Request)->web.Response:
     p=await _parent(request)
@@ -724,12 +731,18 @@ async def voice(request:web.Request)->web.Response:
     async with SessionLocal() as db:
         db_child=await db.get(Child,c.id)
         va=VoiceAttempt(lesson_session_id=sid,phrase_id=storage_phrase_id,attempt_number=attempt_number,audio_path=str(wav),status=status,transcript=assessment.transcript,detected_language=assessment.detected_language,confidence=assessment.confidence,grammar_errors=json.dumps(assessment.grammar_errors,ensure_ascii=False),pronunciation_errors=json.dumps(assessment.pronunciation_errors,ensure_ascii=False),semantic_match=assessment.semantic_match);db.add(va);await db.flush();await record_movie_voice_slot(db,sid,storage_phrase_id,va,lesson_data)
-        working_difficulty,language_level=apply_adaptive_assessment(db_child,va,assessment)
+        adaptive_signals={
+            'response_latency_ms':_bounded_int(client_context.get('response_latency_ms'),120_000) if isinstance(client_context,dict) else 0,
+            'hints_used':_bounded_int(client_context.get('hints_used'),5) if isinstance(client_context,dict) else 0,
+            'open_question':bool(client_context.get('open_question')) if isinstance(client_context,dict) else False,
+            'used_native_language':bool(assessment.detected_language and c.native_language and c.target_language and assessment.detected_language==c.native_language and c.native_language!=c.target_language),
+        }
+        working_difficulty,language_level=apply_adaptive_assessment(db_child,va,assessment,adaptive_signals)
         try:
             runtime=json.loads(sess.runtime_state_json or '{}')
         except (TypeError,ValueError,json.JSONDecodeError):
             runtime={}
-        runtime['adaptive_profile']={'working_difficulty':working_difficulty,'language_level':language_level,'answers_count':int(db_child.answers_count or 0)}
+        runtime['adaptive_profile']={'working_difficulty':working_difficulty,'language_level':language_level,'proficiency_band':proficiency_band(working_difficulty),'answers_count':int(db_child.answers_count or 0)}
         db_session=await db.get(LessonSession,sid);db_session.runtime_state_json=json.dumps(runtime,ensure_ascii=False)
         await db.commit()
     if wav!=raw and wav.exists():

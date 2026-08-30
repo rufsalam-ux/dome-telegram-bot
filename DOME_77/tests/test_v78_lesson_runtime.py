@@ -20,6 +20,7 @@ from app.services.audio_processing import VoiceActivity, analyze_voice_activity
 from app.services.conversational_tutor import build_assessed_turn, no_speech_turn
 from app.services.lesson_loader import load_lesson
 from app.services.lesson_runtime import apply_adaptive_assessment, no_speech_feedback, voice_attempt_outcome
+from app.services.adaptive_learning import proficiency_band
 from app.services.mobile_tokens import issue_session_token
 from app.services.speech_pipeline import SpeechAssessment, _transcription_confidence, is_non_speech_transcript
 from app.services import ai_speech, visual_localization
@@ -110,6 +111,17 @@ def test_live_adaptation_changes_difficulty_after_current_answer():
     difficulty, level = apply_adaptive_assessment(child, attempt, assessment)
     assert difficulty > 0.15 and child.answers_count == 1 and level == "PRE_A1"
     assert attempt.recommended_difficulty > 0
+
+
+def test_adaptation_uses_latency_hints_native_language_and_open_question_signals():
+    def child():
+        return SimpleNamespace(working_difficulty=0.15,language_level="PRE_A1",answers_count=0,comprehension_score=0.0,grammar_score=0.0,vocabulary_score=0.0,pronunciation_score=0.0,fluency_score=0.0,independence_score=0.0)
+    assessment=SpeechAssessment(transcript="I like the red parrot",status="ACCEPTED_CORRECT",semantic_match=.92,grammar_errors=[],pronunciation_errors=[])
+    independent=child();supported=child();first=SimpleNamespace(attempt_number=1);second=SimpleNamespace(attempt_number=2)
+    fast,_=apply_adaptive_assessment(independent,first,assessment,{"response_latency_ms":1800,"hints_used":0,"open_question":True})
+    slow,_=apply_adaptive_assessment(supported,second,assessment,{"response_latency_ms":18_000,"hints_used":2,"used_native_language":True,"open_question":True})
+    assert first.independence_score>second.independence_score
+    assert fast>slow and proficiency_band(fast) in {"beginner","emerging","intermediate","strong"}
 
 
 @pytest.mark.asyncio

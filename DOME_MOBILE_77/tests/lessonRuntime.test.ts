@@ -297,7 +297,8 @@ test('DOME cat is an independent companion and reward star stays in its own laye
   const cat=readFileSync(new URL('../src/components/CatActivityLayer.tsx',import.meta.url),'utf8');const reward=readFileSync(new URL('../src/components/RewardEffectLayer.tsx',import.meta.url),'utf8');const player=readFileSync(new URL('../src/screens/LessonPlayer.tsx',import.meta.url),'utf8');
   assert.doesNotMatch(cat,/star\.png|gameActive|cat-mini-game-star|assets\/heroes\/cat\.png/);assert.match(cat,/dome-splash-v2\.png/);assert.match(cat,/const focused=stage==='AI_SPEAKING'\|\|stage==='PROCESSING'/);assert.doesNotMatch(cat,/return null/);assert.match(reward,/star\.png/);assert.match(player,/<CatActivityLayer/);
   assert.match(player,/childIdeaPrompt\(labelRu,'suitcase'\)/);
-  assert.match(player,/sendVoice\([^\n]+voiceRuntimeContext\)/);
+  assert.match(player,/const adaptiveContext=\{\.\.\.voiceRuntimeContext/);
+  assert.match(player,/sendVoice\([^\n]+adaptiveContext\)/);
 });
 
 test('accepted optional conversation keeps Continue and Answer independently enabled',()=>{
@@ -306,6 +307,12 @@ test('accepted optional conversation keeps Continue and Answer independently ena
   assert.equal(answerEnabled('COMPLETE',optional,true,false,false),true);
   assert.equal(answerEnabled('AI_SPEAKING',optional,true,false,false),false);
   assert.equal(answerEnabled('WAITING_VOICE',optional,true,false,false),true);
+});
+
+test('mobile reports bounded learner-adaptation signals without changing the lesson goal',()=>{
+  const player=readFileSync(new URL('../src/screens/LessonPlayer.tsx',import.meta.url),'utf8');
+  for(const signal of ['response_latency_ms','hints_used','open_question'])assert.match(player,new RegExp(signal));
+  assert.match(player,/taskGoal\|\|slide\.task_goal/);assert.match(player,/answerReadyAtRef\.current=Date\.now\(\)/);
 });
 
 test('voice context contains only current visual state and suitcase has no hidden correct set',()=>{

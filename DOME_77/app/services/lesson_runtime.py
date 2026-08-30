@@ -54,10 +54,11 @@ def no_speech_feedback(attempt_number: int, max_attempts: int, example: str = ""
     return "Я не смогла услышать ответ. Мы продолжим, но эта попытка не засчитана как правильная.", ""
 
 
-def apply_adaptive_assessment(child, voice_attempt, assessment) -> tuple[float, str]:
+def apply_adaptive_assessment(child, voice_attempt, assessment, signals: dict | None = None) -> tuple[float, str]:
     """Update the live child profile after each meaningful mobile answer."""
     if str(assessment.status or "") in {"NO_SPEECH", "TECHNICAL_UNCERTAINTY", "ASR_FAILED", "ANSWER_UNCLEAR"} or not assessment.transcript:
         return float(child.working_difficulty or 0.15), str(child.language_level or "PRE_A1")
+    signals = signals or {}
     adaptive = score_answer(
         semantic_match=assessment.semantic_match,
         grammar_errors=assessment.grammar_errors,
@@ -65,6 +66,10 @@ def apply_adaptive_assessment(child, voice_attempt, assessment) -> tuple[float, 
         transcript=assessment.transcript,
         attempt_number=voice_attempt.attempt_number,
         status=assessment.status,
+        response_latency_ms=max(0, min(120_000, int(signals.get("response_latency_ms") or 0))),
+        hints_used=max(0, min(5, int(signals.get("hints_used") or 0))),
+        used_native_language=bool(signals.get("used_native_language")),
+        open_question=bool(signals.get("open_question")),
     )
     count = int(child.answers_count or 0)
     for field in ("comprehension", "grammar", "vocabulary", "pronunciation", "fluency", "independence"):

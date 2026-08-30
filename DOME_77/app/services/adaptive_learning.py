@@ -20,15 +20,20 @@ def clamp(value: float) -> float:
 
 
 def score_answer(*, semantic_match: float, grammar_errors: list[str], pronunciation_errors: list[str],
-                 transcript: str, attempt_number: int, status: str) -> AdaptiveScores:
+                 transcript: str, attempt_number: int, status: str, response_latency_ms: int = 0,
+                 hints_used: int = 0, used_native_language: bool = False,
+                 open_question: bool = False) -> AdaptiveScores:
     words = len((transcript or "").split())
     comprehension = clamp(semantic_match)
     grammar = clamp(1.0 - min(len(grammar_errors), 4) * 0.18)
     pronunciation = clamp(1.0 - min(len(pronunciation_errors), 4) * 0.18)
     vocabulary = clamp(0.20 + words / 14.0)
     fluency = clamp(0.25 + words / 18.0)
-    independence = clamp(1.0 - max(attempt_number - 1, 0) * 0.22)
-    if status == "WRONG_LANGUAGE":
+    latency_penalty = .0 if response_latency_ms <= 0 else min(.18, max(0, response_latency_ms - 3500) / 45_000)
+    independence = clamp(1.0 - max(attempt_number - 1, 0) * 0.22 - min(3, max(0, hints_used)) * .10 - latency_penalty)
+    if open_question and attempt_number == 1 and words >= 3 and semantic_match >= .7:
+        independence = clamp(independence + .08)
+    if status == "WRONG_LANGUAGE" or used_native_language:
         comprehension *= 0.65
         independence *= 0.55
     if status == "TECHNICAL_UNCERTAINTY":
@@ -52,6 +57,14 @@ def level_from_score(score: float, previous: str = "PRE_A1", min_answers: int = 
     if score >= .46: return "A2"
     if score >= .25: return "A1"
     return "PRE_A1"
+
+
+def proficiency_band(score: float) -> str:
+    value = clamp(score)
+    if value < .25: return "beginner"
+    if value < .50: return "emerging"
+    if value < .72: return "intermediate"
+    return "strong"
 
 
 def adapt_prompt(base: str, difficulty: float) -> str:
