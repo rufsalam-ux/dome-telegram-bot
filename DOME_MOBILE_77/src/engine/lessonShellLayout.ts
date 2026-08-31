@@ -19,11 +19,14 @@ function mapRect(rect:SourceRect,scale:number,offsetX:number,offsetY:number):She
 
 export function lessonShellLayout(width:number,height:number){
   const safeWidth=Math.max(1,width);const safeHeight=Math.max(1,height);
-  const scale=Math.max(safeWidth/DOME_LESSON_SHELL_SIZE.width,safeHeight/DOME_LESSON_SHELL_SIZE.height);
+  // The artwork contains the frame and physical controls as one composition.
+  // Fitting it prevents tall phones from cover-cropping the cat and scenery.
+  const scale=Math.min(safeWidth/DOME_LESSON_SHELL_SIZE.width,safeHeight/DOME_LESSON_SHELL_SIZE.height);
   const imageWidth=DOME_LESSON_SHELL_SIZE.width*scale;const imageHeight=DOME_LESSON_SHELL_SIZE.height*scale;
   const offsetX=(safeWidth-imageWidth)/2;const offsetY=(safeHeight-imageHeight)/2;
   const mappedContent=mapRect(SOURCE_RECTS.content,scale,offsetX,offsetY);const contentLeft=Math.max(4,mappedContent.left);const contentRight=Math.min(safeWidth-4,mappedContent.left+mappedContent.width);
   return {
+    fitMode:'contain' as const,
     scale,
     image:{left:offsetX,top:offsetY,width:imageWidth,height:imageHeight},
     content:{...mappedContent,left:contentLeft,width:Math.max(1,contentRight-contentLeft)},

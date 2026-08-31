@@ -1,5 +1,5 @@
-import React,{useMemo,useRef,useState} from 'react';
-import {Animated,Image,Pressable,StyleSheet,Text,View} from 'react-native';
+import React,{useEffect,useMemo,useRef,useState} from 'react';
+import {AccessibilityInfo,Animated,Image,Pressable,StyleSheet,Text,View} from 'react-native';
 
 import {lessonShellLayout,type ShellRect} from '../engine/lessonShellLayout';
 import {emitDomeFeedback,type DomeFeedbackEvent} from '../experience/useDomeFeedback';
@@ -47,10 +47,32 @@ function PhysicalHotspot({rect,action,shape='round',accent}:{rect:ShellRect;acti
   </Animated.View>;
 }
 
+function EnvironmentMotionLayer({image,scale}:{image:ShellRect;scale:number}){
+  const motion=useRef(new Animated.Value(0)).current;const[reduceMotion,setReduceMotion]=useState(true);
+  useEffect(()=>{
+    let mounted=true;void AccessibilityInfo.isReduceMotionEnabled().then(value=>{if(mounted)setReduceMotion(value)}).catch(()=>{});
+    const subscription=AccessibilityInfo.addEventListener('reduceMotionChanged',setReduceMotion);
+    return()=>{mounted=false;subscription.remove()};
+  },[]);
+  useEffect(()=>{
+    motion.stopAnimation();motion.setValue(0);if(reduceMotion)return;
+    const animation=Animated.loop(Animated.sequence([
+      Animated.timing(motion,{toValue:1,duration:1800,useNativeDriver:true}),
+      Animated.timing(motion,{toValue:0,duration:1800,useNativeDriver:true}),
+    ]));animation.start();return()=>animation.stop();
+  },[motion,reduceMotion]);
+  if(reduceMotion)return null;
+  return <View pointerEvents='none' testID='dome-environment-motion' style={StyleSheet.absoluteFill}>
+    <Animated.View style={[styles.skyGlow,{left:image.left+555*scale,top:image.top+65*scale,width:95*scale,height:95*scale,opacity:motion.interpolate({inputRange:[0,1],outputRange:[.12,.3]}),transform:[{scale:motion.interpolate({inputRange:[0,1],outputRange:[.92,1.08]})}]}]}/>
+    <Animated.View style={[styles.catSparkle,{left:image.left+93*scale,top:image.top+713*scale,width:16*scale,height:16*scale,opacity:motion.interpolate({inputRange:[0,1],outputRange:[.28,.82]}),transform:[{translateY:motion.interpolate({inputRange:[0,1],outputRange:[2*scale,-3*scale]})},{rotate:motion.interpolate({inputRange:[0,1],outputRange:['0deg','18deg']})}]}]}/>
+  </View>;
+}
+
 export function LessonPortraitShell({visual,prompt,progressLabel,replay,answer,hint,more,continueAction,overlay}:Props){
   const[size,setSize]=useState({width:360,height:720});const layout=useMemo(()=>lessonShellLayout(size.width,size.height),[size.width,size.height]);
   return <View testID='dome-lesson-portrait-shell' onLayout={event=>{const{width,height}=event.nativeEvent.layout;if(width>0&&height>0&&(Math.abs(width-size.width)>.5||Math.abs(height-size.height)>.5))setSize({width,height})}} style={styles.root}>
     <Image testID='dome-lesson-shell-artwork' source={shellArtwork} resizeMode='contain' style={{position:'absolute',...layout.image}}/>
+    <EnvironmentMotionLayer image={layout.image} scale={layout.scale}/>
     <View testID='dome-lesson-central-panel' style={[styles.panel,layout.content]}>
       <View style={styles.progressPill}><Text style={styles.progressText}>{progressLabel}</Text></View>
       <View style={styles.visual}>{visual}</View>
@@ -71,9 +93,11 @@ const styles=StyleSheet.create({
   progressPill:{position:'absolute',right:9,top:7,zIndex:20,borderRadius:12,backgroundColor:'rgba(255,255,255,.88)',paddingHorizontal:8,paddingVertical:3},
   progressText:{fontSize:11,fontWeight:'800',color:'#52606d'},
   visual:{flex:1,minHeight:0,paddingTop:2},
-  prompt:{maxHeight:'31%',borderRadius:13,backgroundColor:'rgba(255,250,238,.94)',paddingHorizontal:9,paddingVertical:5,borderWidth:1,borderColor:'rgba(224,174,66,.28)'},
+  prompt:{maxHeight:'27%',marginBottom:'7%',borderRadius:13,backgroundColor:'rgba(255,250,238,.94)',paddingHorizontal:9,paddingVertical:5,borderWidth:1,borderColor:'rgba(224,174,66,.28)'},
   overlay:{position:'absolute',left:8,right:8,bottom:8,zIndex:30,borderRadius:14,backgroundColor:'rgba(255,255,255,.97)',padding:8},
   hotspot:{flex:1,borderWidth:1.5,shadowColor:'#32210d',shadowOpacity:.18,shadowRadius:3,shadowOffset:{width:0,height:2},elevation:2},
   disabledVeil:{position:'absolute',left:0,right:0,top:0,bottom:0,borderRadius:999,backgroundColor:'rgba(240,240,240,.22)'},
   unavailable:{position:'absolute',borderRadius:999,backgroundColor:'rgba(235,237,239,.46)'},
+  skyGlow:{position:'absolute',borderRadius:999,backgroundColor:'rgba(255,235,135,.72)'},
+  catSparkle:{position:'absolute',borderRadius:4,backgroundColor:'rgba(255,248,181,.92)',shadowColor:'#fff',shadowOpacity:.8,shadowRadius:5,elevation:2},
 });

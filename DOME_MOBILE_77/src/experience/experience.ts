@@ -18,7 +18,7 @@ export const HAPTICS_ENABLED=true;
 export const DEFAULT_UI_SOUND_VOLUME=UI_SOUND_VOLUME;
 export const DOME_AUDIO_CHANNELS={speech:'AI_LESSON_SPEECH',effects:'UI_EFFECTS'} as const;
 const DEFAULTS:ExperiencePreferences={soundEffects:UI_SOUNDS_ENABLED,haptics:HAPTICS_ENABLED,uiSoundVolume:UI_SOUND_VOLUME};
-const clickAsset=require('../../assets/sounds/soft-click.wav');
+const clickAsset=require('../../assets/sounds/wooden-tok.wav');
 const successAsset=require('../../assets/sounds/suitcase-pop.wav');
 const gentleAsset=require('../../assets/sounds/suitcase-return.wav');
 

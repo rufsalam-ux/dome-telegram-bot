@@ -81,10 +81,20 @@ test('portrait lesson shell preserves the supplied artwork and central safe pane
   assert.equal(createHash('sha256').update(asset).digest('hex'),'e2c3df3d906eedd982dc505c63a66225606725a864a09ccff0a6a9ef23a40844');
   for(const [width,height] of [[320,568],[360,640],[360,800],[390,844],[430,932]]){
     const shell=lessonShellLayout(width,height);assert.ok(Math.abs(shell.image.width/shell.image.height-DOME_LESSON_SHELL_SIZE.width/DOME_LESSON_SHELL_SIZE.height)<1e-12);
+    assert.equal(shell.fitMode,'contain');
+    assert.ok(shell.image.left>=-.001&&shell.image.top>=-.001&&shell.image.left+shell.image.width<=width+.001&&shell.image.top+shell.image.height<=height+.001,`${width}x${height} full artwork must remain visible`);
     assert.ok(shell.content.left>=4&&shell.content.left+shell.content.width<=width-4,`${width}x${height} content must remain visible`);
-    assert.ok(shell.content.width>width*.75&&shell.content.height>height*.38,`${width}x${height} central panel is too small`);
+    assert.ok(shell.content.width>width*.65&&shell.content.height>height*.27,`${width}x${height} central panel is too small`);
     assert.equal(shellContentIsClearOfControls(width,height),true);
   }
+});
+
+test('portrait shell motion is local, touch transparent, and reduced-motion aware',()=>{
+  const shell=readFileSync(new URL('../src/components/LessonPortraitShell.tsx',import.meta.url),'utf8');
+  assert.match(shell,/EnvironmentMotionLayer/);assert.match(shell,/AccessibilityInfo\.isReduceMotionEnabled/);
+  assert.match(shell,/reduceMotionChanged/);assert.match(shell,/pointerEvents='none'/);
+  assert.match(shell,/skyGlow/);assert.match(shell,/catSparkle/);assert.doesNotMatch(shell,/Animated\.View[^\n]+dome-lesson-shell-artwork/);
+  assert.match(shell,/maxHeight:'27%'/);assert.match(shell,/marginBottom:'7%'/);
 });
 
 test('movie identity is stable across completion, polling and library response shapes',()=>{
@@ -702,14 +712,18 @@ test('quiet UI sounds have one config and recording cues stay outside the record
   const lesson=readFileSync(new URL('../src/screens/LessonPlayer.tsx',import.meta.url),'utf8');
   for(const constant of ['UI_SOUND_VOLUME','UI_SOUNDS_ENABLED','HAPTICS_ENABLED','DOME_AUDIO_CHANNELS'])assert.match(experience,new RegExp(`export const ${constant}`));
   assert.match(experience,/UI_SOUND_VOLUME=\.26/);assert.match(experience,/DRAG_TEXTURE'\?\.32:1/);
-  for(const filename of ['soft-click.wav','suitcase-pop.wav','suitcase-return.wav']){
+  for(const filename of ['wooden-tok.wav','suitcase-pop.wav','suitcase-return.wav']){
     const wav=readFileSync(new URL(`../assets/sounds/${filename}`,import.meta.url));const marker=wav.indexOf(Buffer.from('data'));assert.ok(marker>=0,`${filename} is a decodable PCM WAV`);
     const byteLength=wav.readUInt32LE(marker+4);let peak=0;for(let offset=marker+8;offset+1<Math.min(wav.length,marker+8+byteLength);offset+=2)peak=Math.max(peak,Math.abs(wav.readInt16LE(offset)));
     assert.ok(peak>12_000,`${filename} has an audible non-silent signal`);
   }
+  const tok=readFileSync(new URL('../assets/sounds/wooden-tok.wav',import.meta.url));const tokData=tok.indexOf(Buffer.from('data'));let crossings=0;let previous=tok.readInt16LE(tokData+8);for(let offset=tokData+10;offset+1<tok.length;offset+=2){const current=tok.readInt16LE(offset);if((previous<0&&current>=0)||(previous>0&&current<=0))crossings+=1;if(current!==0)previous=current}
+  assert.ok(crossings<130,`wooden tok should stay low-pitched, got ${crossings} zero crossings`);assert.ok(tok.length<20_000,'wooden tok must remain a short tactile cue');
   assert.ok(lesson.indexOf("playRecordingBoundaryCue('RECORDING_START')")<lesson.indexOf('recorder.record()'));
   assert.ok(lesson.indexOf("playRecordingBoundaryCue('RECORDING_STOP')")>lesson.indexOf("recorder.stop()"));
   assert.match(lesson,/videoPlaying\|\|Boolean\(pendingPreSlide\)/);assert.match(experience,/audioSuppressions\.size>0/);
+  assert.match(lesson,/semantic_match\|\|0\)>=\.95\?'EXCELLENT':'CORRECT',\{sound:false,haptics:false\}/);
+  assert.match(lesson,/if\(corrective\)\{playExperience\('TRY_AGAIN',\{sound:false,haptics:false\}\)/);
 });
 
 test('drag texture and haptics are centralized, subtle, and rate limited',()=>{
