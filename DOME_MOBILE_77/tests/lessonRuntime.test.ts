@@ -45,7 +45,10 @@ import {
   suitcaseDropAccepted,
   suitcaseTapFallbackAvailable,
   tutorAudioTransition,
+  tutorAudioErrorCode,
+  tutorAudioFailureStage,
   tutorAudioWatchdogStage,
+  microphonePermissionDecision,
   updatePackedItems,
   visualRequiredForSlide,
   withLessonTimeout,
@@ -170,11 +173,21 @@ test('home menu is a fixed responsive grid that fits common Android and iPhone v
   assert.match(home,/testID='home-menu-grid'/);assert.doesNotMatch(home,/<ScrollView/);assert.match(root,/if\(s\.screen==='home'\)return <HomeMenu/);
 });
 
-test('native tutor audio is cached with an explicit OGG extension and cannot silently unlock recording',()=>{
+test('native tutor audio is cached and a service failure degrades without freezing the lesson',()=>{
   const api=readFileSync(new URL('../src/api/mobile.ts',import.meta.url),'utf8');const player=readFileSync(new URL('../src/screens/LessonPlayer.tsx',import.meta.url),'utf8');
-  assert.match(api,/\/api\/mobile\/tts\?/);assert.match(api,/dome-tutor-audio/);assert.match(api,/\.ogg`/);assert.match(api,/downloadAsync/);
-  assert.match(player,/cacheTutorAudioSource/);assert.match(player,/TUTOR_AUDIO_PLAYBACK_ERROR/);assert.match(player,/!tutorVoiceError&&answerEnabled/);assert.match(player,/!tutorVoiceError&&nextEnabled/);
-  assert.doesNotMatch(player,/можно продолжить по тексту/);
+  assert.match(api,/\/api\/mobile\/tts\?/);assert.match(api,/cacheRemoteAudioSource\(source,'dome-tutor-audio','ogg'\)/);assert.match(api,/downloadAsync/);
+  assert.match(player,/cacheTutorAudioSource/);assert.match(player,/TUTOR_AUDIO_PLAYBACK_ERROR/);assert.doesNotMatch(player,/!tutorVoiceError&&answerEnabled/);assert.doesNotMatch(player,/!tutorVoiceError&&nextEnabled/);
+  assert.equal(tutorAudioFailureStage('WAITING_ACTION'),'WAITING_ACTION');assert.equal(tutorAudioFailureStage('COMPLETE'),'COMPLETE');
+  assert.equal(tutorAudioErrorCode(new Error('TTS_DOWNLOAD_HTTP_503')),'TTS_SERVICE_UNAVAILABLE');
+  assert.equal(microphonePermissionDecision(false,true),'request');assert.equal(microphonePermissionDecision(false,false),'settings');assert.equal(microphonePermissionDecision(true,false),'record');
+});
+
+test('a saved child take can be played and replaced without discarding the previous take first',()=>{
+  const api=readFileSync(new URL('../src/api/mobile.ts',import.meta.url),'utf8');const player=readFileSync(new URL('../src/screens/LessonPlayer.tsx',import.meta.url),'utf8');
+  assert.match(api,/currentVoiceSource/);assert.match(api,/dome-child-recordings/);assert.match(api,/retake/);
+  assert.match(player,/testID='play-current-recording'/);assert.match(player,/testID='replace-current-recording'/);
+  assert.match(player,/Старая запись сохранена до успешной замены/);assert.match(player,/Предыдущая запись сохранена/);
+  assert.match(player,/response\.retake_replaced/);assert.match(player,/intent==='retake'/);
 });
 
 test('transient Android player idle cannot truncate tutor speech mid-sentence',()=>{
@@ -310,7 +323,7 @@ test('DOME cat is an independent companion and reward star stays in its own laye
   assert.doesNotMatch(cat,/star\.png|gameActive|cat-mini-game-star|assets\/heroes\/cat\.png/);assert.match(cat,/dome-splash-v2\.png/);assert.match(cat,/const focused=stage==='AI_SPEAKING'\|\|stage==='PROCESSING'/);assert.doesNotMatch(cat,/return null/);assert.match(reward,/star\.png/);assert.match(player,/<CatActivityLayer/);
   assert.match(player,/childIdeaPrompt\(labelRu,'suitcase'\)/);
   assert.match(player,/const adaptiveContext=\{\.\.\.voiceRuntimeContext/);
-  assert.match(player,/sendVoice\([^\n]+adaptiveContext\)/);
+  assert.match(player,/sendVoice\([^\n]+adaptiveContext,intent==='retake'\)/);
 });
 
 test('accepted optional conversation keeps Continue and Answer independently enabled',()=>{

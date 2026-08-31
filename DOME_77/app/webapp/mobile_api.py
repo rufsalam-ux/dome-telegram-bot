@@ -24,7 +24,7 @@ from app.services.lesson_voice_context import authoritative_voice_context,contex
 from app.services.cartoon_builder import CartoonBuildError
 from app.services.mobile_lesson_movie import MOBILE_MOVIE_VERSION,MOVIE_STALL_TIMEOUT_SECONDS,MovieContractError,MovieRenderInputs,build_mobile_lesson_movie,ensure_movie_voice_slots,load_movie_contract,movie_take_status,record_movie_voice_slot,required_movie_phrase_ids,resolve_movie_voice_slots,select_movie_voice_takes
 from app.services.email_reports import send_homework_email,_send_with_attachment_sync,send_verification_email,send_password_reset_email
-from app.services.ai_speech import synthesize_bilingual_speech, translate_text
+from app.services.ai_speech import AISpeechError, synthesize_bilingual_speech, translate_text
 from app.services.password_auth import hash_password, hash_verification_code, verify_password, verify_verification_code
 from app.services.standalone_demo_access import ensure_free_demo_entitlement
 from app.services.visual_localization import VisualLocalizationError, localize_embedded_text_image
@@ -633,7 +633,7 @@ async def voice(request:web.Request)->web.Response:
         raw=root/f'voice_{secrets.token_hex(6)}.m4a'
         try:raw.write_bytes(base64.b64decode(payload,validate=True))
         except Exception:raise web.HTTPBadRequest(text=json.dumps({'error':'Invalid audio_base64'}),content_type='application/json')
-        fields={'slide_id':str(data.get('slide_id') or ''),'prompt':str(data.get('prompt') or ''),'phrase_id':data.get('phrase_id'),'conversation_turn':data.get('conversation_turn',0),'runtime_context':data.get('runtime_context') or {}}
+        fields={'slide_id':str(data.get('slide_id') or ''),'prompt':str(data.get('prompt') or ''),'phrase_id':data.get('phrase_id'),'conversation_turn':data.get('conversation_turn',0),'runtime_context':data.get('runtime_context') or {},'retake':bool(data.get('retake'))}
     else:
         reader=await request.multipart()
         while True:
@@ -649,7 +649,7 @@ async def voice(request:web.Request)->web.Response:
             else:fields[part.name]=await part.text()
     if raw is None:raise web.HTTPBadRequest(text=json.dumps({'error':'No audio received'}),content_type='application/json')
     uploaded=time.perf_counter()
-    slide_id=fields.get('slide_id','');prompt=fields.get('prompt','');pid=fields.get('phrase_id') or None
+    slide_id=fields.get('slide_id','');prompt=fields.get('prompt','');pid=fields.get('phrase_id') or None;retake_mode=fields.get('retake') is True or str(fields.get('retake') or '').lower() in {'1','true','yes'}
     try:conversation_turn=max(0,int(fields.get('conversation_turn') or 0))
     except (TypeError,ValueError):conversation_turn=0
     lesson_data=_load_mobile_lesson(sess.lesson_id);sl=_slide(lesson_data,slide_id);ph=_phrase(lesson_data,pid or sl.get('required_phrase_id'))
@@ -795,7 +795,10 @@ async def voice(request:web.Request)->web.Response:
             'open_question':bool(client_context.get('open_question')) if isinstance(client_context,dict) else False,
             'used_native_language':bool(assessment.detected_language and c.native_language and c.target_language and assessment.detected_language==c.native_language and c.native_language!=c.target_language),
         }
-        working_difficulty,language_level=apply_adaptive_assessment(db_child,va,assessment,adaptive_signals)
+        if retake_mode:
+            working_difficulty=float(db_child.working_difficulty or 0.15);language_level=db_child.language_level or 'PRE_A1'
+        else:
+            working_difficulty,language_level=apply_adaptive_assessment(db_child,va,assessment,adaptive_signals)
         try:
             runtime=json.loads(sess.runtime_state_json or '{}')
         except (TypeError,ValueError,json.JSONDecodeError):
@@ -807,8 +810,23 @@ async def voice(request:web.Request)->web.Response:
         try:raw.unlink(missing_ok=True)
         except OSError as exc:log.warning('MOBILE_VOICE_REDUNDANT_SOURCE_CLEANUP_FAILED path=%s error=%s',raw,exc)
     saved=time.perf_counter()
-    log.info('MOBILE_VOICE_LATENCY session=%s slide=%s phrase=%s upload_ms=%d prepare_ms=%d assess_ms=%d save_ms=%d total_ms=%d attempt=%d status=%s activity=%s speech_ms=%d',sid,slide_id,storage_phrase_id,round((uploaded-started)*1000),round((prepared-uploaded)*1000),round((assessed-prepared)*1000),round((saved-assessed)*1000),round((saved-started)*1000),attempt_number,status,activity.reason,round(activity.speech_seconds*1000))
-    return web.json_response({'status':status,'feedback_state':feedback_state,'accepted':accepted,'movie_take_accepted':movie_take_accepted,'advance_allowed':outcome.advance_allowed,'needs_retry':outcome.needs_retry,'attempt_number':attempt_number,'max_attempts':max_attempts,'transcript':assessment.transcript,'task_goal':goal,'task_goal_source':'active_follow_up' if conversation_turn else 'authored_lesson','accepted_intents':accepted_meaning,'target_meaning':sl.get('target_meaning') or authored_goal,'model_examples':sl.get('model_examples') or [simple_example],'target_response':target_response,'helper_translation':helper_translation,'follow_up_question':follow_up_question,'follow_up_translation':follow_up_translation,'model_phrase':model_phrase,'model_translation':model_translation,'child_phrase_target':assessment.transcript if accepted else '','child_phrase_translation':child_phrase_translation,'feedback':feedback,'feedback_source_language':c.native_language or 'ru','correction_target':correction_target if not accepted else '','correction_source_language':c.target_language or 'ru','response_target':assessment.response_target,'response_native':tutor_turn.reaction_native if tutor_turn else '','semantic_match':assessment.semantic_match,'semantic_response':{'task_type':runtime_context.get('task_type'),'selection_policy':runtime_context.get('selection_policy'),'selected_item_ids':[item.get('id') for item in runtime_context.get('selected_items') or []],'reaction_target':target_response,'reaction_native':helper_translation,'follow_up_target':follow_up_question,'follow_up_native':follow_up_translation},'runtime_context':runtime_context,'tutor_turn':tutor_turn.payload() if tutor_turn else None,'voice_activity':{'reason':activity.reason,'duration_seconds':activity.duration_seconds,'speech_seconds':activity.speech_seconds,'speech_ratio':activity.speech_ratio,'mean_volume_db':activity.mean_volume_db,'max_volume_db':activity.max_volume_db},'adaptive_profile':{'working_difficulty':working_difficulty,'language_level':language_level,'support':complexity_support(working_difficulty)}})
+    log.info('MOBILE_VOICE_LATENCY session=%s slide=%s phrase=%s upload_ms=%d prepare_ms=%d assess_ms=%d save_ms=%d total_ms=%d attempt=%d status=%s activity=%s speech_ms=%d retake=%s',sid,slide_id,storage_phrase_id,round((uploaded-started)*1000),round((prepared-uploaded)*1000),round((assessed-prepared)*1000),round((saved-assessed)*1000),round((saved-started)*1000),attempt_number,status,activity.reason,round(activity.speech_seconds*1000),retake_mode)
+    return web.json_response({'status':status,'feedback_state':feedback_state,'accepted':accepted,'movie_take_accepted':movie_take_accepted,'retake':retake_mode,'retake_replaced':retake_mode and (accepted or movie_take_accepted),'advance_allowed':outcome.advance_allowed,'needs_retry':outcome.needs_retry,'attempt_number':attempt_number,'max_attempts':max_attempts,'transcript':assessment.transcript,'task_goal':goal,'task_goal_source':'active_follow_up' if conversation_turn else 'authored_lesson','accepted_intents':accepted_meaning,'target_meaning':sl.get('target_meaning') or authored_goal,'model_examples':sl.get('model_examples') or [simple_example],'target_response':target_response,'helper_translation':helper_translation,'follow_up_question':follow_up_question,'follow_up_translation':follow_up_translation,'model_phrase':model_phrase,'model_translation':model_translation,'child_phrase_target':assessment.transcript if accepted else '','child_phrase_translation':child_phrase_translation,'feedback':feedback,'feedback_source_language':c.native_language or 'ru','correction_target':correction_target if not accepted else '','correction_source_language':c.target_language or 'ru','response_target':assessment.response_target,'response_native':tutor_turn.reaction_native if tutor_turn else '','semantic_match':assessment.semantic_match,'semantic_response':{'task_type':runtime_context.get('task_type'),'selection_policy':runtime_context.get('selection_policy'),'selected_item_ids':[item.get('id') for item in runtime_context.get('selected_items') or []],'reaction_target':target_response,'reaction_native':helper_translation,'follow_up_target':follow_up_question,'follow_up_native':follow_up_translation},'runtime_context':runtime_context,'tutor_turn':tutor_turn.payload() if tutor_turn else None,'voice_activity':{'reason':activity.reason,'duration_seconds':activity.duration_seconds,'speech_seconds':activity.speech_seconds,'speech_ratio':activity.speech_ratio,'mean_volume_db':activity.mean_volume_db,'max_volume_db':activity.max_volume_db},'adaptive_profile':{'working_difficulty':working_difficulty,'language_level':language_level,'support':complexity_support(working_difficulty)}})
+
+
+async def current_voice_take(request:web.Request)->web.StreamResponse:
+    p=await _parent(request);sid=int(request.match_info['session_id']);phrase_id=str(request.match_info.get('phrase_id') or '')
+    async with SessionLocal() as db:
+        sess=await db.get(LessonSession,sid);child=await db.get(Child,sess.child_id) if sess else None
+        if not sess or not child or child.parent_id!=p.id:raise web.HTTPForbidden()
+        slot=await db.scalar(select(MovieVoiceSlot).where(MovieVoiceSlot.lesson_session_id==sid,MovieVoiceSlot.required_voice_id==phrase_id))
+        attempts=[] if slot and slot.audio_path else (await db.scalars(select(VoiceAttempt).where(VoiceAttempt.lesson_session_id==sid,VoiceAttempt.phrase_id==phrase_id).order_by(VoiceAttempt.id.desc()))).all()
+        attempt=next((row for row in attempts if movie_take_status(row.status)),None)
+    path=Path(str((slot.audio_path if slot else None) or (attempt.audio_path if attempt else '') or ''))
+    if not path or not path.is_file() or path.stat().st_size<=0:raise web.HTTPNotFound(text=json.dumps({'error':'Сохранённая запись не найдена','code':'VOICE_TAKE_NOT_FOUND'},ensure_ascii=False),content_type='application/json')
+    try:path.resolve().relative_to(settings.storage_root.resolve())
+    except ValueError:raise web.HTTPForbidden()
+    response=web.FileResponse(path);response.content_type={'.wav':'audio/wav','.m4a':'audio/mp4','.ogg':'audio/ogg','.mp3':'audio/mpeg'}.get(path.suffix.lower(),'application/octet-stream');response.headers['Content-Disposition']=f'inline; filename="child-take{path.suffix.lower()}"';response.headers['Cache-Control']='private, no-store';return response
 
 async def interactive(request:web.Request)->web.Response:
     p=await _parent(request);sid=int(request.match_info['session_id']);data=await request.json()
@@ -843,7 +861,16 @@ async def tts(request:web.Request)->web.StreamResponse:
     except Exception as exc:raise web.HTTPServiceUnavailable(text=f'Translation unavailable: {exc}')
     translated=time.perf_counter()
     if native==target and spoken_native==spoken_target:spoken_native=''
-    path=await synthesize_bilingual_speech(spoken_target,target,spoken_native,native,settings.storage_root/'tts-cache-mobile','mobile',style)
+    try:
+        path=await synthesize_bilingual_speech(spoken_target,target,spoken_native,native,settings.storage_root/'tts-cache-mobile','mobile',style)
+    except (AISpeechError,OSError) as exc:
+        detail=str(exc)
+        code='TTS_STORAGE_UNAVAILABLE' if 'No space left on device' in detail or getattr(exc,'errno',None)==28 else 'TTS_GENERATION_UNAVAILABLE'
+        log.exception('MOBILE_TTS_FAILED code=%s target=%s native=%s',code,target,native)
+        raise web.HTTPServiceUnavailable(
+            text=json.dumps({'error':'Голос ведущей временно недоступен. Можно продолжить без него.','code':code},ensure_ascii=False),
+            content_type='application/json',
+        )
     if not path:raise web.HTTPServiceUnavailable(text='TTS unavailable')
     ready=time.perf_counter();content_type={'.ogg':'audio/ogg','.opus':'audio/ogg','.mp3':'audio/mpeg','.wav':'audio/wav','.m4a':'audio/mp4','.aac':'audio/aac'}.get(path.suffix.lower()) or mimetypes.guess_type(path.name)[0] or 'application/octet-stream';log.info('MOBILE_TTS_LATENCY source=%s target=%s translate_ms=%d synth_or_cache_ms=%d total_ms=%d',source,target,round((translated-started)*1000),round((ready-translated)*1000),round((ready-started)*1000));log.info('MOBILE_TTS_RESPONSE target=%s native=%s content_type=%s bytes=%s path_suffix=%s',target,native,content_type,path.stat().st_size,path.suffix.lower())
     response=web.FileResponse(path);response.content_type=content_type;response.headers['Content-Disposition']=f'inline; filename="dome-tutor{path.suffix.lower()}"';response.headers['Cache-Control']='private, max-age=604800';return response
@@ -1223,5 +1250,5 @@ def register_mobile_routes(app:web.Application):
     app.router.add_post('/api/mobile/register',register);app.router.add_post('/api/mobile/verify-email',verify_email);app.router.add_post('/api/mobile/resend-verification',resend_verification);app.router.add_post('/api/mobile/login',login);app.router.add_post('/api/mobile/password-reset/request',request_password_reset);app.router.add_post('/api/mobile/password-reset/confirm',confirm_password_reset);app.router.add_get('/api/mobile/bootstrap',bootstrap);app.router.add_post('/api/mobile/children',create_child);app.router.add_get('/api/mobile/child/{child_id}/lessons',lesson_catalog);app.router.add_get('/api/mobile/lesson/{lesson_id}/visual/{filename}',lesson_visual);app.router.add_get('/api/mobile/lesson/{lesson_id}/media/{filename}',lesson_media);app.router.add_get('/api/mobile/lesson/{lesson_id}',lesson)
     app.router.add_get('/api/mobile/hero/file/{child_id}/{character_id}',hero_file);app.router.add_post('/api/mobile/child/{child_id}/hero/preset',hero_preset);app.router.add_post('/api/mobile/child/{child_id}/hero/upload',hero_upload);app.router.add_patch('/api/mobile/child/{child_id}/hero/{character_id}/geometry',hero_geometry_confirm)
     app.router.add_get('/api/mobile/child/{child_id}/subscription',subscription_overview);app.router.add_post('/api/mobile/child/{child_id}/subscription/plan-change/preview',subscription_plan_change_preview);app.router.add_post('/api/mobile/child/{child_id}/subscription/plan-change',subscription_plan_change_confirm);app.router.add_delete('/api/mobile/child/{child_id}/subscription/plan-change',subscription_plan_change_cancel)
-    app.router.add_post('/api/mobile/session/start',session_start);app.router.add_post('/api/mobile/session/{session_id}/progress',session_progress);app.router.add_post('/api/mobile/session/{session_id}/voice',voice);app.router.add_post('/api/mobile/session/{session_id}/interactive',interactive);app.router.add_post('/api/mobile/session/{session_id}/complete',complete);app.router.add_get('/api/mobile/session/{session_id}/movie',movie_status);app.router.add_post('/api/mobile/session/{session_id}/movie/retry',retry_movie)
+    app.router.add_post('/api/mobile/session/start',session_start);app.router.add_post('/api/mobile/session/{session_id}/progress',session_progress);app.router.add_post('/api/mobile/session/{session_id}/voice',voice);app.router.add_get('/api/mobile/session/{session_id}/voice/{phrase_id}',current_voice_take);app.router.add_post('/api/mobile/session/{session_id}/interactive',interactive);app.router.add_post('/api/mobile/session/{session_id}/complete',complete);app.router.add_get('/api/mobile/session/{session_id}/movie',movie_status);app.router.add_post('/api/mobile/session/{session_id}/movie/retry',retry_movie)
     app.router.add_get('/api/mobile/tts',tts);app.router.add_get('/api/mobile/tts.ogg',tts);app.router.add_post('/api/mobile/translate',translate);app.router.add_patch('/api/mobile/child/{child_id}/language',update_child_language);app.router.add_get('/api/mobile/child/{child_id}/movies',movies);app.router.add_get('/api/mobile/movie/{child_id}/{filename}',movie_file)

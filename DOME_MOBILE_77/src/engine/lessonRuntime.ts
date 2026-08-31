@@ -104,6 +104,24 @@ export function tutorAudioWatchdogStage(stage:RuntimeStage,status:TutorAudioStat
   return stage==='AI_SPEAKING'&&finished?after:stage;
 }
 
+export function tutorAudioFailureStage(after:RuntimeStage):RuntimeStage{
+  return after==='AI_SPEAKING'?'WAITING_VOICE':after;
+}
+
+export function tutorAudioErrorCode(error:unknown):string{
+  const message=String((error as any)?.message||error||'').toUpperCase();
+  if(message.includes('TTS_DOWNLOAD_HTTP_503'))return 'TTS_SERVICE_UNAVAILABLE';
+  if(message.includes('TTS_DOWNLOAD_HTTP_'))return 'TTS_DOWNLOAD_FAILED';
+  if(message.includes('TIMEOUT'))return 'TTS_PLAYBACK_TIMEOUT';
+  return 'TTS_PLAYBACK_FAILED';
+}
+
+export type MicrophonePermissionDecision='record'|'request'|'settings';
+export function microphonePermissionDecision(granted:boolean,canAskAgain:boolean):MicrophonePermissionDecision{
+  if(granted)return 'record';
+  return canAskAgain?'request':'settings';
+}
+
 export type RecordingGateState={speechStarted:boolean;silenceStartedAt:number|null;stopReason:'SPEECH_COMPLETE'|'SAFETY_LIMIT'|null};
 export function recordingGate(previous:RecordingGateState,durationMillis:number,metering:number|undefined,nowMillis:number,hardLimitMillis=25_000,silenceMillis=1_250):RecordingGateState{
   if(durationMillis>=hardLimitMillis)return {...previous,stopReason:'SAFETY_LIMIT'};

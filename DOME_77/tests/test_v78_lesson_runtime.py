@@ -2,6 +2,7 @@ import base64
 from io import BytesIO
 import json
 import math
+import os
 import struct
 import wave
 from pathlib import Path
@@ -138,6 +139,29 @@ async def test_bilingual_tts_synthesizes_each_text_in_its_own_language(monkeypat
         ("What did Mila bring?","en","turn_target","curious"),
         ("Что Мила принесла?","ru","turn_native","encouraging"),
     ]
+
+
+def test_tts_storage_reclaim_deletes_only_old_reconstructible_cache(monkeypatch, tmp_path):
+    cache=tmp_path/"tts-cache-mobile";cache.mkdir()
+    old=cache/"old.ogg";recent=cache/"recent.ogg";old.write_bytes(b"old");recent.write_bytes(b"recent")
+    os.utime(old,(1.0,1.0));os.utime(recent,(19_999.0,19_999.0))
+    monkeypatch.setattr(ai_speech.time,"time",lambda:20_000.0)
+
+    def disk_usage(_path):
+        return SimpleNamespace(free=8_000_000 if old.exists() else 32_000_000)
+
+    monkeypatch.setattr(ai_speech.shutil,"disk_usage",disk_usage)
+    stats=ai_speech.reclaim_tts_cache(cache,16_000_000)
+    assert stats["files"]==1 and not old.exists()
+    assert recent.exists()
+
+
+def test_tts_output_uses_bounded_ephemeral_fallback_when_persistent_volume_is_full(monkeypatch, tmp_path):
+    persistent=tmp_path/"persistent";fallback=tmp_path/"ephemeral"
+    monkeypatch.setattr(ai_speech,"_ephemeral_tts_dir",lambda _path:fallback)
+    monkeypatch.setattr(ai_speech.shutil,"disk_usage",lambda path:SimpleNamespace(free=0 if persistent in Path(path).parents or Path(path)==persistent else 64_000_000))
+    output=ai_speech._tts_output_path(persistent,"voice.ogg",2_000_000)
+    assert output==fallback/"voice.ogg"
 
 
 def test_demo_definition_contains_original_card_questions_and_declarative_mila_hero():

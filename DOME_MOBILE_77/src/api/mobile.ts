@@ -24,12 +24,12 @@ export function tutorAudioCacheKey(uri:string):string{
   return `${(forward>>>0).toString(16)}${(backward>>>0).toString(16)}-${value.length}`;
 }
 
-export async function cacheTutorAudioSource(source:TutorAudioSource):Promise<TutorAudioSource>{
+async function cacheRemoteAudioSource(source:TutorAudioSource,namespace:string,extension:string):Promise<TutorAudioSource>{
   const FileSystem=require('expo-file-system/legacy');const cacheRoot=String(FileSystem.cacheDirectory||'');
   if(!cacheRoot)return source;
-  const directory=`${cacheRoot}dome-tutor-audio/`;const destination=`${directory}${tutorAudioCacheKey(source.uri)}.ogg`;const temporary=`${destination}.download`;
+  const directory=`${cacheRoot}${namespace}/`;const destination=`${directory}${tutorAudioCacheKey(source.uri)}.${extension}`;const temporary=`${destination}.download`;
   const existing=await FileSystem.getInfoAsync(destination,{size:true});
-  if(existing.exists&&Number(existing.size||0)>0)return {uri:destination,name:'dome-tutor.ogg'};
+  if(existing.exists&&Number(existing.size||0)>0)return {uri:destination,name:source.name||`dome-audio.${extension}`};
   await FileSystem.makeDirectoryAsync(directory,{intermediates:true});
   await FileSystem.deleteAsync(temporary,{idempotent:true}).catch(()=>{});
   const downloaded=await FileSystem.downloadAsync(source.uri,temporary,{headers:source.headers||{}});
@@ -38,7 +38,15 @@ export async function cacheTutorAudioSource(source:TutorAudioSource):Promise<Tut
   if(!info.exists||Number(info.size||0)<=0){await FileSystem.deleteAsync(temporary,{idempotent:true}).catch(()=>{});throw new Error('TTS_DOWNLOAD_EMPTY')}
   await FileSystem.deleteAsync(destination,{idempotent:true}).catch(()=>{});
   await FileSystem.moveAsync({from:temporary,to:destination});
-  return {uri:destination,name:'dome-tutor.ogg'};
+  return {uri:destination,name:source.name||`dome-audio.${extension}`};
+}
+
+export function cacheTutorAudioSource(source:TutorAudioSource):Promise<TutorAudioSource>{
+  return cacheRemoteAudioSource(source,'dome-tutor-audio','ogg');
+}
+
+export function cacheChildRecordingSource(source:TutorAudioSource):Promise<TutorAudioSource>{
+  return cacheRemoteAudioSource(source,'dome-child-recordings','wav');
 }
 
 export class MobileApiError extends Error{
@@ -191,9 +199,13 @@ export function saveSessionProgress(sessionId:number,currentStepId:string,lesson
   return request(`/api/mobile/session/${sessionId}/progress`,jsonInit('POST',{current_step_id:currentStepId,lesson_version:lessonVersion,...(currentStep===undefined?{}:{current_step:currentStep})}));
 }
 
-export async function sendVoice(sessionId:number,uri:string,slideId:string,phraseId:string|undefined,prompt:string,conversationTurn=0,runtimeContext:Record<string,unknown>={}){
+export async function sendVoice(sessionId:number,uri:string,slideId:string,phraseId:string|undefined,prompt:string,conversationTurn=0,runtimeContext:Record<string,unknown>={},retake=false){
   const audio_base64=await readUriBase64(uri);
-  return request(`/api/mobile/session/${sessionId}/voice`,jsonInit('POST',{audio_base64,slide_id:slideId,phrase_id:phraseId||null,prompt:prompt||'',conversation_turn:conversationTurn,runtime_context:runtimeContext}));
+  return request(`/api/mobile/session/${sessionId}/voice`,jsonInit('POST',{audio_base64,slide_id:slideId,phrase_id:phraseId||null,prompt:prompt||'',conversation_turn:conversationTurn,runtime_context:runtimeContext,retake}));
+}
+
+export async function currentVoiceSource(sessionId:number,phraseId:string):Promise<TutorAudioSource>{
+  return {uri:`${API_BASE}/api/mobile/session/${sessionId}/voice/${encodeURIComponent(phraseId)}`,headers:{Authorization:`Bearer ${await requiredToken()}`},name:'child-take.wav'};
 }
 
 export function sendInteractive(sessionId:number,slideId:string,taskType:string,result:any){

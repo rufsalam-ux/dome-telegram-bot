@@ -38,6 +38,7 @@ from app.services.mobile_lesson_movie import (
     all_movie_phrase_ids,
     build_mobile_lesson_movie,
     load_movie_contract,
+    record_movie_voice_slot,
     required_movie_phrase_ids,
     select_movie_voice_takes,
 )
@@ -224,6 +225,30 @@ def test_only_latest_accepted_real_take_is_selected_for_each_movie_phrase(tmp_pa
     assert missing == [] and list(selected) == phrases
     assert selected[phrases[0]].name.endswith("_new.wav")
     assert "slide_01" not in selected
+
+
+@pytest.mark.asyncio
+async def test_failed_retake_preserves_old_voice_slot_until_new_take_is_accepted(tmp_path):
+    engine=create_async_engine("sqlite+aiosqlite:///:memory:")
+    sessions=async_sessionmaker(engine,expire_on_commit=False)
+    async with engine.begin() as connection:await connection.run_sync(Base.metadata.create_all)
+    lesson=load_lesson();phrase_id=all_movie_phrase_ids(lesson)[0]
+    old_path=tmp_path/"old.wav";failed_path=tmp_path/"failed.wav";new_path=tmp_path/"new.wav"
+    old_path.write_bytes(b"old accepted child take");failed_path.write_bytes(b"failed replacement");new_path.write_bytes(b"new accepted child take")
+    async with sessions() as db:
+        parent=Parent(email="retake@example.com",password_hash="hash",email_verified=True);db.add(parent);await db.flush()
+        child=Child(parent_id=parent.id,display_name="Retake Child",target_language="en",native_language="ru");db.add(child);await db.flush()
+        session=LessonSession(child_id=child.id,lesson_id="demo_001",status="IN_PROGRESS",current_step=0);db.add(session);await db.flush()
+        old=VoiceAttempt(lesson_session_id=session.id,phrase_id=phrase_id,attempt_number=1,audio_path=str(old_path),status="ACCEPTED_CORRECT");db.add(old);await db.flush()
+        assert await record_movie_voice_slot(db,session.id,phrase_id,old,lesson) is True
+        rejected=VoiceAttempt(lesson_session_id=session.id,phrase_id=phrase_id,attempt_number=2,audio_path=str(failed_path),status="NO_SPEECH");db.add(rejected);await db.flush()
+        assert await record_movie_voice_slot(db,session.id,phrase_id,rejected,lesson) is False
+        slot=await db.scalar(select(MovieVoiceSlot).where(MovieVoiceSlot.lesson_session_id==session.id,MovieVoiceSlot.required_voice_id==phrase_id))
+        assert slot is not None and slot.source_attempt_id==old.id and Path(slot.audio_path)==old_path
+        replacement=VoiceAttempt(lesson_session_id=session.id,phrase_id=phrase_id,attempt_number=3,audio_path=str(new_path),status="ACCEPTED_WITH_SUPPORT");db.add(replacement);await db.flush()
+        assert await record_movie_voice_slot(db,session.id,phrase_id,replacement,lesson) is True
+        assert slot.source_attempt_id==replacement.id and Path(slot.audio_path)==new_path
+    await engine.dispose()
 
 
 @pytest.mark.asyncio

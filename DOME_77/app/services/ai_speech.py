@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import hashlib
 import json
+import logging
 import secrets
+import shutil
 import subprocess
+import tempfile
+import time
 from pathlib import Path
 
 import httpx
@@ -15,6 +20,131 @@ from app.core.i18n import language_name
 
 class AISpeechError(RuntimeError):
     pass
+
+
+log = logging.getLogger("dome.ai_speech")
+TTS_CACHE_RESERVE_BYTES = 16 * 1024 * 1024
+TTS_CACHE_ACTIVE_GRACE_SECONDS = 10 * 60
+
+
+def _ephemeral_tts_dir(cache_dir: Path) -> Path:
+    namespace = hashlib.sha256(str(cache_dir.resolve()).encode()).hexdigest()[:16]
+    return Path(tempfile.gettempdir()) / "dome-tts-cache" / namespace
+
+
+def _tts_cache_root(cache_dir: Path) -> Path:
+    mobile_root = settings.storage_root / "tts-cache-mobile"
+    try:
+        cache_dir.resolve().relative_to(mobile_root.resolve())
+    except ValueError:
+        return cache_dir
+    return mobile_root
+
+
+def reclaim_tts_cache(cache_dir: Path, target_free_bytes: int, protected: set[Path] | None = None) -> dict[str, int]:
+    """Reclaim only reproducible TTS files, never child or authored media."""
+
+    root = _tts_cache_root(Path(cache_dir))
+    protected_paths = {item.resolve() for item in (protected or set())}
+    stats = {"before": 0, "after": 0, "files": 0, "bytes": 0}
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        stats["before"] = int(shutil.disk_usage(root).free)
+    except OSError:
+        return stats
+    if stats["before"] >= target_free_bytes:
+        stats["after"] = stats["before"]
+        return stats
+    now = time.time()
+    candidates: list[tuple[int, float, Path]] = []
+    for item in root.rglob("*"):
+        if not item.is_file() or item.resolve() in protected_paths:
+            continue
+        try:
+            stat = item.stat()
+        except OSError:
+            continue
+        incomplete = ".tmp." in item.name or item.name.endswith(".download")
+        if not incomplete and now - stat.st_mtime < TTS_CACHE_ACTIVE_GRACE_SECONDS:
+            continue
+        candidates.append((0 if incomplete else 1, stat.st_mtime, item))
+    candidates.sort(key=lambda row: (row[0], row[1], str(row[2])))
+    for _priority, _mtime, item in candidates:
+        try:
+            if int(shutil.disk_usage(root).free) >= target_free_bytes:
+                break
+            size = item.stat().st_size
+            item.unlink()
+            stats["files"] += 1
+            stats["bytes"] += size
+        except (FileNotFoundError, OSError):
+            continue
+    try:
+        stats["after"] = int(shutil.disk_usage(root).free)
+    except OSError:
+        stats["after"] = 0
+    if stats["files"]:
+        log.warning(
+            "TTS_CACHE_RECLAIM root=%s before=%s after=%s target=%s files=%s bytes=%s",
+            root,
+            stats["before"],
+            stats["after"],
+            target_free_bytes,
+            stats["files"],
+            stats["bytes"],
+        )
+    return stats
+
+
+def _existing_tts_path(cache_dir: Path, filename: str) -> Path | None:
+    for root in (Path(cache_dir), _ephemeral_tts_dir(Path(cache_dir))):
+        candidate = root / filename
+        try:
+            if candidate.is_file() and candidate.stat().st_size > 0:
+                return candidate
+        except OSError:
+            continue
+    return None
+
+
+def _tts_output_path(cache_dir: Path, filename: str, required_bytes: int) -> Path:
+    cache_dir = Path(cache_dir)
+    target_free = TTS_CACHE_RESERVE_BYTES + max(1, int(required_bytes))
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        reclaim_tts_cache(cache_dir, target_free)
+        if int(shutil.disk_usage(cache_dir).free) >= target_free:
+            return cache_dir / filename
+    except OSError as exc:
+        log.warning("TTS_CACHE_PERSISTENT_UNAVAILABLE root=%s error=%s", cache_dir, exc)
+    fallback = _ephemeral_tts_dir(cache_dir)
+    fallback.mkdir(parents=True, exist_ok=True)
+    reclaim_tts_cache(fallback, max(2 * 1024 * 1024, required_bytes + 512 * 1024))
+    log.warning("TTS_CACHE_EPHEMERAL_FALLBACK persistent_root=%s fallback_root=%s", cache_dir, fallback)
+    return fallback / filename
+
+
+def _write_tts_atomically(output: Path, payload: bytes) -> Path:
+    temporary = output.with_name(f"{output.stem}.{secrets.token_hex(5)}.tmp{output.suffix}")
+    try:
+        temporary.write_bytes(payload)
+        temporary.replace(output)
+        return output
+    except OSError as exc:
+        temporary.unlink(missing_ok=True)
+        if exc.errno != errno.ENOSPC:
+            raise
+        fallback = _ephemeral_tts_dir(output.parent)
+        fallback.mkdir(parents=True, exist_ok=True)
+        fallback_output = fallback / output.name
+        fallback_temporary = fallback_output.with_name(f"{fallback_output.stem}.{secrets.token_hex(5)}.tmp{fallback_output.suffix}")
+        try:
+            fallback_temporary.write_bytes(payload)
+            fallback_temporary.replace(fallback_output)
+        finally:
+            fallback_temporary.unlink(missing_ok=True)
+        log.warning("TTS_WRITE_EPHEMERAL_FALLBACK failed_path=%s fallback_path=%s", output, fallback_output)
+        return fallback_output
 
 
 def _extract_output_text(payload: dict) -> str:
@@ -95,10 +225,10 @@ async def synthesize_speech(
     }
     style_instruction = styles.get(style, styles["warm"])
     digest = hashlib.sha256(f"DOME_TTS_V4|{settings.openai_tts_model}|{settings.child_tts_voice}|{language}|{style}|{text}".encode()).hexdigest()[:24]
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    output = cache_dir / f"{purpose}_{digest}.ogg"
-    if output.exists() and output.stat().st_size > 0:
-        return output
+    filename = f"{purpose}_{digest}.ogg"
+    cached = _existing_tts_path(cache_dir, filename)
+    if cached:
+        return cached
     headers = {"Authorization": f"Bearer {settings.openai_api_key}", "Content-Type": "application/json"}
     payload = {
         "model": settings.openai_tts_model,
@@ -117,8 +247,8 @@ async def synthesize_speech(
         response = await client.post("https://api.openai.com/v1/audio/speech", headers=headers, content=json.dumps(payload))
     if response.status_code >= 400:
         raise AISpeechError(f"Speech API error {response.status_code}: {response.text[:300]}")
-    output.write_bytes(response.content)
-    return output
+    output = _tts_output_path(cache_dir, filename, len(response.content))
+    return _write_tts_atomically(output, response.content)
 
 
 async def synthesize_bilingual_speech(
@@ -154,11 +284,12 @@ async def synthesize_bilingual_speech(
     digest = hashlib.sha256(
         f"DOME_BILINGUAL_TTS_V1|{target_language}|{native_language}|{delivery_style}|{target_text}|{native_text}".encode()
     ).hexdigest()[:24]
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    output = cache_dir / f"{purpose}_bilingual_{digest}.ogg"
-    if output.exists() and output.stat().st_size > 0:
-        return output
-    temporary = output.with_name(f"{output.stem}.{secrets.token_hex(5)}.tmp.ogg")
+    filename = f"{purpose}_bilingual_{digest}.ogg"
+    cached = _existing_tts_path(cache_dir, filename)
+    if cached:
+        return cached
+    estimated_bytes = target_audio.stat().st_size + native_audio.stat().st_size + 512 * 1024
+    output = _tts_output_path(cache_dir, filename, estimated_bytes)
     command = [
         settings.ffmpeg_bin,
         "-y",
@@ -177,21 +308,31 @@ async def synthesize_bilingual_speech(
         "libopus",
         "-b:a",
         "64k",
-        str(temporary),
     ]
 
-    def _join() -> None:
+    def _join(destination: Path) -> None:
+        temporary = destination.with_name(f"{destination.stem}.{secrets.token_hex(5)}.tmp.ogg")
+        local_command = [*command, str(temporary)]
         try:
-            result = subprocess.run(command, check=False, capture_output=True, timeout=90)
+            result = subprocess.run(local_command, check=False, capture_output=True, timeout=90)
         except (OSError, subprocess.SubprocessError) as exc:
             raise AISpeechError(f"Bilingual speech assembly failed: {exc}") from exc
-        if result.returncode != 0 or not temporary.exists() or temporary.stat().st_size == 0:
-            detail = result.stderr.decode("utf-8", errors="replace")[-300:]
-            raise AISpeechError(f"Bilingual speech assembly failed: {detail}")
-        temporary.replace(output)
+        try:
+            if result.returncode != 0 or not temporary.exists() or temporary.stat().st_size == 0:
+                detail = result.stderr.decode("utf-8", errors="replace")[-300:]
+                raise AISpeechError(f"Bilingual speech assembly failed: {detail}")
+            temporary.replace(destination)
+        finally:
+            temporary.unlink(missing_ok=True)
 
     try:
-        await asyncio.to_thread(_join)
-    finally:
-        temporary.unlink(missing_ok=True)
+        await asyncio.to_thread(_join, output)
+    except AISpeechError as exc:
+        if "No space left on device" not in str(exc):
+            raise
+        fallback_root = _ephemeral_tts_dir(cache_dir)
+        fallback_root.mkdir(parents=True, exist_ok=True)
+        output = fallback_root / filename
+        log.warning("TTS_ASSEMBLY_EPHEMERAL_RETRY failed_path=%s fallback_path=%s", cache_dir / filename, output)
+        await asyncio.to_thread(_join, output)
     return output
