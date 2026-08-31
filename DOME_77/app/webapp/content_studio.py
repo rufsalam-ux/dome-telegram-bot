@@ -14,9 +14,11 @@ from aiohttp import web
 
 from app.core.config import settings
 from app.services.authored_content import (
+    authored_steps,
     backup_lesson_version,
     bundled_lessons_root,
     ensure_persistent_lesson,
+    normalized_media_sequence,
     persistent_lessons_root,
     publication_status,
     restore_lesson_version,
@@ -138,8 +140,8 @@ def _media_entry(lesson_id: str, path: Path, manifest: dict[str, Any] | None = N
 def _media_validation_errors(lesson_id: str, lesson: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     roots = [persistent_lessons_root() / lesson_id, bundled_lessons_root() / lesson_id]
-    for index, slide in enumerate(lesson.get("slides") or [], 1):
-        descriptors = list(slide.get("media_sequence") or [])
+    for index, slide in enumerate(authored_steps(lesson), 1):
+        descriptors = normalized_media_sequence(slide)
         pre_video = slide.get("preSlideVideo") or slide.get("pre_slide_video")
         if isinstance(pre_video, dict) and pre_video.get("enabled") is not False:
             descriptors.append({"id": "preSlideVideo", "type": "video", "src": pre_video.get("uri") or pre_video.get("src") or pre_video.get("url")})
@@ -162,6 +164,37 @@ def _media_validation_errors(lesson_id: str, lesson: dict[str, Any]) -> list[str
             if allowed is not None and extension not in allowed:
                 errors.append(f"slide {index}: {kind} cannot use {extension or '<no extension>'}")
     return errors
+
+
+def _russian_validation_errors(errors: list[str]) -> list[str]:
+    """Turn technical schema errors into actionable owner-facing messages."""
+
+    translated: list[str] = []
+    replacements = {
+        "lesson needs at least one slide": "Добавьте хотя бы один шаг урока.",
+        "steps/slides must be a list": "Последовательность шагов повреждена. Откройте резервную версию.",
+        "missing lesson_id": "Не указан идентификатор урока.",
+        "missing course_id": "Не указан курс.",
+        "missing title": "Укажите название урока.",
+        "missing order": "Укажите место урока в курсе.",
+        "missing schema_version": "Не указана версия формата урока.",
+    }
+    for error in errors:
+        if error in replacements:
+            translated.append(replacements[error])
+        elif "missing media" in error:
+            translated.append(f"Не найден файл для шага: {error.split('missing media', 1)[1].strip()}.")
+        elif "unsafe media path" in error:
+            translated.append("Небезопасный путь к медиафайлу. Загрузите файл через редактор.")
+        elif "duplicate slide_id" in error:
+            translated.append("У двух шагов одинаковый ID. Продублируйте шаг заново или измените ID.")
+        elif "duplicate order" in error:
+            translated.append("Нарушен порядок шагов. Нажмите «Сохранить» ещё раз после перестановки.")
+        elif "needs ai_instruction or target_phrase" in error:
+            translated.append("Для голосового/диалогового шага заполните инструкцию AI или фразу на изучаемом языке.")
+        else:
+            translated.append(f"Проверьте шаг урока: {error}")
+    return translated
 
 
 def _validation_errors(lesson_id: str, lesson: dict[str, Any]) -> list[str]:
@@ -223,6 +256,16 @@ def _summary(lesson_id: str) -> dict[str, Any]:
 async def studio_page(_: web.Request) -> web.FileResponse:
     _require_enabled()
     response = web.FileResponse(Path(__file__).parent / "static" / "content_studio.html")
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+async def studio_static(request: web.Request) -> web.FileResponse:
+    _require_enabled()
+    filename = request.match_info["filename"]
+    if filename not in {"content_studio.css", "content_studio.js"}:
+        raise web.HTTPNotFound()
+    response = web.FileResponse(Path(__file__).parent / "static" / filename)
     response.headers["Cache-Control"] = "no-store"
     return response
 
@@ -310,12 +353,27 @@ async def save_lesson(request: web.Request) -> web.Response:
     lesson["max_completed_runs"] = 2
     lesson["expires_after_months"] = 10
     lesson["revision"] = max(1, int(lesson.get("revision") or 1))
-    for index, slide in enumerate(lesson.get("slides") or [], 1):
+    steps_key = "steps" if isinstance(lesson.get("steps"), list) else "slides"
+    for index, slide in enumerate(lesson.get(steps_key) or [], 1):
         if isinstance(slide, dict):
             slide["order"] = index
+    errors = _validation_errors(lesson_id, lesson)
+    if errors:
+        raise web.HTTPUnprocessableEntity(
+            text=json.dumps(
+                {
+                    "error": "Урок не сохранён: исправьте отмеченные поля.",
+                    "errors": _russian_validation_errors(errors),
+                    "technical_errors": errors,
+                },
+                ensure_ascii=False,
+            ),
+            content_type="application/json",
+        )
+    backup = backup_lesson_version(lesson_id, "before_studio_save")
     _atomic_json(_draft_path(lesson_id), lesson)
-    _audit("LESSON_DRAFT_SAVED", lesson_id, slide_count=len(lesson.get("slides") or []))
-    return web.json_response({"lesson": lesson, "summary": _summary(lesson_id), "validation_errors": _validation_errors(lesson_id, lesson)})
+    _audit("LESSON_DRAFT_SAVED", lesson_id, slide_count=len(authored_steps(lesson)), backup_version=backup.name if backup else None)
+    return web.json_response({"lesson": lesson, "summary": _summary(lesson_id), "validation_errors": [], "backup_version": backup.name if backup else None})
 
 
 async def reorder_lessons(request: web.Request) -> web.Response:
@@ -380,11 +438,18 @@ async def delete_lesson(request: web.Request) -> web.Response:
 async def validate_lesson(request: web.Request) -> web.Response:
     _authorized(request)
     lesson_id = _lesson_id(request.match_info["lesson_id"])
-    lesson = _editable_lesson(lesson_id)
+    lesson = None
+    if request.can_read_body:
+        try:
+            incoming = await request.json()
+            lesson = incoming.get("lesson") if isinstance(incoming, dict) and isinstance(incoming.get("lesson"), dict) else incoming
+        except (json.JSONDecodeError, web.HTTPBadRequest):
+            lesson = None
+    lesson = lesson if isinstance(lesson, dict) else _editable_lesson(lesson_id)
     if lesson is None:
         raise web.HTTPNotFound()
     errors = _validation_errors(lesson_id, lesson)
-    return web.json_response({"ok": not errors, "errors": errors})
+    return web.json_response({"ok": not errors, "errors": _russian_validation_errors(errors), "technical_errors": errors})
 
 
 async def preview_lesson(request: web.Request) -> web.Response:
@@ -450,6 +515,20 @@ async def rollback_lesson(request: web.Request) -> web.Response:
     version = Path(str(data.get("version") or "")).name
     if not version or version != str(data.get("version") or ""):
         raise web.HTTPBadRequest(text=json.dumps({"error": "Invalid version"}), content_type="application/json")
+    if bool(data.get("as_draft")):
+        root = ensure_persistent_lesson(lesson_id)
+        source_root = root / "_versions" / version
+        source = source_root / "draft.json"
+        if not source.is_file():
+            source = source_root / "lesson.json"
+        restored = _read_json(source)
+        if restored is None:
+            raise web.HTTPNotFound(text=json.dumps({"error": "Version not found"}), content_type="application/json")
+        backup = backup_lesson_version(lesson_id, "before_draft_restore")
+        restored.update({"lesson_id": lesson_id, "active": False, "status": "draft", "import_status": "DRAFT"})
+        _atomic_json(_draft_path(lesson_id), restored)
+        _audit("LESSON_DRAFT_RESTORED", lesson_id, version=version, backup_version=backup.name if backup else None)
+        return web.json_response({"lesson": restored, "summary": _summary(lesson_id)})
     if not restore_lesson_version(lesson_id, version):
         raise web.HTTPNotFound(text=json.dumps({"error": "Version not found"}), content_type="application/json")
     _draft_path(lesson_id).unlink(missing_ok=True)
@@ -600,8 +679,36 @@ async def studio_media(request: web.Request) -> web.StreamResponse:
     return response
 
 
+async def lesson_asset(request: web.Request) -> web.StreamResponse:
+    """Preview only a file that the current lesson actually references."""
+
+    _authorized(request)
+    lesson_id = _lesson_id(request.match_info["lesson_id"])
+    source = str(request.query.get("path") or "").strip().replace("\\", "/")
+    safe = Path(source)
+    lesson = _editable_lesson(lesson_id)
+    if (
+        lesson is None
+        or not source
+        or safe.is_absolute()
+        or ".." in safe.parts
+        or safe.suffix.lower() not in MEDIA_EXTENSIONS
+        or source not in _json_strings(lesson)
+    ):
+        raise web.HTTPNotFound()
+    candidates = [persistent_lessons_root() / lesson_id / safe, bundled_lessons_root() / lesson_id / safe]
+    path = next((candidate.resolve() for candidate in candidates if candidate.is_file()), None)
+    if path is None:
+        raise web.HTTPNotFound()
+    response = web.FileResponse(path)
+    response.headers["Cache-Control"] = "private, no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
 def register_content_studio_routes(app: web.Application) -> None:
     app.router.add_get("/content-studio", studio_page)
+    app.router.add_get("/content-studio/{filename}", studio_static)
     app.router.add_get("/api/studio/status", studio_status)
     app.router.add_get("/api/studio/lessons", list_lessons)
     app.router.add_post("/api/studio/lessons", create_lesson)
@@ -612,6 +719,7 @@ def register_content_studio_routes(app: web.Application) -> None:
     app.router.add_post("/api/studio/lessons/{lesson_id}/duplicate", duplicate_lesson)
     app.router.add_post("/api/studio/lessons/{lesson_id}/validate", validate_lesson)
     app.router.add_get("/api/studio/lessons/{lesson_id}/preview", preview_lesson)
+    app.router.add_get("/api/studio/lessons/{lesson_id}/asset", lesson_asset)
     app.router.add_post("/api/studio/lessons/{lesson_id}/publish", publish_lesson)
     app.router.add_post("/api/studio/lessons/{lesson_id}/archive", archive_lesson)
     app.router.add_post("/api/studio/lessons/{lesson_id}/rollback", rollback_lesson)

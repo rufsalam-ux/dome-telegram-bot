@@ -391,6 +391,17 @@ test('regression: optional tasks expose Next during speech, processing, and voic
   for(const stage of ['AI_SPEAKING','PROCESSING','WAITING_VOICE'] as const)assert.equal(nextEnabled(stage,true,{requiredForMovie:isRequiredForMovie(optional)}),true);
 });
 
+test('studio Continue policy adds constraints without weakening required movie recordings',()=>{
+  assert.equal(nextEnabled('WAITING_ACTION',true,{requiredForMovie:false,mode:'always'}),true);
+  assert.equal(nextEnabled('WAITING_ACTION',true,{requiredForMovie:false,mode:'after_action'}),false);
+  assert.equal(nextEnabled('COMPLETE',true,{requiredForMovie:false,mode:'after_action'}),true);
+  assert.equal(nextEnabled('WAITING_VOICE',true,{requiredForMovie:false,mode:'after_answer',hasValidRecording:false}),false);
+  assert.equal(nextEnabled('WAITING_VOICE',true,{requiredForMovie:false,mode:'after_answer',hasValidRecording:true}),true);
+  assert.equal(nextEnabled('WAITING_VOICE',true,{requiredForMovie:true,mode:'always',hasValidRecording:false}),false);
+  const player=readFileSync(new URL('../src/screens/LessonPlayer.tsx',import.meta.url),'utf8');
+  assert.match(player,/hint_enabled!==false/);assert.match(player,/configuredContinuePolicy/);
+});
+
 test('regression: requiredForMovie cannot be skipped by exhausting retries',()=>{
   const required={answer_mode:'required_voice',requiredForMovie:true};assert.equal(isRequiredForMovie(required),true);
   assert.equal(nextEnabled('WAITING_VOICE',true,{requiredForMovie:true}),false);
@@ -512,13 +523,14 @@ test('cold startup is isolated from lesson native modules and cannot wait foreve
   const root=readFileSync(new URL('../src/screens/RootApp.tsx',import.meta.url),'utf8');
   const mobileApi=readFileSync(new URL('../src/api/mobile.ts',import.meta.url),'utf8');
   const ui=readFileSync(new URL('../src/components/Ui.tsx',import.meta.url),'utf8');
+  const domePressable=readFileSync(new URL('../src/components/DomePressable.tsx',import.meta.url),'utf8');
   const experience=readFileSync(new URL('../src/experience/experience.ts',import.meta.url),'utf8');
   assert.equal(packageJson.main,'index.js');assert.match(entry,/ENTRY_EVALUATION/);assert.match(entry,/registerRootComponent/);assert.match(entry,/APP_MODULE_LOAD_FAILED/);
   assert.doesNotMatch(app,/from ['"]\.\/src\/store\/AppStore['"]/);assert.doesNotMatch(app,/from ['"]\.\/src\/screens\/RootApp['"]/);assert.match(app,/import \{AppRuntime\} from ['"]\.\/src\/AppRuntime['"]/);
   assert.match(mobileApi,/import \* as SecureStore from ['"]expo-secure-store['"]/);assert.match(mobileApi,/require\(['"]expo-file-system\/legacy['"]\)/);
   assert.doesNotMatch(root,/import\s+\{LessonPlayer\}\s+from/);assert.match(root,/require\(['"]\.\/LessonPlayer['"]\)/);assert.match(root,/import \{AuthScreen\} from ['"]\.\/AuthScreen['"]/);assert.match(root,/withStartupTimeout/);
-  assert.doesNotMatch(ui+experience,/import\s+\{?\s*useAudioPlayer/);assert.match(ui,/emitDomeFeedback\('tap'\)/);assert.match(experience,/require\(['"]expo-audio['"]\)/);assert.match(experience,/DOME_EXPERIENCE_HAPTIC_FAILED/);assert.match(experience,/DOME_EXPERIENCE_AUDIO_FAILED/);
-  assert.doesNotMatch(app+root+mobileApi+ui+experience,/React\.lazy|\bimport\s*\(/);
+  assert.doesNotMatch(ui+experience,/import\s+\{?\s*useAudioPlayer/);assert.match(ui,/feedback=\{secondary\?'tap':'primary'\}/);assert.match(domePressable,/emitDomeFeedback\(feedback\)/);assert.match(experience,/require\(['"]expo-audio['"]\)/);assert.match(experience,/DOME_EXPERIENCE_HAPTIC_FAILED/);assert.match(experience,/DOME_EXPERIENCE_AUDIO_FAILED/);
+  assert.doesNotMatch(app+root+mobileApi+ui+domePressable+experience,/React\.lazy|\bimport\s*\(/);
   assert.match(app,/key=\{runtimeAttempt\}/);assert.match(app,/setRuntimeAttempt\(value=>value\+1\)/);assert.match(app,/fatal-boot-error/);
   assert.match(app,/RETRY_PRESS_RECEIVED/);assert.match(app,/BOOT STAGE:/);assert.match(app,/BOOT ERROR:/);assert.match(app,/RETRY COUNT:/);assert.match(app,/disabled=\{false\}/);assert.match(app,/onPress=\{this\.props\.onRetryPress\}/);
   assert.ok(app.indexOf('<RootErrorBoundary')<app.indexOf('<SafeAreaProvider>'));assert.doesNotMatch(app,/<Button\b/);
@@ -627,7 +639,8 @@ test('shared native press animation is fast, subtle, and never delays the action
   const ui=readFileSync(new URL('../src/components/Ui.tsx',import.meta.url),'utf8');
   const shell=readFileSync(new URL('../src/components/LessonPortraitShell.tsx',import.meta.url),'utf8');
   assert.match(pressable,/outputRange:\[1,\.955\]/);assert.match(pressable,/outputRange:\[0,2\]/);assert.match(pressable,/Animated\.spring/);assert.match(pressable,/duration:72/);
-  assert.match(ui,/DomePressable/);assert.match(shell,/outputRange:\[1,\.945\]/);
+  assert.match(ui,/feedback=\{secondary\?'tap':'primary'\}/);assert.match(shell,/outputRange:\[1,\.945\]/);
+  assert.match(pressable,/if\(feedback\)emitDomeFeedback\(feedback\)/);assert.ok(pressable.indexOf('emitDomeFeedback(feedback)')<pressable.indexOf('onPressIn?.(event)'));
   assert.doesNotMatch(pressable,/await.*onPress|setTimeout.*onPress/);
 });
 
@@ -635,6 +648,12 @@ test('quiet UI sounds have one config and recording cues stay outside the record
   const experience=readFileSync(new URL('../src/experience/experience.ts',import.meta.url),'utf8');
   const lesson=readFileSync(new URL('../src/screens/LessonPlayer.tsx',import.meta.url),'utf8');
   for(const constant of ['UI_SOUND_VOLUME','UI_SOUNDS_ENABLED','HAPTICS_ENABLED','DOME_AUDIO_CHANNELS'])assert.match(experience,new RegExp(`export const ${constant}`));
+  assert.match(experience,/UI_SOUND_VOLUME=\.26/);assert.match(experience,/DRAG_TEXTURE'\?\.32:1/);
+  for(const filename of ['soft-click.wav','suitcase-pop.wav','suitcase-return.wav']){
+    const wav=readFileSync(new URL(`../assets/sounds/${filename}`,import.meta.url));const marker=wav.indexOf(Buffer.from('data'));assert.ok(marker>=0,`${filename} is a decodable PCM WAV`);
+    const byteLength=wav.readUInt32LE(marker+4);let peak=0;for(let offset=marker+8;offset+1<Math.min(wav.length,marker+8+byteLength);offset+=2)peak=Math.max(peak,Math.abs(wav.readInt16LE(offset)));
+    assert.ok(peak>12_000,`${filename} has an audible non-silent signal`);
+  }
   assert.ok(lesson.indexOf("playRecordingBoundaryCue('RECORDING_START')")<lesson.indexOf('recorder.record()'));
   assert.ok(lesson.indexOf("playRecordingBoundaryCue('RECORDING_STOP')")>lesson.indexOf("recorder.stop()"));
   assert.match(lesson,/videoPlaying\|\|Boolean\(pendingPreSlide\)/);assert.match(experience,/audioSuppressions\.size>0/);

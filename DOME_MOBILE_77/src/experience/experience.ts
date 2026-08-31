@@ -10,7 +10,9 @@ export type ExperiencePreferences={soundEffects:boolean;haptics:boolean;uiSoundV
 export type ExperienceFeedbackOptions={sound?:boolean;haptics?:boolean};
 
 const STORAGE_KEY='dome_experience_preferences_v1';
-export const UI_SOUND_VOLUME=.16;
+// Verified against the bundled WAV peaks: this remains gentle, but no longer
+// pushes the short UI cues below a typical phone speaker's audible range.
+export const UI_SOUND_VOLUME=.26;
 export const UI_SOUNDS_ENABLED=true;
 export const HAPTICS_ENABLED=true;
 export const DEFAULT_UI_SOUND_VOLUME=UI_SOUND_VOLUME;
@@ -70,7 +72,7 @@ function assetFor(event:ExperienceEvent):any{
 }
 
 function soundGainFor(event:ExperienceEvent):number{
-  return event==='DRAG_TEXTURE'?.24:1;
+  return event==='DRAG_TEXTURE'?.32:1;
 }
 
 async function playSound(event:ExperienceEvent):Promise<void>{

@@ -10,7 +10,7 @@ export const RUNTIME_STAGES = [
 export type RuntimeStage = typeof RUNTIME_STAGES[number];
 export type PromptPhase = 'initial'|'retry';
 export type RectTuple = [number,number,number,number];
-export type NextPolicy={requiredForMovie?:boolean;recoveryAvailable?:boolean;hasValidRecording?:boolean};
+export type NextPolicy={requiredForMovie?:boolean;recoveryAvailable?:boolean;hasValidRecording?:boolean;mode?:'always'|'after_action'|'after_answer'};
 
 export const LESSON_OPERATION_TIMEOUT_MS=18_000;
 
@@ -122,8 +122,10 @@ export function isRequiredForMovie(slide:any):boolean{
 
 export function nextEnabled(stage:RuntimeStage,visualReady=true,policy:NextPolicy={requiredForMovie:true}):boolean{
   if(!visualReady)return false;
-  if(policy.requiredForMovie!==true)return true;
-  return stage==='COMPLETE'||policy.hasValidRecording===true;
+  if(policy.requiredForMovie===true&&stage!=='COMPLETE'&&policy.hasValidRecording!==true)return false;
+  if(policy.mode==='after_action')return stage==='COMPLETE';
+  if(policy.mode==='after_answer')return stage==='COMPLETE'||policy.hasValidRecording===true;
+  return true;
 }
 
 export type ChildSafeOperation='lesson'|'recording'|'answer'|'interaction'|'progress'|'completion';

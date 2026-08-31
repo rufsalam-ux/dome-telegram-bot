@@ -10,6 +10,7 @@ from app.core.config import settings
 from app.db.models import Base, Child, LessonEntitlement, Parent
 from app.services import lesson_access
 from app.services.content_authoring_assistant import deterministic_proposal, sanitize_proposal
+from app.services.authored_content import normalize_authored_step
 from app.services.lesson_loader import LessonConfigurationError, _runtime_slides, load_lesson
 from app.services.mobile_tokens import issue_session_token
 from app.webapp import content_studio, mobile_api
@@ -25,6 +26,25 @@ def _slide(slide_id="step_01"):
         "max_attempts": 3,
         "media_sequence": [{"id": "visual", "type": "image", "src": "media/picture.png"}],
     }
+
+
+def test_visual_editor_fields_are_authoritative_for_legacy_runtime_controls():
+    normalized = normalize_authored_step({
+        "id": "voice", "type": "voice_answer", "target_phrase": "New target",
+        "native_explanation": "Новое объяснение", "ai_instruction": "Ask warmly",
+        "bot_says_target": "Old target", "native_hint": "Старая подсказка", "tutor_instruction": "Old",
+        "controls": {
+            "answer": {"enabled": True, "required": True},
+            "continue": {"enabled": True, "when": "after_answer"},
+            "hint": {"enabled": False}, "follow_up": {"enabled": True},
+        },
+    }, 1)
+    assert normalized["bot_says_target"] == normalized["task_goal"] == "New target"
+    assert normalized["bot_says_native"] == normalized["native_hint"] == "Новое объяснение"
+    assert normalized["tutor_instruction"] == "Ask warmly"
+    assert normalized["answer_mode"] == "required_voice"
+    assert normalized["continue_policy"] == "after_answer"
+    assert normalized["hint_enabled"] is False and normalized["follow_up_policy"] == "optional"
 
 
 async def _memory_database():
@@ -59,8 +79,11 @@ async def test_content_studio_draft_publish_versioned_media_and_rollback(monkeyp
         lesson = (await response.json())["lesson"]
         lesson["slides"] = [_slide()]
         response = await client.put("/api/studio/lessons/studio_001", headers=headers, json={"lesson": lesson})
-        assert response.status == 200
-        assert "missing media media/picture.png" in " ".join((await response.json())["validation_errors"])
+        assert response.status == 422
+        invalid = await response.json()
+        assert "missing media media/picture.png" in " ".join(invalid["technical_errors"])
+        assert "Не найден файл" in " ".join(invalid["errors"])
+        assert json.loads((storage / "authored-content/lessons/studio_001/draft.json").read_text("utf-8"))["slides"] == []
         assert not (storage / "authored-content/lessons/studio_001/lesson.json").exists()
 
         first = FormData()
@@ -75,6 +98,14 @@ async def test_content_studio_draft_publish_versioned_media_and_rollback(monkeyp
         lesson["slides"][0]["media_sequence"][0]["src"] = result1["path"]
         response = await client.put("/api/studio/lessons/studio_001", headers=headers, json={"lesson": lesson})
         assert (await response.json())["validation_errors"] == []
+        preview_asset = await client.get(
+            "/api/studio/lessons/studio_001/asset", headers=headers, params={"path": result1["path"]},
+        )
+        assert preview_asset.status == 200 and await preview_asset.read() == b"one"
+        unreferenced_asset = await client.get(
+            "/api/studio/lessons/studio_001/asset", headers=headers, params={"path": result2["path"]},
+        )
+        assert unreferenced_asset.status == 404
 
         response = await client.post("/api/studio/lessons/studio_001/publish", headers=headers)
         assert response.status == 200
@@ -156,9 +187,65 @@ def test_demo_001_studio_migration_preserves_runtime_step_sequence():
 
 
 def test_content_studio_ui_has_native_authoring_lifecycle_and_drag_reorder():
-    html = (Path(__file__).resolve().parents[1] / "app/webapp/static/content_studio.html").read_text("utf-8")
-    for marker in ("data-step-handle", "text/dome-lesson", "archiveLesson", "preSlideVideo", "required_movie_phrase", "puzzle"):
-        assert marker in html
+    static = Path(__file__).resolve().parents[1] / "app/webapp/static"
+    source = "\n".join((static / name).read_text("utf-8") for name in ("content_studio.html", "content_studio.js", "content_studio.css"))
+    for marker in (
+        "DOME Lesson Editor", "+ Добавить слайд", "+ Добавить видео", "data-step-handle", "text/dome-lesson",
+        "replaceStepMedia", "duplicateStep", "deleteStep", "moveStep", "validateCandidate", "Предпросмотр урока",
+        "Восстановить в черновик", "Инструкция для AI", "Фраза на изучаемом языке", "Объяснение на родном языке",
+        "after_answer", "drag_drop", "video/mp4",
+        "Добавить и сохранить",
+    ):
+        assert marker in source
+    assert "вставьте JSON" not in source.lower()
+
+
+@pytest.mark.asyncio
+async def test_visual_editor_validates_before_save_backs_up_and_restores_only_draft(monkeypatch, tmp_path):
+    storage = tmp_path / "storage"
+    content = tmp_path / "content"
+    (content / "lessons").mkdir(parents=True)
+    (content / "courses").mkdir(parents=True)
+    monkeypatch.setattr(settings, "storage_root", storage)
+    monkeypatch.setattr(settings, "content_root", content)
+    monkeypatch.setattr(settings, "content_studio_token", "owner-secret")
+    monkeypatch.setattr(settings, "content_studio_enabled", True)
+    app = web.Application(client_max_size=10 * 1024 * 1024)
+    content_studio.register_content_studio_routes(app)
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    headers = {"Authorization": "Bearer owner-secret"}
+    try:
+        created = await client.post("/api/studio/lessons", headers=headers, json={"lesson_id": "visual_001", "title": "Original"})
+        lesson = (await created.json())["lesson"]
+        lesson["slides"] = [{"slide_id": "one", "order": 1, "type": "passive", "prompt": "Hello", "requiredForMovie": False}]
+
+        validation = await client.post("/api/studio/lessons/visual_001/validate", headers=headers, json={"lesson": {**lesson, "title": ""}})
+        assert validation.status == 200
+        validation_data = await validation.json()
+        assert validation_data["ok"] is False and "Укажите название урока." in validation_data["errors"]
+
+        saved = await client.put("/api/studio/lessons/visual_001", headers=headers, json={"lesson": lesson})
+        assert saved.status == 200
+        first_backup = (await saved.json())["backup_version"]
+        assert first_backup
+        assert (storage / "authored-content/lessons/visual_001/_versions" / first_backup / "draft.json").is_file()
+        assert (await client.post("/api/studio/lessons/visual_001/publish", headers=headers)).status == 200
+
+        lesson["title"] = "Draft B"
+        assert (await client.put("/api/studio/lessons/visual_001", headers=headers, json={"lesson": lesson})).status == 200
+        lesson["title"] = "Draft C"
+        second = await client.put("/api/studio/lessons/visual_001", headers=headers, json={"lesson": lesson})
+        backup_with_draft_b = (await second.json())["backup_version"]
+        restored = await client.post(
+            "/api/studio/lessons/visual_001/rollback", headers=headers,
+            json={"version": backup_with_draft_b, "as_draft": True},
+        )
+        assert restored.status == 200
+        assert (await restored.json())["lesson"]["title"] == "Draft B"
+        assert json.loads((storage / "authored-content/lessons/visual_001/lesson.json").read_text("utf-8"))["title"] == "Original"
+    finally:
+        await client.close()
 
 
 @pytest.mark.asyncio

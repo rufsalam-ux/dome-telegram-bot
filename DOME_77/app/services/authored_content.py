@@ -92,13 +92,16 @@ def normalize_authored_step(step: dict[str, Any], index: int) -> dict[str, Any]:
     native_explanation = str(out.get("native_explanation") or "").strip()
     ai_instruction = str(out.get("ai_instruction") or "").strip()
     if target_phrase:
-        out.setdefault("bot_says_target", target_phrase)
-        out.setdefault("task_goal", target_phrase)
+        # Friendly editor fields are authoritative when present.  Keeping the
+        # legacy fields in sync lets old runtimes consume newly edited lessons
+        # without asking the owner to understand either representation.
+        out["bot_says_target"] = target_phrase
+        out["task_goal"] = target_phrase
     if native_explanation:
-        out.setdefault("bot_says_native", native_explanation)
-        out.setdefault("native_hint", native_explanation)
+        out["bot_says_native"] = native_explanation
+        out["native_hint"] = native_explanation
     if ai_instruction:
-        out.setdefault("tutor_instruction", ai_instruction)
+        out["tutor_instruction"] = ai_instruction
 
     source = str(out.get("src") or "").strip()
     if source and raw_kind == "video":
@@ -114,12 +117,16 @@ def normalize_authored_step(step: dict[str, Any], index: int) -> dict[str, Any]:
 
     controls = out.get("controls") if isinstance(out.get("controls"), dict) else {}
     answer = controls.get("answer") if isinstance(controls.get("answer"), dict) else {}
+    continue_control = controls.get("continue") if isinstance(controls.get("continue"), dict) else {}
     hint = controls.get("hint") if isinstance(controls.get("hint"), dict) else {}
     follow_up = controls.get("follow_up") if isinstance(controls.get("follow_up"), dict) else {}
     if answer.get("enabled") is False:
         out["answer_mode"] = "none"
     elif answer.get("enabled") is True:
         out.setdefault("answer_mode", "required_voice" if answer.get("required") else "optional_voice")
+    continue_when = str(continue_control.get("when") or "").strip().lower()
+    if continue_when in {"always", "after_action", "after_answer"}:
+        out["continue_policy"] = continue_when
     if "enabled" in hint:
         out["hint_enabled"] = bool(hint.get("enabled"))
     if "enabled" in follow_up:
@@ -514,6 +521,9 @@ def validate_content_lesson(data: dict[str, Any]) -> list[str]:
     raw_steps = data.get("steps") if "steps" in data else data.get("slides")
     if not isinstance(raw_steps, list):
         return errors + ["steps/slides must be a list"]
+    for index, raw_step in enumerate(raw_steps, 1):
+        if not isinstance(raw_step, dict):
+            errors.append(f"slide {index}: step must be an object")
     slides = authored_steps(data)
     if not slides:
         errors.append("lesson needs at least one slide")
@@ -575,7 +585,10 @@ def backup_lesson_version(lesson_id: str, label: str = "edit") -> Path | None:
     import shutil
     from datetime import datetime
     root = ensure_persistent_lesson(lesson_id)
-    if not (root / "lesson.json").exists():
+    # Brand-new lessons can have several meaningful draft saves before their
+    # first publication.  Preserve those too; rollback-as-draft knows how to
+    # restore a version containing only draft.json.
+    if not (root / "lesson.json").exists() and not (root / "draft.json").exists():
         return None
     versions = root / "_versions"
     versions.mkdir(parents=True, exist_ok=True)

@@ -38,8 +38,8 @@ function PhysicalHotspot({rect,action,shape='round',accent}:{rect:ShellRect;acti
       accessibilityState={{disabled:Boolean(action.disabled)}}
       testID={action.testID}
       disabled={Boolean(action.disabled)}
-      onPress={()=>{action.onPress();emitDomeFeedback(action.feedback||'tap',{sound:action.sound!==false})}}
-      onPressIn={()=>{setPressed(true);animate(1)}}
+      onPress={action.onPress}
+      onPressIn={()=>{setPressed(true);animate(1);emitDomeFeedback(action.feedback||'tap',{sound:action.sound!==false})}}
       onPressOut={release}
       style={[styles.hotspot,{borderRadius:shape==='wide'?rect.height/2:Math.min(rect.width,rect.height)/2,backgroundColor:action.disabled?'rgba(235,237,239,.48)':pressed?'rgba(255,255,255,.22)':'rgba(255,255,255,.015)',borderColor:action.disabled?'rgba(120,120,120,.18)':`${accent}33`}]}>
       {action.disabled?<View pointerEvents='none' style={styles.disabledVeil}/>:null}
