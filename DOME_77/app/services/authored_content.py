@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from app.core.config import settings
+from app.services.lesson_progress import LessonSequenceError, runtime_sequence
 
 # Universal DOME activity vocabulary. Several pedagogical types may share a
 # low-level widget, but every published type must have executable config.
@@ -548,7 +549,7 @@ def validate_content_lesson(data: dict[str, Any]) -> list[str]:
         seen_orders.add(order)
         errors.extend(_validate_slide(slide, i, "slide"))
     for i, slide in enumerate(slides, 1):
-        next_id = str(slide.get("next_step_id") or slide.get("next") or "").strip()
+        next_id = str(slide.get("next_slide") or slide.get("next_step_id") or slide.get("next") or "").strip()
         if next_id and next_id not in seen_ids:
             errors.append(f"slide {i}: next step {next_id} does not exist")
         raw_kind = str(slide.get("authoring_type") or slide.get("type") or "").lower()
@@ -557,6 +558,35 @@ def validate_content_lesson(data: dict[str, Any]) -> list[str]:
             for key in ("ai_instruction", "tutor_instruction", "target_phrase", "task_goal", "bot_says_target", "question", "prompt")
         ):
             errors.append(f"slide {i}: {raw_kind} needs ai_instruction or target_phrase")
+    try:
+        runtime_sequence({**data, "slides": slides})
+    except LessonSequenceError as exc:
+        errors.append(str(exc))
+    movie_ids = {
+        str(item.get("phrase_id") or "").strip()
+        for item in (data.get("timeline") or [])
+        if isinstance(item, dict) and str(item.get("phrase_id") or "").strip()
+    }
+    optional_ids = {
+        str(value).strip()
+        for value in ((data.get("movie_audio_policy") or {}).get("optional_phrase_ids") or [])
+        if str(value).strip()
+    }
+    for i, slide in enumerate(slides, 1):
+        phrase_id = str(slide.get("required_phrase_id") or slide.get("moviePhraseId") or "").strip()
+        if phrase_id in movie_ids and phrase_id not in optional_ids:
+            required_for_movie = (
+                slide.get("requiredForMovie") is True
+                or slide.get("required_for_movie") is True
+                or (
+                    slide.get("allow_skip") is False
+                    and slide.get("voice_after_action_optional") is not True
+                )
+            )
+            if not required_for_movie:
+                errors.append(f"slide {i}: movie phrase {phrase_id} must be requiredForMovie")
+            if slide.get("allow_skip") is True or slide.get("voice_after_action_optional") is True:
+                errors.append(f"slide {i}: required movie phrase {phrase_id} cannot be optional or skippable")
     languages = data.get("languages")
     if languages is not None:
         if not isinstance(languages, dict):

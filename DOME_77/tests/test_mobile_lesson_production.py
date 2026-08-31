@@ -41,6 +41,7 @@ from app.services.mobile_lesson_movie import (
     required_movie_phrase_ids,
     select_movie_voice_takes,
 )
+from app.services.lesson_progress import LessonSequenceError, lesson_content_version, runtime_sequence, runtime_step_ids
 from app.services.mobile_tokens import issue_session_token
 from app.services.speech_pipeline import SpeechAssessment
 from app.webapp import mobile_api
@@ -62,6 +63,27 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def test_demo_runtime_route_is_stable_unique_and_versioned():
+    lesson = mobile_api._load_mobile_lesson("demo_001")
+    route = runtime_step_ids(lesson)
+    assert route == [
+        "slide_01", "slide_03", "slide_09", "slide_04", "slide_06", "slide_07", "slide_08",
+        "slide_17", "slide_18", "slide_19", "slide_20", "slide_21", "slide_22", "slide_23",
+        "slide_24", "slide_40", "slide_41", "slide_47", "slide_50", "slide_46", "slide_51",
+        "slide_45", "slide_42", "slide_44", "slide_48", "slide_16", "slide_49",
+    ]
+    assert len(route) == len(set(route)) == 27
+    assert route.count("slide_24") == route.count("slide_49") == 1
+    for animal_step in ("slide_47", "slide_50", "slide_46", "slide_51", "slide_45", "slide_42", "slide_44", "slide_48"):
+        assert route.count(animal_step) == 1
+    version = lesson_content_version(lesson)
+    changed = json.loads(json.dumps(lesson))
+    next(item for item in changed["slides"] if item["slide_id"] == "slide_24")["next_slide"] = "slide_41"
+    assert lesson_content_version(changed) != version
+    with pytest.raises(LessonSequenceError, match="cycle"):
+        runtime_sequence({"slides": [{"slide_id": "one", "next_slide": "two"}, {"slide_id": "two", "next_slide": "one"}]})
 
 
 def test_m1_is_the_verified_production_base_and_timeline_is_normalized():
@@ -205,6 +227,46 @@ def test_only_latest_accepted_real_take_is_selected_for_each_movie_phrase(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_stale_lesson_version_starts_clean_session_without_deleting_answers(monkeypatch, tmp_path):
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    async with sessions() as db:
+        parent = Parent(email="stale-progress@example.com", password_hash="hash", email_verified=True, email_reports_enabled=False)
+        db.add(parent);await db.flush()
+        child = Child(parent_id=parent.id, display_name="Versioned Child", target_language="en", native_language="ru")
+        db.add(child);await db.flush()
+        db.add(LessonEntitlement(child_id=child.id, lesson_id="demo_001", course_id="conversation", max_completed_runs=2, completed_runs=0, source="FREE_DEMO"))
+        stale = LessonSession(child_id=child.id, lesson_id="demo_001", status="IN_PROGRESS", current_step=14, current_step_id="slide_24", lesson_version="demo_001:legacy", completion_state="ACTIVE")
+        db.add(stale);await db.flush()
+        preserved = tmp_path / "preserved.wav";preserved.write_bytes(b"preserved child answer")
+        db.add(VoiceAttempt(lesson_session_id=stale.id, phrase_id="take_trip", attempt_number=1, audio_path=str(preserved), status="ACCEPTED_CORRECT"))
+        await db.commit();parent_id,child_id,stale_id = parent.id,child.id,stale.id
+
+    monkeypatch.setattr(mobile_api, "SessionLocal", sessions)
+    monkeypatch.setattr(lesson_access, "SessionLocal", sessions)
+    monkeypatch.setattr(settings, "mobile_auth_secret", "version-reset-secret-that-is-long-enough")
+    app = web.Application();mobile_api.register_mobile_routes(app);client = TestClient(TestServer(app));await client.start_server()
+    try:
+        response = await client.post("/api/mobile/session/start", headers={"Authorization": f"Bearer {issue_session_token(parent_id)}"}, json={"child_id": child_id, "lesson_id": "demo_001"})
+        payload = await response.json()
+        assert response.status == 200
+        assert payload["session_id"] != stale_id and payload["resumed"] is False
+        assert payload["session_reset_reason"] == "LESSON_VERSION_CHANGED"
+        assert payload["current_step_id"] == payload["runtime_step_ids"][0] == "slide_01"
+        assert payload["lesson_version"] == lesson_content_version(mobile_api._load_mobile_lesson("demo_001"))
+    finally:
+        await client.close()
+    async with sessions() as db:
+        old = await db.get(LessonSession, stale_id)
+        assert old.status == "SUPERSEDED" and old.completion_state == "SUPERSEDED"
+        answer = await db.scalar(select(VoiceAttempt).where(VoiceAttempt.lesson_session_id == stale_id))
+        assert answer is not None and answer.phrase_id == "take_trip" and Path(answer.audio_path).read_bytes() == b"preserved child answer"
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_completion_and_movie_job_are_idempotent(monkeypatch, tmp_path):
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     sessions = async_sessionmaker(engine, expire_on_commit=False)
@@ -221,7 +283,18 @@ async def test_completion_and_movie_job_are_idempotent(monkeypatch, tmp_path):
         character = Character(child_id=child.id, original_path=str(hero), processed_path=str(hero), status="READY", source="CATALOG")
         db.add(character);await db.flush();child.active_character_id=character.id
         entitlement = LessonEntitlement(child_id=child.id, lesson_id="demo_001", course_id="conversation", max_completed_runs=2, completed_runs=0, source="FREE_DEMO")
-        session = LessonSession(child_id=child.id, lesson_id="demo_001", status="IN_PROGRESS")
+        runtime_lesson = mobile_api._load_mobile_lesson("demo_001")
+        version = lesson_content_version(runtime_lesson)
+        route = runtime_step_ids(runtime_lesson)
+        session = LessonSession(
+            child_id=child.id,
+            lesson_id="demo_001",
+            status="IN_PROGRESS",
+            current_step=len(route) - 1,
+            current_step_id=route[-1],
+            lesson_version=version,
+            completion_state="ACTIVE",
+        )
         db.add_all([entitlement, session]);await db.flush()
         for phrase in required_movie_phrase_ids(lesson):
             audio = tmp_path / f"{phrase}.wav";audio.write_bytes(b"real child voice")
@@ -301,7 +374,9 @@ async def test_scripted_mobile_demo_traverses_real_endpoints_and_reaches_ready_m
     async def post_voice(session_id,slide_id,phrase_id,prompt,conversation_turn=0,runtime_context=None):
         response=await client.post(f"/api/mobile/session/{session_id}/voice",headers=headers,json={"audio_base64":audio,"slide_id":slide_id,"phrase_id":phrase_id,"prompt":prompt,"conversation_turn":conversation_turn,"runtime_context":runtime_context or {}});assert response.status==200;payload=await response.json();assert payload["accepted"] is True and payload["tutor_turn"]["reason"] in {"accepted","selected_item_response"};assert prompt in payload["task_goal"];assert {"target_response","helper_translation","feedback","follow_up_question","model_phrase","semantic_response","runtime_context"}<=payload.keys();return payload
     try:
-        started=await client.post("/api/mobile/session/start",headers=headers,json={"child_id":child_id,"lesson_id":"demo_001"});assert started.status==200;session_id=(await started.json())["session_id"]
+        started=await client.post("/api/mobile/session/start",headers=headers,json={"child_id":child_id,"lesson_id":"demo_001"});assert started.status==200;started_payload=await started.json();session_id=started_payload["session_id"]
+        runtime=started_payload["runtime_step_ids"];lesson_version=started_payload["lesson_version"]
+        assert runtime==runtime_step_ids(mobile_api._load_mobile_lesson("demo_001")) and len(runtime)==len(set(runtime))==27
         await post_interactive(session_id,"slide_09","card_selector",{"selected_card_id":"A","card_question_index":0,"completed":False})
         for index,question in enumerate(by_id["slide_09"]["card_question_sets"]["A"]):
             await post_voice(session_id,"slide_09",f"slide_09:A:{question['id']}",question.get("pre_a1_text") or question["text"])
@@ -325,11 +400,13 @@ async def test_scripted_mobile_demo_traverses_real_endpoints_and_reaches_ready_m
         await post_voice(session_id,"slide_42","polar_bear","Tell me about the polar bear.");await post_voice(session_id,"slide_44","parrot","Tell me about the red parrot.")
         follow_up=await post_voice(session_id,"slide_44","parrot:followup:1","Where does this parrot live?",1);assert follow_up["movie_take_accepted"] is False and follow_up["task_goal_source"]=="active_follow_up"
         await post_interactive(session_id,"slide_49","mood_choice",{"selected_mood":"happy","completed":True})
-        runtime=[];seen=set();cursor="slide_01"
-        while cursor and cursor in by_id and cursor not in seen:seen.add(cursor);runtime.append(cursor);cursor=by_id[cursor].get("next_slide")
-        for index,_slide_id in enumerate(runtime):
-            progress=await client.post(f"/api/mobile/session/{session_id}/progress",headers=headers,json={"current_step":index});assert progress.status==200
+        for step_id in runtime:
+            progress=await client.post(f"/api/mobile/session/{session_id}/progress",headers=headers,json={"current_step_id":step_id,"lesson_version":lesson_version});assert progress.status==200
         blocked=await client.post(f"/api/mobile/session/{session_id}/complete",headers=headers,json={});assert blocked.status==409;blocked_payload=await blocked.json();assert blocked_payload["code"]=="REQUIRED_MOVIE_RECORDINGS_MISSING" and blocked_payload["missing_phrase_ids"]==["invite"]
+        assert blocked_payload["missing_steps"]==[{"phrase_id":"invite","step_id":"slide_16"}] and blocked_payload["return_to"]=="COMPLETE"
+        recovery_resume=await client.post("/api/mobile/session/start",headers=headers,json={"child_id":child_id,"lesson_id":"demo_001"});assert recovery_resume.status==200
+        recovery_payload=await recovery_resume.json();assert recovery_payload["session_id"]==session_id and recovery_payload["current_step_id"]=="slide_16"
+        assert recovery_payload["completion_state"]=="RECOVERY_REQUIRED" and recovery_payload["completion_recovery"]["return_to"]=="COMPLETE"
         await post_voice(session_id,"slide_16","invite","Come and visit me!")
         completed=await client.post(f"/api/mobile/session/{session_id}/complete",headers=headers,json={});assert completed.status==200;completion=await completed.json();assert completion["missing_voice_phrases"]==[] and completion["missing_exact_voice_phrases"]==[] and completion["movie_status"] in {"QUEUED","RUNNING","SUCCEEDED"}
         pending=[task for task in mobile_api._movie_tasks if not task.done()]
@@ -344,7 +421,7 @@ async def test_scripted_mobile_demo_traverses_real_endpoints_and_reaches_ready_m
         accepted=(await db.scalars(select(VoiceAttempt).where(VoiceAttempt.lesson_session_id==session_id,VoiceAttempt.status=="ACCEPTED_CORRECT"))).all()
         assert set(required_movie_phrase_ids(lesson))<=({attempt.phrase_id for attempt in accepted})
         invite_slot=await db.scalar(select(MovieVoiceSlot).where(MovieVoiceSlot.lesson_session_id==session_id,MovieVoiceSlot.required_voice_id=='invite'));assert invite_slot.status=='RECORDED'
-        assert (await db.get(LessonSession,session_id)).status=="COMPLETED"
+        completed_session=await db.get(LessonSession,session_id);assert completed_session.status=="COMPLETED" and completed_session.completion_state=="COMPLETED"
     await engine.dispose()
 
 

@@ -30,6 +30,7 @@ from app.services.standalone_demo_access import ensure_free_demo_entitlement
 from app.services.visual_localization import VisualLocalizationError, localize_embedded_text_image
 from app.services.course_catalog import list_courses
 from app.services.authored_content import lesson_dir as authored_lesson_dir
+from app.services.lesson_progress import lesson_content_version, missing_step_payload, runtime_sequence, runtime_step_ids
 from app.services.subscription_plan_changes import (
     PlanChangeError,
     cancel_plan_change,
@@ -225,10 +226,18 @@ async def _mobile_pre_slide_video_state(db,child_id:int,lesson_id:str,current_se
     return {'attempt':attempt,'ever':ever}
 
 
-def _session_payload(sess:LessonSession,ent,child:Child,*,resumed:bool,interactive_state:dict,recorded_phrases:list[str],pre_slide_video_state:dict|None=None)->dict:
+def _session_payload(sess:LessonSession,ent,child:Child,lesson_data:dict,*,resumed:bool,interactive_state:dict,recorded_phrases:list[str],pre_slide_video_state:dict|None=None,reset_reason:str|None=None)->dict:
+    step_ids=runtime_step_ids(lesson_data);current_id=str(sess.current_step_id or '')
+    current_index=step_ids.index(current_id) if current_id in step_ids else min(max(int(sess.current_step or 0),0),max(len(step_ids)-1,0))
+    try:runtime=json.loads(sess.runtime_state_json or '{}')
+    except (TypeError,ValueError,json.JSONDecodeError):runtime={}
     return {
         'session_id':sess.id,'run_number':int(ent.completed_runs or 0)+1,'lesson_id':sess.lesson_id,
-        'current_step':int(sess.current_step or 0),'resumed':resumed,'interactive_state':interactive_state,
+        'current_step':current_index,'current_step_id':step_ids[current_index] if step_ids else None,
+        'lesson_version':lesson_content_version(lesson_data),'runtime_step_ids':step_ids,
+        'completion_state':str(sess.completion_state or 'ACTIVE'),'resumed':resumed,'session_reset_reason':reset_reason,
+        'completion_recovery':runtime.get('completion_recovery'),
+        'interactive_state':interactive_state,
         'recorded_phrases':recorded_phrases,'pre_slide_video_state':pre_slide_video_state or {'attempt':[],'ever':[]},'adaptive_profile':{
             'language_level':child.language_level or 'PRE_A1',
             'working_difficulty':float(child.working_difficulty or 0.15),
@@ -422,6 +431,8 @@ async def lesson(request:web.Request)->web.Response:
     # Do not leak server paths.
     clean=dict(data); clean.pop('source_materials',None)
     clean['visual_asset_version']=str(data.get('revision') or data.get('runtime_revision') or 1)
+    clean['lesson_version']=lesson_content_version(data)
+    clean['runtime_step_ids']=runtime_step_ids(data)
     return web.json_response(clean)
 
 
@@ -541,31 +552,65 @@ async def hero_geometry_confirm(request:web.Request)->web.Response:
 
 async def session_start(request:web.Request)->web.Response:
     p=await _parent(request);data=await request.json();cid=int(data.get('child_id'));lid=str(data.get('lesson_id') or 'demo_001');c=await _owned_child(p.id,cid);lesson_data=_load_mobile_lesson(lid);course=str(lesson_data.get('course_id') or 'conversation')
+    version=lesson_content_version(lesson_data);step_ids=runtime_step_ids(lesson_data)
     ok,reason,ent=await can_start(cid,lid,course)
     if not ok: raise web.HTTPForbidden(text=json.dumps({'error':f'Урок недоступен: {reason}'}),content_type='application/json')
+    reset_reason=None
     async with SessionLocal() as db:
         existing=await db.scalar(select(LessonSession).where(LessonSession.child_id==cid,LessonSession.lesson_id==lid,LessonSession.status=='IN_PROGRESS').order_by(LessonSession.id.desc()))
+        if existing and str(existing.lesson_version or '')!=version:
+            # Never attach positional progress from an older authored route to a
+            # new one.  The old session and all child answers stay auditable;
+            # the new content starts in a clean session.
+            try:runtime=json.loads(existing.runtime_state_json or '{}')
+            except (TypeError,ValueError,json.JSONDecodeError):runtime={}
+            runtime['superseded']={'reason':'LESSON_VERSION_CHANGED','old_version':str(existing.lesson_version or 'legacy-positional'),'new_version':version}
+            existing.runtime_state_json=json.dumps(runtime,ensure_ascii=False);existing.status='SUPERSEDED';existing.completion_state='SUPERSEDED'
+            reset_reason='LESSON_VERSION_CHANGED';log.warning('MOBILE_SESSION_VERSION_RESET old_session=%s lesson=%s old_version=%s new_version=%s',existing.id,lid,existing.lesson_version or 'legacy-positional',version);await db.commit();existing=None
         if existing:
+            if not existing.current_step_id or existing.current_step_id not in step_ids:
+                existing.current_step=max(0,min(int(existing.current_step or 0),max(len(step_ids)-1,0)))
+                existing.current_step_id=step_ids[existing.current_step] if step_ids else None
+            else:existing.current_step=step_ids.index(existing.current_step_id)
+            existing.lesson_version=version
             await ensure_movie_voice_slots(db,existing.id,lesson_data);await db.commit()
             interactive_state,recorded_phrases=await _mobile_resume_state(db,existing.id)
             video_state=await _mobile_pre_slide_video_state(db,cid,lid,existing.id)
-            return web.json_response(_session_payload(existing,ent,c,resumed=True,interactive_state=interactive_state,recorded_phrases=recorded_phrases,pre_slide_video_state=video_state))
-        sess=LessonSession(child_id=cid,lesson_id=lid,current_step=0,status='IN_PROGRESS',level_at_start=c.language_level or 'PRE_A1',lesson_revision=int(lesson_data.get('revision') or 1),runtime_state_json=json.dumps({'source':'mobile'},ensure_ascii=False));db.add(sess);await db.flush();await ensure_movie_voice_slots(db,sess.id,lesson_data);await db.commit();await db.refresh(sess)
+            log.info('MOBILE_SESSION_RESUMED session=%s lesson=%s version=%s step_id=%s step_index=%s',existing.id,lid,version,existing.current_step_id,existing.current_step)
+            return web.json_response(_session_payload(existing,ent,c,lesson_data,resumed=True,interactive_state=interactive_state,recorded_phrases=recorded_phrases,pre_slide_video_state=video_state))
+        sess=LessonSession(child_id=cid,lesson_id=lid,current_step=0,current_step_id=step_ids[0] if step_ids else None,lesson_version=version,completion_state='ACTIVE',status='IN_PROGRESS',level_at_start=c.language_level or 'PRE_A1',lesson_revision=int(lesson_data.get('revision') or 1),runtime_state_json=json.dumps({'source':'mobile','lesson_version':version},ensure_ascii=False));db.add(sess);await db.flush();await ensure_movie_voice_slots(db,sess.id,lesson_data);await db.commit();await db.refresh(sess)
         video_state=await _mobile_pre_slide_video_state(db,cid,lid,sess.id)
-    return web.json_response(_session_payload(sess,ent,c,resumed=False,interactive_state={},recorded_phrases=[],pre_slide_video_state=video_state))
+    log.info('MOBILE_SESSION_STARTED session=%s lesson=%s version=%s reset_reason=%s',sess.id,lid,version,reset_reason)
+    return web.json_response(_session_payload(sess,ent,c,lesson_data,resumed=False,interactive_state={},recorded_phrases=[],pre_slide_video_state=video_state,reset_reason=reset_reason))
 
 async def session_progress(request:web.Request)->web.Response:
     p=await _parent(request);sid=int(request.match_info['session_id']);data=await request.json()
-    try:current_step=int(data.get('current_step'))
-    except (TypeError,ValueError):raise web.HTTPBadRequest(text=json.dumps({'error':'current_step must be an integer'}),content_type='application/json')
     async with SessionLocal() as db:
         sess=await db.get(LessonSession,sid);c=await db.get(Child,sess.child_id) if sess else None
         if not sess:raise web.HTTPNotFound()
         if not c or c.parent_id!=p.id:raise web.HTTPForbidden()
-        slides=_load_mobile_lesson(sess.lesson_id).get('slides',[])
-        if current_step<0 or current_step>=max(len(slides),1):raise web.HTTPBadRequest(text=json.dumps({'error':'current_step is outside the lesson'}),content_type='application/json')
-        sess.current_step=current_step;await db.commit()
-    return web.json_response({'ok':True,'session_id':sid,'current_step':current_step})
+        lesson_data=_load_mobile_lesson(sess.lesson_id);version=lesson_content_version(lesson_data);step_ids=runtime_step_ids(lesson_data)
+        requested_version=str(data.get('lesson_version') or version)
+        if requested_version!=version or str(sess.lesson_version or '')!=version:
+            raise web.HTTPConflict(text=json.dumps({'error':'Структура урока изменилась. Откройте урок заново.','code':'LESSON_VERSION_CHANGED','lesson_version':version},ensure_ascii=False),content_type='application/json')
+        requested_id=str(data.get('current_step_id') or '').strip()
+        if requested_id:
+            if requested_id not in step_ids:raise web.HTTPBadRequest(text=json.dumps({'error':'current_step_id is outside the lesson'}),content_type='application/json')
+            current_step=step_ids.index(requested_id)
+        else:
+            try:current_step=int(data.get('current_step'))
+            except (TypeError,ValueError):raise web.HTTPBadRequest(text=json.dumps({'error':'current_step/current_step_id is required'}),content_type='application/json')
+            if current_step<0 or current_step>=max(len(step_ids),1):raise web.HTTPBadRequest(text=json.dumps({'error':'current_step is outside the runtime lesson route'}),content_type='application/json')
+            requested_id=step_ids[current_step]
+        if current_step<int(sess.current_step or 0):
+            try:runtime=json.loads(sess.runtime_state_json or '{}')
+            except (TypeError,ValueError,json.JSONDecodeError):runtime={}
+            recovery_id=str((runtime.get('completion_recovery') or {}).get('step_id') or '')
+            if requested_id!=recovery_id:
+                raise web.HTTPConflict(text=json.dumps({'error':'Прогресс урока не может неожиданно вернуться назад.','code':'LESSON_BACKWARD_PROGRESS_BLOCKED'},ensure_ascii=False),content_type='application/json')
+        sess.current_step=current_step;sess.current_step_id=requested_id;sess.lesson_version=version;await db.commit()
+    log.info('MOBILE_PROGRESS_SAVED session=%s lesson_version=%s step_id=%s step_index=%s',sid,version,requested_id,current_step)
+    return web.json_response({'ok':True,'session_id':sid,'current_step':current_step,'current_step_id':requested_id,'lesson_version':version})
 
 def _slide(lesson_data:dict,slide_id:str)->dict:
     return next((x for x in lesson_data.get('slides',[]) if x.get('slide_id')==slide_id),{})
@@ -891,7 +936,10 @@ async def complete(request:web.Request,movie_build_trigger:str='complete')->web.
         if not sess:raise web.HTTPNotFound()
         c=await db.get(Child,sess.child_id);par=await db.get(Parent,c.parent_id) if c else None
         if not c or c.parent_id!=p.id:raise web.HTTPForbidden()
-    lesson_data=_load_mobile_lesson(sess.lesson_id);course=str(lesson_data.get('course_id') or 'conversation')
+    lesson_data=_load_mobile_lesson(sess.lesson_id);course=str(lesson_data.get('course_id') or 'conversation');version=lesson_content_version(lesson_data);step_ids=runtime_step_ids(lesson_data)
+    if str(sess.lesson_version or '')!=version:
+        log.warning('MOBILE_COMPLETION_VERSION_REJECTED session=%s stored=%s current=%s',sid,sess.lesson_version or 'legacy-positional',version)
+        raise web.HTTPConflict(text=json.dumps({'error':'Структура урока изменилась. Откройте урок заново.','code':'LESSON_VERSION_CHANGED','lesson_version':version},ensure_ascii=False),content_type='application/json')
     movie_contract=None;movie_contract_error=None
     if lesson_data.get('cartoon_base') or lesson_data.get('cartoon_base_manifest'):
         try:movie_contract=load_movie_contract(sess.lesson_id,lesson_data)
@@ -906,7 +954,26 @@ async def complete(request:web.Request,movie_build_trigger:str='complete')->web.
     required_ids=required_movie_phrase_ids(movie_lesson_data) if movie_contract else []
     log.info('MOVIE_RECORDING_INVENTORY session=%s recordings=%s required_slots=%s available_slots=%s missing_slots=%s',sid,len(voices),required_ids,sorted(audio_by_phrase),missing_exact)
     if movie_contract and missing_exact:
-        raise web.HTTPConflict(text=json.dumps({'error':'Нужно записать все обязательные реплики для мультфильма.','code':'REQUIRED_MOVIE_RECORDINGS_MISSING','missing_phrase_ids':missing_exact},ensure_ascii=False),content_type='application/json')
+        missing_steps=missing_step_payload(movie_lesson_data,missing_exact);target=missing_steps[0] if missing_steps else None
+        async with SessionLocal() as db:
+            db_session=await db.get(LessonSession,sid)
+            try:runtime=json.loads(db_session.runtime_state_json or '{}') if db_session else {}
+            except (TypeError,ValueError,json.JSONDecodeError):runtime={}
+            if db_session:
+                recovery={'phrase_ids':missing_exact,'return_to':'COMPLETE',**(target or {})};runtime['completion_recovery']=recovery
+                db_session.runtime_state_json=json.dumps(runtime,ensure_ascii=False);db_session.completion_state='RECOVERY_REQUIRED'
+                if target and target['step_id'] in step_ids:
+                    db_session.current_step_id=target['step_id'];db_session.current_step=step_ids.index(target['step_id'])
+                await db.commit()
+        log.warning('MOBILE_COMPLETION_RECOVERY_REQUIRED session=%s missing=%s target=%s',sid,missing_exact,target)
+        raise web.HTTPConflict(text=json.dumps({'error':'Нужно записать обязательную реплику для мультфильма.','code':'REQUIRED_MOVIE_RECORDINGS_MISSING','missing_phrase_ids':missing_exact,'missing_steps':missing_steps,'lesson_version':version,'return_to':'COMPLETE'},ensure_ascii=False),content_type='application/json')
+    recovery_allowed=str(sess.completion_state or '')=='RECOVERY_REQUIRED'
+    if sess.status!='COMPLETED' and not recovery_allowed and step_ids and str(sess.current_step_id or '')!=step_ids[-1]:
+        raise web.HTTPConflict(text=json.dumps({'error':'Сначала завершите текущий шаг урока.','code':'LESSON_SEQUENCE_INCOMPLETE','current_step_id':sess.current_step_id,'final_step_id':step_ids[-1]},ensure_ascii=False),content_type='application/json')
+    if sess.status!='COMPLETED':
+        async with SessionLocal() as db:
+            db_session=await db.get(LessonSession,sid)
+            if db_session:db_session.completion_state='COMPLETING';await db.commit()
     ent,new=await complete_session_once(session_id=sid,child_id=c.id,lesson_id=sess.lesson_id,course_id=course,final_step=len(lesson_data.get('slides',[])))
     run_no=int(ent.completed_runs or 0)
     hero_path=Path(char.processed_path or char.original_path) if char else preset_character_path('explorer')

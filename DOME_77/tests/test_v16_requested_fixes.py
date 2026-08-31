@@ -27,14 +27,15 @@ def test_direct_transitions():
     assert SLIDES[next_runtime_step(SLIDES, idx31)]['order'] == 40
 
 
-def test_skip_policy_keeps_suitcase_action_but_allows_optional_dialogue():
+def test_suitcase_action_and_movie_dialogue_are_both_required():
     by_order = {s['order']: s for s in SLIDES}
     assert by_order[19]['allow_skip'] is False
     assert by_order[19]['skip_prelude_only'] is False
-    assert by_order[24]['allow_skip'] is True
-    assert by_order[24]['unskippable'] is False
+    assert by_order[24]['allow_skip'] is False
+    assert by_order[24]['unskippable'] is True
     assert by_order[24]['requires_interactive_completion'] is True
-    assert by_order[24]['voice_after_action_optional'] is True
+    assert by_order[24]['voice_after_action_optional'] is False
+    assert by_order[24]['requiredForMovie'] is True
     assert by_order[24]['required_phrase_id'] == 'take_trip'
 
 

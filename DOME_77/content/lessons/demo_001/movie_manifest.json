@@ -22,7 +22,7 @@
   "audio_policy": {
     "allowed_track_roles": ["canonical_base_audio", "child_recording"],
     "require_exact_child_recording": true,
-    "optional_phrase_ids": ["take_trip"],
+    "optional_phrase_ids": [],
     "allow_compatible_recording": false,
     "allow_tutor_tts": false,
     "allow_silence_fallback": false

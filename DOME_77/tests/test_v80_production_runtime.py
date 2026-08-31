@@ -87,8 +87,8 @@ async def test_movie_voice_slots_allow_only_exact_whitelisted_child_recordings(m
         resolved,diagnostics=await resolve_movie_voice_slots(db,session.id,[exact,compatible],lesson,'ru',tmp_path/'cache');await db.commit()
         assert resolved=={required[0]:exact_audio}
         assert diagnostics[0]['strategy']=='exact_child_recording'
-        assert all(item['strategy'] in {'missing_required_child_recording','optional_child_choice_skipped'} for item in diagnostics[1:])
-        assert any(item['required_voice_id']=='take_trip' and item['status']=='OPTIONAL_SKIPPED' for item in diagnostics)
+        assert all(item['strategy']=='missing_required_child_recording' for item in diagnostics[1:])
+        assert any(item['required_voice_id']=='take_trip' and item['status']=='MISSING_REQUIRED' for item in diagnostics)
         assert all(item['required_voice_id']!=required[1] or item['status']=='MISSING_REQUIRED' for item in diagnostics)
     await engine.dispose()
 

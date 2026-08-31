@@ -64,6 +64,7 @@ import {isStandaloneVideoStep,mediaPhaseAfterEnd,normalizeMediaSequence,usesGene
 import {rootRuntimeFailure,startupFailure,StartupTimeoutError,startupErrorText,withStartupTimeout} from '../src/engine/startup.ts';
 import bundledLesson from '../src/data/botLesson.json' with {type:'json'};
 import {buildRuntimeOrder} from '../src/data/lessonInteractions.ts';
+import {completionRecoveryFromError,recoveryReturnsDirectlyToCompletion,resolveResumeIndex} from '../src/engine/lessonProgress.ts';
 import {beginVisualAssetLoad,failVisualAsset,loadVisualAssetWithRetry,useLocalizedVisualAsset,visualAssetSourceForKey} from '../src/engine/visualAsset.ts';
 import {markPreSlideVideoShown,normalizePreSlideVideo,preSlideVideoKey,preSlideVideoTargetIndex,shouldShowPreSlideVideo} from '../src/engine/preSlideVideo.ts';
 import {canonicalTaskType,expectedTargetId,initialPuzzleOrder,isStableTaskTemplate,memoryDeck,moveSequenceItem,puzzleSolved,sequenceSolved,swapPuzzlePieces,taskPairs} from '../src/engine/taskTemplateRuntime.ts';
@@ -323,8 +324,10 @@ test('voice context contains only current visual state and suitcase has no hidde
   assert.deepEqual(context.selected_items,['fish']);assert.deepEqual(context.removed_items,['camera']);
   assert.equal('correct_item_ids' in suitcase,false);assert.equal('incorrect_item_ids' in suitcase,false);
   assert.ok(suitcase.drag_items.every((item:any)=>!('useful' in item)));
-  assert.equal(isRequiredForMovie(suitcase),false);
-  assert.equal(nextEnabled('WAITING_VOICE',true,{requiredForMovie:isRequiredForMovie(suitcase),hasValidRecording:false}),true);
+  assert.equal(isRequiredForMovie(suitcase),true);
+  assert.equal(nextEnabled('WAITING_VOICE',true,{requiredForMovie:isRequiredForMovie(suitcase),hasValidRecording:false}),false);
+  assert.equal(nextEnabled('COMPLETE',true,{requiredForMovie:isRequiredForMovie(suitcase),hasValidRecording:false}),false);
+  assert.equal(nextEnabled('COMPLETE',true,{requiredForMovie:isRequiredForMovie(suitcase),hasValidRecording:true}),true);
   assert.equal(answerEnabled('WAITING_VOICE',suitcase,true,false,false),true);
 });
 
@@ -406,7 +409,8 @@ test('regression: requiredForMovie cannot be skipped by exhausting retries',()=>
   const required={answer_mode:'required_voice',requiredForMovie:true};assert.equal(isRequiredForMovie(required),true);
   assert.equal(nextEnabled('WAITING_VOICE',true,{requiredForMovie:true}),false);
   assert.equal(nextEnabled('WAITING_VOICE',true,{requiredForMovie:true,hasValidRecording:true}),true);
-  assert.equal(nextEnabled('COMPLETE',true,{requiredForMovie:true}),true);
+  assert.equal(nextEnabled('COMPLETE',true,{requiredForMovie:true}),false);
+  assert.equal(nextEnabled('COMPLETE',true,{requiredForMovie:true,hasValidRecording:true}),true);
   assert.equal(nextEnabled('RETRY',true,{requiredForMovie:true,recoveryAvailable:true}),false);
   assert.equal(isRequiredForMovie({requiredForMovie:'true'}),false);
   const player=readFileSync(new URL('../src/screens/LessonPlayer.tsx',import.meta.url),'utf8');
@@ -566,6 +570,44 @@ test('programmatic demo flow has no early record, duplicate answer, or dead end'
     const next=nextCardQuestion(cards,'A',question);stage=next.done?'COMPLETE':'WAITING_VOICE';
   }
   assert.equal(stage,'COMPLETE');assert.equal(nextEnabled(stage),true);
+});
+
+test('demo_001 traversal is deterministic and completion recovery never replays the tail',()=>{
+  const order=buildRuntimeOrder(bundledLesson.slides as any[]);
+  const ids=order.map(step=>String(step.slide_id));
+  const expected=[
+    'slide_01','slide_03','slide_09','slide_04','slide_06','slide_07','slide_08',
+    'slide_17','slide_18','slide_19','slide_20','slide_21','slide_22','slide_23',
+    'slide_24','slide_40','slide_41','slide_47','slide_50','slide_46','slide_51',
+    'slide_45','slide_42','slide_44','slide_48','slide_16','slide_49',
+  ];
+  assert.deepEqual(ids,expected);
+  assert.equal(new Set(ids).size,ids.length,'the linked runtime route must not repeat or cycle');
+  assert.equal(ids.filter(id=>id==='slide_24').length,1,'suitcase appears exactly once');
+  assert.equal(ids.filter(id=>id==='slide_49').length,1,'mood completion appears exactly once');
+  for(const animalStep of ['slide_47','slide_50','slide_46','slide_51','slide_45','slide_42','slide_44','slide_48']){
+    assert.equal(ids.filter(id=>id===animalStep).length,1,`${animalStep} appears exactly once`);
+  }
+
+  const version='demo_001:r58:test';
+  assert.equal(resolveResumeIndex(order,{lesson_version:version,current_step_id:'slide_24',current_step:0},version),14);
+  assert.equal(resolveResumeIndex(order,{lesson_version:version,current_step_id:'slide_47',current_step:0},version),17);
+  assert.equal(resolveResumeIndex(order,{lesson_version:'stale',current_step_id:'slide_47',current_step:17},version),0);
+
+  const recovery=completionRecoveryFromError({data:{missing_steps:[{phrase_id:'take_trip',step_id:'slide_24'}]}},order);
+  assert.deepEqual(recovery,{phraseId:'take_trip',stepId:'slide_24',returnTo:'COMPLETE'});
+  assert.equal(recoveryReturnsDirectlyToCompletion(recovery,'slide_24'),true);
+  assert.equal(recoveryReturnsDirectlyToCompletion(recovery,'slide_40'),false);
+  const player=readFileSync(new URL('../src/screens/LessonPlayer.tsx',import.meta.url),'utf8');
+  assert.match(player,/recoveryReturnsDirectlyToCompletion[\s\S]*?await requestCompletion\(\);return[\s\S]*?idx<runtimeOrder\.length-1/);
+});
+
+test('malformed linked lesson routes fail closed instead of looping',()=>{
+  assert.throws(()=>buildRuntimeOrder([
+    {slide_id:'one',order:1,next_slide:'two'},
+    {slide_id:'two',order:2,next_slide:'one'},
+  ]),/LESSON_SEQUENCE_CYCLE:one/);
+  assert.throws(()=>buildRuntimeOrder([{slide_id:'one',order:1,next_slide:'missing'}]),/LESSON_SEQUENCE_MISSING_STEP:missing/);
 });
 
 test('scripted QA can traverse every active demo_001 runtime slide',()=>{

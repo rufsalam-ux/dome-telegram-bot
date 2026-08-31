@@ -122,7 +122,7 @@ async def complete_session_once(
         result = await db.execute(
             update(LessonSession)
             .where(LessonSession.id == int(session_id), LessonSession.status != "COMPLETED")
-            .values(status="COMPLETED", completed_at=datetime.utcnow(), current_step=int(final_step))
+            .values(status="COMPLETED", completion_state="COMPLETED", completed_at=datetime.utcnow(), current_step=int(final_step))
         )
         newly_completed = bool(result.rowcount)
         if newly_completed:

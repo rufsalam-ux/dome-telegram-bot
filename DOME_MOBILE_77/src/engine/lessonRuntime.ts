@@ -120,9 +120,12 @@ export function isRequiredForMovie(slide:any):boolean{
   return slide?.requiredForMovie===true||slide?.required_for_movie===true||Boolean(slide?.required_phrase_id&&slide?.allow_skip===false);
 }
 
-export function nextEnabled(stage:RuntimeStage,visualReady=true,policy:NextPolicy={requiredForMovie:true}):boolean{
+export function nextEnabled(stage:RuntimeStage,visualReady=true,policy:NextPolicy={requiredForMovie:false}):boolean{
   if(!visualReady)return false;
-  if(policy.requiredForMovie===true&&stage!=='COMPLETE'&&policy.hasValidRecording!==true)return false;
+  // A semantic/task COMPLETE state is not proof that an exact movie take was
+  // persisted. Required movie steps remain blocked until that recording is
+  // acknowledged by the backend, regardless of the visible runtime stage.
+  if(policy.requiredForMovie===true&&policy.hasValidRecording!==true)return false;
   if(policy.mode==='after_action')return stage==='COMPLETE';
   if(policy.mode==='after_answer')return stage==='COMPLETE'||policy.hasValidRecording===true;
   return true;

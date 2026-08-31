@@ -59,10 +59,11 @@ export const SUITCASE_ITEMS=[
 export function buildRuntimeOrder(slides:any[]):any[]{
   // Disabled Studio steps are authoring data, not child progress steps.
   const ordered=slides.filter(slide=>slide?.enabled!==false).sort((a,b)=>(Number(a?.order)||9999)-(Number(b?.order)||9999));
-  if(!ordered.some(slide=>String(slide?.next_slide||'').trim()))return ordered;
+  const nextId=(slide:any)=>String(slide?.next_slide||slide?.next_step_id||slide?.next||'').trim();
+  if(!ordered.some(slide=>nextId(slide)))return ordered;
   const by:Record<string,any>={};ordered.forEach(slide=>{by[slide.slide_id]=slide});
   const output:any[]=[];const seen=new Set<string>();let id=String(ordered.find(slide=>slide?.entry===true)?.slide_id||(by.slide_01?'slide_01':ordered[0]?.slide_id)||'');
-  while(id&&by[id]&&!seen.has(id)&&output.length<80){seen.add(id);output.push(by[id]);id=by[id].next_slide}
+  while(id){if(seen.has(id))throw new Error(`LESSON_SEQUENCE_CYCLE:${id}`);if(!by[id])throw new Error(`LESSON_SEQUENCE_MISSING_STEP:${id}`);seen.add(id);output.push(by[id]);id=nextId(by[id])}
   return output;
 }
 

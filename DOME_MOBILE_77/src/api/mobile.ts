@@ -187,8 +187,8 @@ export function startSession(childId:string|number,lessonId='demo_001'){
   return request('/api/mobile/session/start',jsonInit('POST',{child_id:Number(childId),lesson_id:lessonId}));
 }
 
-export function saveSessionProgress(sessionId:number,currentStep:number){
-  return request(`/api/mobile/session/${sessionId}/progress`,jsonInit('POST',{current_step:currentStep}));
+export function saveSessionProgress(sessionId:number,currentStepId:string,lessonVersion:string,currentStep?:number){
+  return request(`/api/mobile/session/${sessionId}/progress`,jsonInit('POST',{current_step_id:currentStepId,lesson_version:lessonVersion,...(currentStep===undefined?{}:{current_step:currentStep})}));
 }
 
 export async function sendVoice(sessionId:number,uri:string,slideId:string,phraseId:string|undefined,prompt:string,conversationTurn=0,runtimeContext:Record<string,unknown>={}){

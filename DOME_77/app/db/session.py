@@ -185,6 +185,12 @@ async def init_db() -> None:
         await conn.execute(text("UPDATE lesson_movies SET status='SUCCEEDED', stage='READY', progress=100 WHERE status='READY'"))
         await conn.execute(text("UPDATE lesson_movies SET status='RUNNING', stage=CASE WHEN stage='IDLE' THEN 'FFMPEG_RENDER' ELSE stage END WHERE status='PROCESSING'"))
         await conn.execute(text("UPDATE lesson_movies SET movie_version='mobile-movie-v1' WHERE movie_version IS NULL OR movie_version=''"))
+        await _add_columns(conn, "lesson_sessions", {
+            "current_step_id": "VARCHAR(120)",
+            "lesson_version": "VARCHAR(180) NOT NULL DEFAULT ''",
+            "completion_state": "VARCHAR(30) NOT NULL DEFAULT 'ACTIVE'",
+        })
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_lesson_sessions_lesson_version ON lesson_sessions(lesson_version)"))
         if settings.database_url.startswith("sqlite"):
             await _add_columns(conn, "children", {
                 "country": "VARCHAR(120)", "language_level": "VARCHAR(20) NOT NULL DEFAULT 'PRE_A1'",
