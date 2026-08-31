@@ -1,7 +1,7 @@
 import React,{useCallback,useMemo,useRef,useState} from 'react';
 import {Animated,Image,PanResponder,Pressable,Text,useWindowDimensions,View} from 'react-native';
 import {movedPixelRect,suitcaseDropAccepted,suitcaseDropOutcome,suitcaseTapFallbackAvailable,updatePackedItems,validPixelRect,type PixelPoint,type PixelRect} from '../engine/lessonRuntime';
-import {playExperience} from '../experience/experience';
+import {emitDomeFeedback} from '../experience/useDomeFeedback';
 
 export type SuitcaseItem={id:string;label:string;image:any};
 
@@ -31,7 +31,7 @@ function Draggable({item,targetRef,packed,onCommit,onDragging,onHover,onFailedDr
   const responder=useMemo(()=>PanResponder.create({
     onStartShouldSetPanResponder:()=>true,
     onMoveShouldSetPanResponder:(_event,gesture)=>Math.abs(gesture.dx)+Math.abs(gesture.dy)>2,
-    onPanResponderGrant:()=>{position.stopAnimation();position.setValue({x:0,y:0});handlersRef.current.onDragging(true);playExperience('DRAG_PICKUP');refreshRects()},
+    onPanResponderGrant:()=>{position.stopAnimation();position.setValue({x:0,y:0});handlersRef.current.onDragging(true);emitDomeFeedback('dragStart');refreshRects()},
     onPanResponderMove:(event,gesture)=>{position.setValue({x:gesture.dx,y:gesture.dy});handlersRef.current.onHover(suitcaseDropAccepted(pagePoint(event,gesture),movedPixelRect(itemRectRef.current,gesture.dx,gesture.dy),targetRectRef.current))},
     onPanResponderRelease:(event,gesture)=>{const point=pagePoint(event,gesture);const moved=movedPixelRect(itemRectRef.current,gesture.dx,gesture.dy);void (async()=>{
       // Keep the parent ScrollView frozen until the native target rectangle is
@@ -39,8 +39,8 @@ function Draggable({item,targetRef,packed,onCommit,onDragging,onHover,onFailedDr
       const target=targetRectRef.current||await measure(targetRef);const inside=suitcaseDropAccepted(point,moved,target);
       const handlers=handlersRef.current;handlers.onHover(false);handlers.onDragging(false);const outcome=suitcaseDropOutcome(handlers.packed,inside);
       if(outcome!=='RETURN'){
-        try{playExperience('DROP_CORRECT');await handlers.onCommit(item.id,inside)}catch{playExperience('TRY_AGAIN');handlers.onFailedDrop(item.id)}
-      }else if(!handlers.packed){playExperience('TRY_AGAIN');handlers.onFailedDrop(item.id)}
+        try{emitDomeFeedback('drop');await handlers.onCommit(item.id,inside)}catch{emitDomeFeedback('wrong');handlers.onFailedDrop(item.id)}
+      }else if(!handlers.packed){emitDomeFeedback('wrong');handlers.onFailedDrop(item.id)}
       springBack();
     })()},
     onPanResponderTerminate:()=>{handlersRef.current.onHover(false);handlersRef.current.onDragging(false);springBack()},
@@ -61,7 +61,7 @@ export function DragDropSuitcase({items,packed,onChange,onDragging,disabled=fals
     if(next===packed)return;committingRef.current=true;setCommitting(true);try{await onChange(next);setFailedDrags(current=>({...current,[id]:0}))}finally{committingRef.current=false;setCommitting(false)}
   },[disabled,onChange,packed]);
   const failed=useCallback((id:string)=>{setFailedDrags(current=>({...current,[id]:(current[id]||0)+1}))},[]);
-  async function accessiblePack(item:SuitcaseItem){if(disabled||!suitcaseTapFallbackAvailable(failedDrags[item.id]||0))return;playExperience('DROP_CORRECT');await commit(item.id,true)}
+  async function accessiblePack(item:SuitcaseItem){if(disabled||!suitcaseTapFallbackAvailable(failedDrags[item.id]||0))return;emitDomeFeedback('drop');await commit(item.id,true)}
   return <View pointerEvents={disabled||committing?'none':'auto'} style={{gap:6}}>
     <View ref={targetRef} collapsable={false} testID='suitcase-drop-zone' accessibilityLabel='Чемодан — зона для предметов' style={{height:width<390?116:138,borderWidth:hover?5:3,borderStyle:'dashed',borderColor:hover?'#13a864':'#6aa6d8',borderRadius:18,overflow:'hidden',alignItems:'center',justifyContent:'center',backgroundColor:hover?'#dff8e9':'#eef8ff'}}>
       <Image source={require('../../assets/lesson/demo_001/suitcase-authored/suitcase-target.png')} style={{position:'absolute',width:'96%',height:'96%',resizeMode:'contain'}}/>

@@ -25,6 +25,7 @@ import {completedMoviePayload,movieIdentity,normalizeMovieState,MOVIE_ACTIVE_STA
 import {beginVisualAssetLoad,failVisualAsset,loadVisualAssetWithRetry,useLocalizedVisualAsset,visualAssetSourceForKey,type VisualAssetState} from '../engine/visualAsset';
 import {useAppStore} from '../store/AppStore';
 import {playExperience,setExperienceAudioSuppressed} from '../experience/experience';
+import {emitDomeFeedback} from '../experience/useDomeFeedback';
 
 function mediaSource(slide:any){const name=String(slide?.image||'').split('/').pop();return name&&lessonImages[name]?lessonImages[name]:undefined}
 function configuredOptions(slide:any,fallback:SelectableImageOption[]=[]):SelectableImageOption[]{
@@ -142,7 +143,7 @@ export function LessonPlayer({lessonId}:{lessonId:string}){
   }
   function failTutorSpeech(code:string,error:unknown,token=speechTokenRef.current){if(token!==speechTokenRef.current)return;speechPlaybackArmedRef.current=false;wasSpeakingRef.current=false;if(speechWatchdogRef.current)clearTimeout(speechWatchdogRef.current);try{voicePlayer.pause()}catch{}const message=String((error as any)?.message||error||code);console.error('TUTOR_AUDIO_PLAYBACK_ERROR',{slide_id:slide?.slide_id,code,error:message});setBusy(false);setTutorVoiceError(code);setFeedback('Не удалось включить голос ведущей. Нажми «Повторить голос».');setStage('FEEDBACK')}
   function cancelTutorSpeech(after?:RuntimeStage){speechTokenRef.current+=1;speechPlaybackArmedRef.current=false;wasSpeakingRef.current=false;if(speechWatchdogRef.current)clearTimeout(speechWatchdogRef.current);try{voicePlayer.pause()}catch{}setTutorVoiceError('');if(after)setStage(after)}
-  function playClick(){playExperience('BUTTON_TAP')}
+  function playClick(){emitDomeFeedback('tap')}
   async function persistInteraction(update:any){if(!session||!slide)return;const previous=interactiveRef.current;const merged={...(previous[slide.slide_id]||{}),...update};const next={...previous,[slide.slide_id]:merged};interactiveRef.current=next;setInteractiveState(next);try{await withLessonTimeout(sendInteractive(session,slide.slide_id,slide.interactive_task||slide.type||'choice',merged),'save interaction')}catch(error){interactiveRef.current=previous;setInteractiveState(previous);throw error}}
 
   async function updateTemplateTask(result:TemplateTaskResult){const previous=templateResult;setTemplateResult(result);try{await persistInteraction({template_result:result,...result});if(result.completed){playExperience('TASK_COMPLETE');setFeedback('Готово! ✓');setRewardNonce(current=>current+1);setStage(requiresVoice(slide)?'WAITING_VOICE':'COMPLETE')}else setStage('WAITING_ACTION')}catch(error){console.error('template task persistence error',error);setTemplateResult(previous);setFeedback(childSafeRuntimeMessage('interaction'));setStage('WAITING_ACTION')}}
@@ -207,10 +208,10 @@ export function LessonPlayer({lessonId}:{lessonId:string}){
     prompt={prompt}
     progressLabel={`${idx+1}/${runtimeOrder.length}`}
     replay={{testID:'lesson-replay',accessibilityLabel:stage==='AI_SPEAKING'?'Слушай ведущую':tutorVoiceError?'Повторить голос':'Слушать ещё',disabled:stage==='AI_SPEAKING'||recording||busy,sound:false,onPress:()=>void speakTutor(targetText,showHint?nativeText:'',tutorVoiceError?afterSpeechRef.current:stage,'warm')}}
-    answer={requiresVoice(slide)?{testID:'record-answer',accessibilityLabel:recording?'Закончить ответ':stage==='PROCESSING'?'Ответ обрабатывается':'Ответить',disabled:!canRecord&&!recording,feedback:'RECORDING_START',sound:false,onPress:recording?()=>void stopRec('MANUAL'):startRec}:undefined}
+    answer={requiresVoice(slide)?{testID:'record-answer',accessibilityLabel:recording?'Закончить ответ':stage==='PROCESSING'?'Ответ обрабатывается':'Ответить',disabled:!canRecord&&!recording,feedback:recording?'recordStop':'recordStart',sound:false,onPress:recording?()=>void stopRec('MANUAL'):startRec}:undefined}
     hint={nativeText&&nativeLang!==targetLang?{testID:'lesson-hint',accessibilityLabel:showHint?'Скрыть подсказку':'Показать подсказку',disabled:stage==='AI_SPEAKING'||recording,onPress:()=>setShowHint(value=>!value)}:undefined}
     more={{testID:'lesson-secondary-menu',accessibilityLabel:'Дополнительные действия',disabled:recording||stage==='AI_SPEAKING',onPress:()=>setShowSecondary(value=>!value)}}
-    continueAction={{testID:'lesson-next',accessibilityLabel:nextTitle,disabled:!canAdvance,feedback:'BUTTON_CONTINUE',onPress:()=>void next()}}
+    continueAction={{testID:'lesson-next',accessibilityLabel:nextTitle,disabled:!canAdvance,feedback:'next',onPress:()=>void next()}}
     overlay={secondaryOverlay}
   /><RewardEffectLayer rewardNonce={rewardNonce}/></View>;
 

@@ -2,14 +2,14 @@ import React,{useMemo,useRef,useState} from 'react';
 import {Animated,Image,Pressable,StyleSheet,Text,View} from 'react-native';
 
 import {lessonShellLayout,type ShellRect} from '../engine/lessonShellLayout';
-import {playExperience,type ExperienceEvent} from '../experience/experience';
+import {emitDomeFeedback,type DomeFeedbackEvent} from '../experience/useDomeFeedback';
 
 const shellArtwork=require('../../assets/lesson-shell/dome-lesson-shell.jpg');
 
 type ShellAction={
   accessibilityLabel:string;
   disabled?:boolean;
-  feedback?:ExperienceEvent;
+  feedback?:DomeFeedbackEvent;
   sound?:boolean;
   onPress:()=>void;
   testID:string;
@@ -38,7 +38,7 @@ function PhysicalHotspot({rect,action,shape='round',accent}:{rect:ShellRect;acti
       accessibilityState={{disabled:Boolean(action.disabled)}}
       testID={action.testID}
       disabled={Boolean(action.disabled)}
-      onPress={()=>{action.onPress();playExperience(action.feedback||'BUTTON_TAP',{sound:action.sound!==false})}}
+      onPress={()=>{action.onPress();emitDomeFeedback(action.feedback||'tap',{sound:action.sound!==false})}}
       onPressIn={()=>{setPressed(true);animate(1)}}
       onPressOut={release}
       style={[styles.hotspot,{borderRadius:shape==='wide'?rect.height/2:Math.min(rect.width,rect.height)/2,backgroundColor:action.disabled?'rgba(235,237,239,.48)':pressed?'rgba(255,255,255,.22)':'rgba(255,255,255,.015)',borderColor:action.disabled?'rgba(120,120,120,.18)':`${accent}33`}]}>

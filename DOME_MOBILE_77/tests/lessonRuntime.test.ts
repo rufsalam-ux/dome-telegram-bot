@@ -517,7 +517,7 @@ test('cold startup is isolated from lesson native modules and cannot wait foreve
   assert.doesNotMatch(app,/from ['"]\.\/src\/store\/AppStore['"]/);assert.doesNotMatch(app,/from ['"]\.\/src\/screens\/RootApp['"]/);assert.match(app,/import \{AppRuntime\} from ['"]\.\/src\/AppRuntime['"]/);
   assert.match(mobileApi,/import \* as SecureStore from ['"]expo-secure-store['"]/);assert.match(mobileApi,/require\(['"]expo-file-system\/legacy['"]\)/);
   assert.doesNotMatch(root,/import\s+\{LessonPlayer\}\s+from/);assert.match(root,/require\(['"]\.\/LessonPlayer['"]\)/);assert.match(root,/import \{AuthScreen\} from ['"]\.\/AuthScreen['"]/);assert.match(root,/withStartupTimeout/);
-  assert.doesNotMatch(ui+experience,/import\s+\{?\s*useAudioPlayer/);assert.match(ui,/playExperience\('BUTTON_TAP'\)/);assert.match(experience,/require\(['"]expo-audio['"]\)/);assert.match(experience,/DOME_EXPERIENCE_HAPTIC_FAILED/);assert.match(experience,/DOME_EXPERIENCE_AUDIO_FAILED/);
+  assert.doesNotMatch(ui+experience,/import\s+\{?\s*useAudioPlayer/);assert.match(ui,/emitDomeFeedback\('tap'\)/);assert.match(experience,/require\(['"]expo-audio['"]\)/);assert.match(experience,/DOME_EXPERIENCE_HAPTIC_FAILED/);assert.match(experience,/DOME_EXPERIENCE_AUDIO_FAILED/);
   assert.doesNotMatch(app+root+mobileApi+ui+experience,/React\.lazy|\bimport\s*\(/);
   assert.match(app,/key=\{runtimeAttempt\}/);assert.match(app,/setRuntimeAttempt\(value=>value\+1\)/);assert.match(app,/fatal-boot-error/);
   assert.match(app,/RETRY_PRESS_RECEIVED/);assert.match(app,/BOOT STAGE:/);assert.match(app,/BOOT ERROR:/);assert.match(app,/RETRY COUNT:/);assert.match(app,/disabled=\{false\}/);assert.match(app,/onPress=\{this\.props\.onRetryPress\}/);
@@ -614,4 +614,10 @@ test('founder lesson validation and Russian editing manual are shipped with the 
   assert.equal(pkg.scripts['validate-lessons'],'node scripts/validate-lessons.mjs');
   for(const marker of ['повторяется','не найден','https://','drag/drop','next_slide'])assert.match(validator,new RegExp(marker));
   for(const heading of ['Как заменить картинку','Как удалить слайд','Как добавить видео','Как изменить реплику ИИ','Как скопировать урок'])assert.match(manual,new RegExp(heading));
+});
+
+test('central interaction feedback maps semantic events without component-specific effects',()=>{
+  const source=readFileSync(new URL('../src/experience/useDomeFeedback.ts',import.meta.url),'utf8');
+  for(const event of ['tap','primary','success','wrong','dragStart','drop','recordStart','recordStop','next'])assert.match(source,new RegExp(`${event}:`));
+  assert.match(source,/dragStart:'DRAG_PICKUP'/);assert.match(source,/recordStart:'RECORDING_START'/);assert.match(source,/next:'BUTTON_CONTINUE'/);
 });
