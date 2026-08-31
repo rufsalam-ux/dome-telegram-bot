@@ -639,3 +639,15 @@ test('quiet UI sounds have one config and recording cues stay outside the record
   assert.ok(lesson.indexOf("playRecordingBoundaryCue('RECORDING_STOP')")>lesson.indexOf("recorder.stop()"));
   assert.match(lesson,/videoPlaying\|\|Boolean\(pendingPreSlide\)/);assert.match(experience,/audioSuppressions\.size>0/);
 });
+
+test('drag texture and haptics are centralized, subtle, and rate limited',()=>{
+  const experience=readFileSync(new URL('../src/experience/experience.ts',import.meta.url),'utf8');
+  const feedback=readFileSync(new URL('../src/experience/useDomeFeedback.ts',import.meta.url),'utf8');
+  const suitcase=readFileSync(new URL('../src/components/DragDropSuitcase.tsx',import.meta.url),'utf8');
+  const tasks=readFileSync(new URL('../src/components/LessonTaskRuntime.tsx',import.meta.url),'utf8');
+  assert.match(experience,/event==='DRAG_TEXTURE'\)return 3/);assert.match(experience,/event==='DROP_INVALID'/);
+  assert.match(feedback,/DRAG_FEEDBACK_THROTTLE_MS=120/);assert.match(feedback,/emitDragTextureFeedback/);
+  assert.match(suitcase,/onPanResponderMove:[^\n]+emitDragTextureFeedback/);
+  assert.match(tasks,/onPanResponderMove:[^\n]+emitDragTextureFeedback/);
+  assert.doesNotMatch(tasks,/Vibration\.vibrate|import \{[^}]*Vibration/);
+});

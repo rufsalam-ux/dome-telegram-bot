@@ -1,7 +1,7 @@
 import React,{useCallback,useMemo,useRef,useState} from 'react';
 import {Animated,Image,PanResponder,Pressable,Text,useWindowDimensions,View} from 'react-native';
 import {movedPixelRect,suitcaseDropAccepted,suitcaseDropOutcome,suitcaseTapFallbackAvailable,updatePackedItems,validPixelRect,type PixelPoint,type PixelRect} from '../engine/lessonRuntime';
-import {emitDomeFeedback} from '../experience/useDomeFeedback';
+import {emitDomeFeedback,emitDragTextureFeedback} from '../experience/useDomeFeedback';
 import {DomePressable} from './DomePressable';
 
 export type SuitcaseItem={id:string;label:string;image:any};
@@ -33,15 +33,15 @@ function Draggable({item,targetRef,packed,onCommit,onDragging,onHover,onFailedDr
     onStartShouldSetPanResponder:()=>true,
     onMoveShouldSetPanResponder:(_event,gesture)=>Math.abs(gesture.dx)+Math.abs(gesture.dy)>2,
     onPanResponderGrant:()=>{position.stopAnimation();position.setValue({x:0,y:0});handlersRef.current.onDragging(true);emitDomeFeedback('dragStart');refreshRects()},
-    onPanResponderMove:(event,gesture)=>{position.setValue({x:gesture.dx,y:gesture.dy});handlersRef.current.onHover(suitcaseDropAccepted(pagePoint(event,gesture),movedPixelRect(itemRectRef.current,gesture.dx,gesture.dy),targetRectRef.current))},
+    onPanResponderMove:(event,gesture)=>{position.setValue({x:gesture.dx,y:gesture.dy});emitDragTextureFeedback();handlersRef.current.onHover(suitcaseDropAccepted(pagePoint(event,gesture),movedPixelRect(itemRectRef.current,gesture.dx,gesture.dy),targetRectRef.current))},
     onPanResponderRelease:(event,gesture)=>{const point=pagePoint(event,gesture);const moved=movedPixelRect(itemRectRef.current,gesture.dx,gesture.dy);void (async()=>{
       // Keep the parent ScrollView frozen until the native target rectangle is
       // captured. Re-enabling it first changes Android window coordinates.
       const target=targetRectRef.current||await measure(targetRef);const inside=suitcaseDropAccepted(point,moved,target);
       const handlers=handlersRef.current;handlers.onHover(false);handlers.onDragging(false);const outcome=suitcaseDropOutcome(handlers.packed,inside);
       if(outcome!=='RETURN'){
-        try{emitDomeFeedback('drop');await handlers.onCommit(item.id,inside)}catch{emitDomeFeedback('wrong');handlers.onFailedDrop(item.id)}
-      }else if(!handlers.packed){emitDomeFeedback('wrong');handlers.onFailedDrop(item.id)}
+        try{emitDomeFeedback('drop');await handlers.onCommit(item.id,inside)}catch{emitDomeFeedback('invalidDrop');handlers.onFailedDrop(item.id)}
+      }else if(!handlers.packed){emitDomeFeedback('invalidDrop');handlers.onFailedDrop(item.id)}
       springBack();
     })()},
     onPanResponderTerminate:()=>{handlersRef.current.onHover(false);handlersRef.current.onDragging(false);springBack()},

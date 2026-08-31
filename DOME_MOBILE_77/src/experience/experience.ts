@@ -3,7 +3,7 @@ import {Vibration} from 'react-native';
 export type ExperienceEvent=
   |'BUTTON_TAP'|'BUTTON_CONTINUE'|'RECORDING_START'|'CORRECT'|'EXCELLENT'|'TRY_AGAIN'|'DRAG_PICKUP'
   |'RECORDING_STOP'
-  |'DROP_CORRECT'|'PUZZLE_SNAP'|'TASK_COMPLETE'|'LESSON_COMPLETE'
+  |'DRAG_TEXTURE'|'DROP_CORRECT'|'DROP_INVALID'|'PUZZLE_SNAP'|'TASK_COMPLETE'|'LESSON_COMPLETE'
   |'CAT_APPEAR'|'CAT_ACTION'|'WORLD_TRANSITION'|'MOVIE_START';
 
 export type ExperiencePreferences={soundEffects:boolean;haptics:boolean;uiSoundVolume:number};
@@ -55,6 +55,8 @@ function vibrationFor(event:ExperienceEvent):number|number[]{
   if(event==='EXCELLENT'||event==='LESSON_COMPLETE')return [0,18,38,24];
   if(event==='TASK_COMPLETE'||event==='MOVIE_START'||event==='WORLD_TRANSITION')return [0,12,32,18];
   if(event==='DROP_CORRECT'||event==='PUZZLE_SNAP')return 18;
+  if(event==='DRAG_TEXTURE')return 3;
+  if(event==='DROP_INVALID')return [0,5,24,5];
   if(event==='TRY_AGAIN')return [0,6,28,6];
   if(event==='DRAG_PICKUP'||event==='BUTTON_TAP'||event==='CAT_ACTION')return 8;
   if(event==='BUTTON_CONTINUE'||event==='RECORDING_START'||event==='RECORDING_STOP')return 9;
@@ -62,9 +64,13 @@ function vibrationFor(event:ExperienceEvent):number|number[]{
 }
 
 function assetFor(event:ExperienceEvent):any{
-  if(event==='TRY_AGAIN'||event==='WORLD_TRANSITION'||event==='RECORDING_STOP')return gentleAsset;
+  if(event==='TRY_AGAIN'||event==='DROP_INVALID'||event==='WORLD_TRANSITION'||event==='RECORDING_STOP')return gentleAsset;
   if(['BUTTON_CONTINUE','CORRECT','EXCELLENT','DROP_CORRECT','PUZZLE_SNAP','TASK_COMPLETE','LESSON_COMPLETE','MOVIE_START'].includes(event))return successAsset;
   return clickAsset;
+}
+
+function soundGainFor(event:ExperienceEvent):number{
+  return event==='DRAG_TEXTURE'?.24:1;
 }
 
 async function playSound(event:ExperienceEvent):Promise<void>{
@@ -72,7 +78,7 @@ async function playSound(event:ExperienceEvent):Promise<void>{
     if(audioSuppressions.size>0)return;
     const asset=assetFor(event);const key=String(asset);let player=players[key];
     if(!player){const {createAudioPlayer}=require('expo-audio');player=createAudioPlayer(asset,{keepAudioSessionActive:true});players[key]=player}
-    player.volume=preferences.uiSoundVolume;await player.seekTo(0);player.play();
+    player.volume=Math.max(0,Math.min(.45,preferences.uiSoundVolume*soundGainFor(event)));await player.seekTo(0);player.play();
   }catch(error){console.warn('DOME_EXPERIENCE_AUDIO_FAILED',{event,error})}
 }
 

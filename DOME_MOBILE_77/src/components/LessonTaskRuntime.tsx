@@ -1,6 +1,7 @@
 import React,{useEffect,useMemo,useRef,useState} from 'react';
-import {Animated,PanResponder,Text,View,Vibration} from 'react-native';
+import {Animated,PanResponder,Text,View} from 'react-native';
 import {DomePressable} from './DomePressable';
+import {emitDomeFeedback,emitDragTextureFeedback} from '../experience/useDomeFeedback';
 
 import {
   canonicalTaskType,expectedTargetId,initialPuzzleOrder,isStableTaskTemplate,
@@ -24,8 +25,8 @@ function DragChip({item,targetRefs,onDrop,onDragging,disabled}:{item:TaskOption;
   const responder=useMemo(()=>PanResponder.create({
     onStartShouldSetPanResponder:()=>!handlers.current.disabled,
     onMoveShouldSetPanResponder:(_event,gesture)=>!handlers.current.disabled&&Math.abs(gesture.dx)+Math.abs(gesture.dy)>3,
-    onPanResponderGrant:()=>{handlers.current.onDragging(true);position.setValue({x:0,y:0})},
-    onPanResponderMove:(_event,gesture)=>position.setValue({x:gesture.dx,y:gesture.dy}),
+    onPanResponderGrant:()=>{handlers.current.onDragging(true);position.setValue({x:0,y:0});emitDomeFeedback('dragStart')},
+    onPanResponderMove:(_event,gesture)=>{position.setValue({x:gesture.dx,y:gesture.dy});emitDragTextureFeedback()},
     onPanResponderRelease:(event)=>{void Promise.all(targetRefs.map(measure)).then(boxes=>{const x=Number(event.nativeEvent.pageX);const y=Number(event.nativeEvent.pageY);handlers.current.onDrop(boxes.findIndex(box=>inside(x,y,box)));handlers.current.onDragging(false);Animated.spring(position,{toValue:{x:0,y:0},useNativeDriver:true}).start()})},
     onPanResponderTerminate:()=>{handlers.current.onDragging(false);Animated.spring(position,{toValue:{x:0,y:0},useNativeDriver:true}).start()},
     onShouldBlockNativeResponder:()=>true,
@@ -37,26 +38,26 @@ function DragDropTask({slide,initial,onResult,onDragging,disabled}:{slide:any;in
   const items=useMemo(()=>taskItems(slide),[slide]);const targets=useMemo(()=>taskTargets(slide),[slide]);
   const[assignments,setAssignments]=useState<Record<string,string>>(()=>initial?.assignments||{});
   const targetRefs=useMemo(()=>targets.map(()=>React.createRef<View>()),[targets.length,slide?.slide_id]);
-  function drop(item:TaskOption,itemIndex:number,targetIndex:number){if(targetIndex<0){Vibration.vibrate([0,8,22,8]);return}const target=targets[targetIndex];if(!target)return;const expected=expectedTargetId(slide,item.id,itemIndex);if(target.id!==expected){Vibration.vibrate([0,8,22,8]);return}const next={...assignments,[item.id]:target.id};setAssignments(next);Vibration.vibrate(12);const completed=items.every((value,index)=>next[value.id]===expectedTargetId(slide,value.id,index));void onResult({completed,correct:completed,assignments:next})}
+  function drop(item:TaskOption,itemIndex:number,targetIndex:number){if(targetIndex<0){emitDomeFeedback('invalidDrop');return}const target=targets[targetIndex];if(!target)return;const expected=expectedTargetId(slide,item.id,itemIndex);if(target.id!==expected){emitDomeFeedback('invalidDrop');return}const next={...assignments,[item.id]:target.id};setAssignments(next);emitDomeFeedback('drop');const completed=items.every((value,index)=>next[value.id]===expectedTargetId(slide,value.id,index));void onResult({completed,correct:completed,assignments:next})}
   return <View testID='template-drag-drop' style={{gap:10}}><Text style={{fontWeight:'800'}}>Перетащи каждый объект на его место</Text><View style={{flexDirection:'row',flexWrap:'wrap',gap:8}}>{targets.map((target,index)=><View key={target.id} ref={targetRefs[index]} collapsable={false} testID={`template-drop-${target.id}`} style={{minHeight:70,minWidth:'45%',flex:1,borderRadius:14,borderWidth:3,borderStyle:'dashed',borderColor:'#6aa6d8',alignItems:'center',justifyContent:'center',padding:8,backgroundColor:'#eef8ff'}}><Text style={{fontWeight:'700',textAlign:'center'}}>{target.label}</Text><Text style={{color:'#087a43'}}>{Object.values(assignments).includes(target.id)?'✓':''}</Text></View>)}</View><View style={{flexDirection:'row',flexWrap:'wrap',gap:8}}>{items.map((item,index)=>assignments[item.id]?null:<DragChip key={item.id} item={item} targetRefs={targetRefs} disabled={disabled} onDragging={onDragging} onDrop={targetIndex=>drop(item,index,targetIndex)}/>)}</View></View>;
 }
 
 function MatchingTask({slide,initial,onResult,disabled}:{slide:any;initial:any;onResult:(value:TemplateTaskResult)=>void;disabled:boolean}){
   const pairs=useMemo(()=>taskPairs(slide),[slide]);const[selected,setSelected]=useState('');const[matched,setMatched]=useState<string[]>(()=>initial?.matched_pairs||[]);
-  function chooseRight(pairId:string){if(!selected)return;if(selected!==pairId){setSelected('');Vibration.vibrate([0,8,22,8]);return}const next=[...new Set([...matched,pairId])];setMatched(next);setSelected('');Vibration.vibrate(12);const completed=next.length===pairs.length;void onResult({completed,correct:completed,matched_pairs:next})}
+  function chooseRight(pairId:string){if(!selected)return;if(selected!==pairId){setSelected('');emitDomeFeedback('wrong');return}const next=[...new Set([...matched,pairId])];setMatched(next);setSelected('');emitDomeFeedback('success');const completed=next.length===pairs.length;void onResult({completed,correct:completed,matched_pairs:next})}
   return <View testID='template-matching' style={{gap:8}}><Text style={{fontWeight:'800'}}>Соедини пары</Text><View style={{flexDirection:'row',gap:8}}><View style={{flex:1,gap:8}}>{pairs.map(pair=><Chip key={pair.id} testID={`match-left-${pair.id}`} value={pair.left} active={selected===pair.id} done={matched.includes(pair.id)} onPress={disabled?undefined:()=>setSelected(pair.id)}/>)}</View><View style={{flex:1,gap:8}}>{pairs.map(pair=><Chip key={pair.id} testID={`match-right-${pair.id}`} value={pair.right} done={matched.includes(pair.id)} onPress={disabled?undefined:()=>chooseRight(pair.id)}/>)}</View></View></View>;
 }
 
 function MemoryTask({slide,initial,onResult,disabled}:{slide:any;initial:any;onResult:(value:TemplateTaskResult)=>void;disabled:boolean}){
   const deck=useMemo(()=>memoryDeck(slide),[slide]);const[open,setOpen]=useState<string[]>([]);const[matched,setMatched]=useState<string[]>(()=>initial?.matched_pairs||[]);
-  function reveal(cardId:string,pairId:string){if(open.includes(cardId)||matched.includes(pairId))return;if(open.length>=2)setOpen([cardId]);else if(open.length===0)setOpen([cardId]);else{const first=deck.find(card=>card.id===open[0]);if(first?.pairId===pairId){const next=[...new Set([...matched,pairId])];setMatched(next);setOpen([]);Vibration.vibrate(12);const completed=next.length===taskPairs(slide).length;void onResult({completed,correct:completed,matched_pairs:next})}else{setOpen([cardId]);Vibration.vibrate([0,8,20,8])}}}
+  function reveal(cardId:string,pairId:string){if(open.includes(cardId)||matched.includes(pairId))return;if(open.length>=2)setOpen([cardId]);else if(open.length===0)setOpen([cardId]);else{const first=deck.find(card=>card.id===open[0]);if(first?.pairId===pairId){const next=[...new Set([...matched,pairId])];setMatched(next);setOpen([]);emitDomeFeedback('success');const completed=next.length===taskPairs(slide).length;void onResult({completed,correct:completed,matched_pairs:next})}else{setOpen([cardId]);emitDomeFeedback('wrong')}}}
   return <View testID='template-memory' style={{gap:8}}><Text style={{fontWeight:'800'}}>Найди одинаковые пары</Text><View style={{flexDirection:'row',flexWrap:'wrap',gap:8}}>{deck.map(card=>{const visible=open.includes(card.id)||matched.includes(card.pairId);return <DomePressable key={card.id} testID={`memory-${card.id}`} accessibilityRole='button' disabled={disabled||matched.includes(card.pairId)} onPress={()=>reveal(card.id,card.pairId)} style={{width:'22%',minWidth:64,aspectRatio:1,borderRadius:14,backgroundColor:visible?'#fff':'#246bfd',borderWidth:3,borderColor:matched.includes(card.pairId)?'#13a864':'#d3dae6'}} contentStyle={{padding:5}}><Text style={{fontWeight:'800',textAlign:'center',color:visible?'#20243a':'#fff'}}>{visible?card.value.label:'?'}</Text></DomePressable>})}</View></View>;
 }
 
 function PuzzleTask({slide,initial,onResult,disabled}:{slide:any;initial:any;onResult:(value:TemplateTaskResult)=>void;disabled:boolean}){
   const count=Math.max(2,Math.min(24,Number(slide?.pieces||slide?.piece_count||6)));const[order,setOrder]=useState<number[]>(()=>Array.isArray(initial?.piece_order)&&initial.piece_order.length===count?initial.piece_order:initialPuzzleOrder(count,String(slide?.slide_id||'puzzle')));const[selected,setSelected]=useState<number|null>(null);
   const columns=count<=6?3:count<=12?4:5;
-  function choose(index:number){if(selected===null){setSelected(index);return}const next=swapPuzzlePieces(order,selected,index);setOrder(next);setSelected(null);const completed=puzzleSolved(next);if(completed)Vibration.vibrate(12);void onResult({completed,correct:completed,piece_order:next})}
+  function choose(index:number){if(selected===null){setSelected(index);return}const next=swapPuzzlePieces(order,selected,index);setOrder(next);setSelected(null);const completed=puzzleSolved(next);if(completed)emitDomeFeedback('success');void onResult({completed,correct:completed,piece_order:next})}
   return <View testID='template-puzzle' style={{gap:8}}><Text style={{fontWeight:'800'}}>Собери части по порядку</Text><View style={{flexDirection:'row',flexWrap:'wrap',gap:5}}>{order.map((piece,index)=><DomePressable key={`${piece}-${index}`} testID={`puzzle-position-${index}`} accessibilityRole='button' disabled={disabled} onPress={()=>choose(index)} style={{width:`${Math.floor(96/columns)}%`,aspectRatio:1,borderRadius:10,borderWidth:3,borderColor:selected===index?'#246bfd':'#d3dae6',backgroundColor:'#eef4ff'}}><Text style={{fontSize:22,fontWeight:'900'}}>{piece+1}</Text></DomePressable>)}</View></View>;
 }
 
