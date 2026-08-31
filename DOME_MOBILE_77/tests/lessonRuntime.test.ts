@@ -189,6 +189,8 @@ test('a saved child take can be played and replaced without discarding the previ
   assert.match(player,/testID='play-current-recording'/);assert.match(player,/testID='replace-current-recording'/);
   assert.match(player,/Старая запись сохранена до успешной замены/);assert.match(player,/Предыдущая запись сохранена/);
   assert.match(player,/response\.retake_replaced/);assert.match(player,/intent==='retake'/);
+  assert.match(player,/AppState\.addEventListener/);assert.match(player,/takePlaybackArmedRef/);assert.match(player,/speechPlaybackArmedRef/);
+  assert.match(player,/confirmMicrophonePermission/);assert.match(player,/getRecordingPermissionsAsync/);assert.match(player,/requestRecordingPermissionsAsync/);
 });
 
 test('transient Android player idle cannot truncate tutor speech mid-sentence',()=>{
