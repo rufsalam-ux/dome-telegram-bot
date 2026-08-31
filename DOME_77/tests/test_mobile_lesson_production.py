@@ -154,7 +154,9 @@ def test_mobile_interactions_cover_selection_suitcase_animals_audio_level_and_mo
     assert "activeCardQuestion" in player and "selected_card_id" in player and "card_question_index" in player
     assert "DragDropSuitcase" in player and "updateSuitcase" in player and "persistInteraction" in player
     drag = (ROOT.parent / "DOME_MOBILE_77/src/components/DragDropSuitcase.tsx").read_text(encoding="utf-8")
-    assert "PanResponder.create" in drag and "onPanResponderMove" in drag and "scrollEnabled={!dragging}" in player
+    assert "PanResponder.create" in drag and "onPanResponderMove" in drag
+    assert "suitcase-all-items-grid" in drag and "suitcaseFitLayout" in drag
+    assert "testID='lesson-visual-fit'" in player and "scrollEnabled={!dragging}" not in player
     assert "collapsable={false}" in drag and "suitcaseDropAccepted" in drag and "Отпусти здесь" in drag
     assert "suitcase-tap-fallback-" in drag and "packed_items:next" in player
     assert "onPress={()=>toggleSuitcase" not in player
