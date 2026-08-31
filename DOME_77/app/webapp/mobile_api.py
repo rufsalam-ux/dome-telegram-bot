@@ -749,7 +749,7 @@ async def voice(request:web.Request)->web.Response:
         # The client prompt is the exact active card/follow-up question and is
         # already in the target language.  Falling back to a slide-level hint
         # here used to explain Q1 while the child was answering Q2/Q3.
-        native_hint_source = goal if str(prompt or '').strip() else str(sl.get('bot_explains_native') or sl.get('question') or '')
+        native_hint_source = str(prompt or '').strip() or str(sl.get('bot_explains_native') or sl.get('question') or '')
         native_hint_source_language = (c.target_language or 'ru') if str(prompt or '').strip() else 'ru'
         example_ru = correction_target if attempt_number > 1 and attempt_number < max_attempts else ''
         target_retry,native_hint,model_answer=await asyncio.gather(
