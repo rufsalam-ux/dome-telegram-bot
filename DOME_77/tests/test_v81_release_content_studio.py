@@ -46,6 +46,16 @@ def test_visual_editor_fields_are_authoritative_for_legacy_runtime_controls():
     assert normalized["continue_policy"] == "after_answer"
     assert normalized["hint_enabled"] is False and normalized["follow_up_policy"] == "optional"
 
+    pedagogical = normalize_authored_step({
+        "id": "ask", "type": "voice_answer", "target_phrase": "What could you ask?",
+        "pedagogical_goal": "Ask Lyosha about his warm clothes", "interaction_type": "ask_question",
+        "hint_example_target": "Why are you wearing a warm hat?", "adaptive_scaffolding": True,
+    }, 2)
+    assert pedagogical["task_goal"] == "Ask Lyosha about his warm clothes"
+    assert pedagogical["pedagogical_intent"] == "ask_person_question"
+    assert pedagogical["model_examples"] == ["Why are you wearing a warm hat?"]
+    assert pedagogical["adaptive"] is True
+
 
 async def _memory_database():
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
@@ -195,9 +205,58 @@ def test_content_studio_ui_has_native_authoring_lifecycle_and_drag_reorder():
         "Восстановить в черновик", "Инструкция для AI", "Фраза на изучаемом языке", "Объяснение на родном языке",
         "after_answer", "drag_drop", "video/mp4",
         "Добавить и сохранить",
+        "+ Новый урок", "+ Задание", "Дублировать", "Отключить", "Цель задания",
+        "Изучаемый язык", "Язык объяснения", "Сначала открытый вопрос", "Адаптация уровня",
+        "Обязательный", "Автоматически продолжить после видео", "openLessonDialog", "toggleLesson",
     ):
         assert marker in source
     assert "вставьте JSON" not in source.lower()
+
+
+@pytest.mark.asyncio
+async def test_exact_owner_editor_flow_publishes_ordered_media_and_pedagogy_then_rolls_back(monkeypatch, tmp_path):
+    storage=tmp_path/"storage";content=tmp_path/"content";(content/"lessons").mkdir(parents=True);(content/"courses").mkdir(parents=True)
+    monkeypatch.setattr(settings,"storage_root",storage);monkeypatch.setattr(settings,"content_root",content)
+    monkeypatch.setattr(settings,"content_studio_token","owner-secret");monkeypatch.setattr(settings,"content_studio_enabled",True)
+    app=web.Application(client_max_size=10*1024*1024);content_studio.register_content_studio_routes(app);client=TestClient(TestServer(app));await client.start_server();headers={"Authorization":"Bearer owner-secret"}
+    try:
+        created=await client.post("/api/studio/lessons",headers=headers,json={"lesson_id":"editor_source","title":"Source","target_language":"en","explanation_language":"ru"});source=(await created.json())["lesson"]
+        source["slides"]=[{"slide_id":"base","order":1,"type":"passive","prompt":"Base","requiredForMovie":False}]
+        assert (await client.put("/api/studio/lessons/editor_source",headers=headers,json={"lesson":source})).status==200
+        assert (await client.post("/api/studio/lessons/editor_source/publish",headers=headers)).status==200
+        duplicated=await client.post("/api/studio/lessons/editor_source/duplicate",headers=headers,json={"lesson_id":"editor_acceptance","title":"Editor acceptance"});lesson=(await duplicated.json())["lesson"]
+
+        png=bytes.fromhex("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415408d763f8ffff3f030008fc02fea7a66a0000000049454e44ae426082")
+        image_form=FormData();image_form.add_field("file",png,filename="slide.png",content_type="image/png");image=(await (await client.post("/api/studio/lessons/editor_acceptance/media",headers=headers,data=image_form)).json())["path"]
+        video_form=FormData();video_form.add_field("file",b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom",filename="before-slide.mp4",content_type="video/mp4");video=(await (await client.post("/api/studio/lessons/editor_acceptance/media",headers=headers,data=video_form)).json())["path"]
+
+        lesson["slides"]=[
+            {"slide_id":"image_step","order":1,"type":"passive","prompt":"Look","image":image,"media_sequence":[{"id":"visual","type":"image","src":image}],"requiredForMovie":False},
+            {"slide_id":"video_step","order":2,"type":"video","src":video,"video_file":video,"autoplay":True,"auto_continue":True,"skippable":True,"replay":True,"media_sequence":[{"id":"video","type":"video","src":video,"autoplay":True,"auto_continue":True}],"requiredForMovie":False},
+            {"slide_id":"ask_step","order":3,"type":"voice_answer","target_phrase":"What could you ask Lyosha?","pedagogical_goal":"Ask Lyosha about his warm clothes","interaction_type":"ask_question","ai_instruction":"Сначала дай ребёнку задать вопрос самостоятельно. Не меняй вопрос на ответ.","hint_example_target":"Why are you wearing a warm hat?","answer_mode":"required_voice","requiredForMovie":False},
+        ]
+        # Owner moves two steps: the MP4 is now before the chosen image slide.
+        lesson["slides"][0],lesson["slides"][1]=lesson["slides"][1],lesson["slides"][0]
+        saved=await client.put("/api/studio/lessons/editor_acceptance",headers=headers,json={"lesson":lesson});assert saved.status==200
+        first_publish=await client.post("/api/studio/lessons/editor_acceptance/publish",headers=headers);assert first_publish.status==200
+        runtime=load_lesson("editor_acceptance")
+        assert [step["slide_id"] for step in runtime["slides"]]==["video_step","image_step","ask_step"]
+        assert runtime["slides"][0]["video_file"]==video and runtime["slides"][0]["auto_continue"] is True
+        ask=runtime["slides"][2];assert ask["tutor_instruction"].startswith("Сначала дай ребёнку") and ask["pedagogical_intent"]=="ask_person_question"
+
+        lesson=(await (await client.get("/api/studio/lessons/editor_acceptance",headers=headers)).json())["lesson"];lesson["title"]="Changed after first publication"
+        assert (await client.put("/api/studio/lessons/editor_acceptance",headers=headers,json={"lesson":lesson})).status==200
+        assert (await client.post("/api/studio/lessons/editor_acceptance/publish",headers=headers)).status==200
+        versions=(await (await client.get("/api/studio/lessons/editor_acceptance",headers=headers)).json())["versions"]
+        version_root=storage/"authored-content/lessons/editor_acceptance/_versions"
+        def restorable_title(version):
+            root=version_root/version;path=root/"draft.json" if (root/"draft.json").is_file() else root/"lesson.json"
+            return json.loads(path.read_text("utf-8"))["title"] if path.is_file() else ""
+        previous=next(version for version in versions if restorable_title(version)=="Editor acceptance")
+        restored=await client.post("/api/studio/lessons/editor_acceptance/rollback",headers=headers,json={"version":previous,"as_draft":True});assert restored.status==200
+        assert (await restored.json())["lesson"]["title"]=="Editor acceptance"
+    finally:
+        await client.close()
 
 
 @pytest.mark.asyncio

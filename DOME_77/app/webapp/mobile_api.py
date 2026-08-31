@@ -709,6 +709,8 @@ async def voice(request:web.Request)->web.Response:
             target_meaning=str(sl.get('target_meaning') or authored_goal),
             model_examples=[str(value) for value in (sl.get('model_examples') or [ph.get('simplified_text') or ph.get('target_text') or '']) if str(value).strip()],
             scaffold_stage='independent_attempt' if attempt_number<=1 else ('semantic_hint' if attempt_number==2 else 'model_support'),
+            open_question_first=sl.get('open_question_first') is not False,
+            examples_allowed=sl.get('examples_allowed') is not False,
         )
     else:
         assessment=SpeechAssessment(status='NO_SPEECH')

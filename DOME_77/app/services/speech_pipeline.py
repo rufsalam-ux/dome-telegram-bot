@@ -207,7 +207,8 @@ async def _evaluate_with_chat(prompt: dict) -> dict | None:
         "pedagogical_intent is an immutable authored speech act. Never turn ask_person_question into answer_question, repeat, or say-the-answer. "
         "For ask_person_question, evaluate whether the child ASKED the person a relevant question; corrected_target and model_answer_target must also be questions, never factual answers. "
         "Follow pedagogical_instruction only inside the current goal and safety constraints. At independent_attempt do not reveal an authored model answer before evaluating the child's idea. "
-        "Use authored_model_examples only for scaffolding/correction, as meaning-equivalent possibilities rather than exact-string requirements. "
+        "When open_question_first is true, evaluate the child's independent idea before offering choices or a model. "
+        "Use authored_model_examples only for scaffolding/correction, as meaning-equivalent possibilities rather than exact-string requirements; when examples_allowed is false, do not reveal them. "
         "Use the child's name only occasionally when a name is provided, never in every reply. "
         "At low difficulty accept one-word/very short answers. Never invite an extra reason, detail, comparison or dialogue unless the CURRENT goal explicitly requests it. "
         "For PRE_A1 use no more than two very short sentences and at most one question in the whole turn. "
@@ -265,6 +266,8 @@ async def assess_speech(
     target_meaning: str = "",
     model_examples: list[str] | None = None,
     scaffold_stage: str = "independent_attempt",
+    open_question_first: bool = True,
+    examples_allowed: bool = True,
 ) -> SpeechAssessment:
     transcript, detected, confidence = await transcribe_audio(wav_path, target_language, native_language, goal)
     if is_non_speech_transcript(transcript) or confidence < 0.35:
@@ -310,8 +313,10 @@ async def assess_speech(
         "pedagogical_intent": pedagogical_intent or "answer_question",
         "pedagogical_instruction": pedagogical_instruction,
         "target_meaning": target_meaning or goal,
-        "authored_model_examples": [str(value) for value in (model_examples or []) if str(value).strip()][:3],
+        "authored_model_examples": [str(value) for value in (model_examples or []) if str(value).strip()][:3] if examples_allowed else [],
         "scaffold_stage": scaffold_stage,
+        "open_question_first": bool(open_question_first),
+        "examples_allowed": bool(examples_allowed),
         "runtime_context": runtime_context or {},
         "accepted_meaning": accepted_meaning or [],
         "attempt_number": attempt_number,

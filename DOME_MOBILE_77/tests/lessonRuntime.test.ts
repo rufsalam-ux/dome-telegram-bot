@@ -533,6 +533,7 @@ test('progressive assistance changes strategy and preserves the authored speech 
   assert.equal(progressiveHint(slide,3).step,'MODEL');assert.match(progressiveHint(slide,3).prompt,/Почему ты тепло одет/);
   assert.equal(progressiveHint(slide,4).step,'RECOVER');assert.match(progressiveHint(slide,4).prompt,/Скажи вместе/);
   assert.equal(manualHintExample(slide,'PRE_A1',.15),'Почему ты тепло одет?');
+  const noExamples={...slide,examples_allowed:false};assert.equal(progressiveHint(noExamples,2).step,'REPHRASE');assert.equal(progressiveHint(noExamples,3).step,'RECOVER');assert.doesNotMatch(progressiveHint(noExamples,3).prompt,/Почему ты тепло одет/);
 });
 
 test('Lyosha task is authored as asking a question and Hint is audible target-language help',()=>{

@@ -90,6 +90,7 @@ def normalize_authored_step(step: dict[str, Any], index: int) -> dict[str, Any]:
     out["type"] = canonical_content_type(raw_kind)
 
     target_phrase = str(out.get("target_phrase") or "").strip()
+    pedagogical_goal = str(out.get("pedagogical_goal") or out.get("task_goal") or "").strip()
     native_explanation = str(out.get("native_explanation") or "").strip()
     ai_instruction = str(out.get("ai_instruction") or "").strip()
     if target_phrase:
@@ -97,12 +98,38 @@ def normalize_authored_step(step: dict[str, Any], index: int) -> dict[str, Any]:
         # legacy fields in sync lets old runtimes consume newly edited lessons
         # without asking the owner to understand either representation.
         out["bot_says_target"] = target_phrase
-        out["task_goal"] = target_phrase
+        out["task_goal"] = pedagogical_goal or target_phrase
+    elif pedagogical_goal:
+        out["task_goal"] = pedagogical_goal
+    if pedagogical_goal:
+        out["target_meaning"] = str(out.get("target_meaning") or pedagogical_goal)
     if native_explanation:
         out["bot_says_native"] = native_explanation
         out["native_hint"] = native_explanation
     if ai_instruction:
         out["tutor_instruction"] = ai_instruction
+
+    interaction_type = str(out.get("interaction_type") or "").strip().lower()
+    if interaction_type:
+        intent_aliases = {
+            "ask_question": "ask_person_question",
+            "answer_question": "answer_question",
+            "describe": "describe",
+            "free_response": "free_response",
+            "choose": "choose",
+            "explain_choice": "explain_choice",
+            "repeat": "repeat",
+            "conversation": "conversation",
+        }
+        out["pedagogical_intent"] = str(out.get("pedagogical_intent") or intent_aliases.get(interaction_type, interaction_type))
+    hint_example = str(out.get("hint_example_target") or "").strip()
+    if hint_example:
+        out["hint_target"] = hint_example
+        examples = [str(value).strip() for value in (out.get("model_examples") or []) if str(value).strip()]
+        if hint_example not in examples:
+            out["model_examples"] = [hint_example, *examples][:3]
+    if "adaptive_scaffolding" in out:
+        out["adaptive"] = bool(out.get("adaptive_scaffolding"))
 
     source = str(out.get("src") or "").strip()
     if source and raw_kind == "video":

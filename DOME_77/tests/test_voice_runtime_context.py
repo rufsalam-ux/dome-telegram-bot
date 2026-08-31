@@ -135,12 +135,26 @@ async def test_published_pedagogical_intent_is_sent_as_an_immutable_speech_act(m
         pedagogical_instruction="Keep this as a question to Lyosha.",
         target_meaning="ask Lyosha about the warm clothes",
         model_examples=["Why are you dressed so warmly?", "Aren't you hot?"],
+        open_question_first=True,
+        examples_allowed=True,
     )
     assert result.status == "ACCEPTED_CORRECT"
     assert captured["pedagogical_intent"] == "ask_person_question"
     assert captured["scaffold_stage"] == "independent_attempt"
     assert captured["authored_model_examples"] == ["Why are you dressed so warmly?", "Aren't you hot?"]
     assert "question to Lyosha" in captured["pedagogical_instruction"]
+
+
+@pytest.mark.asyncio
+async def test_owner_can_disable_examples_without_changing_the_authored_goal(monkeypatch, tmp_path):
+    captured={}
+    monkeypatch.setattr(speech_pipeline.settings,"openai_api_key","test-key")
+    monkeypatch.setattr(speech_pipeline,"transcribe_audio",lambda *_args,**_kwargs:_async(("Why?","en",.9)))
+    async def evaluate(prompt):captured.update(prompt);return {"decision":"CORRECT","semantic_match":.9,"reaction_target":"That is a question."}
+    monkeypatch.setattr(speech_pipeline,"_evaluate_with_chat",evaluate)
+    await speech_pipeline.assess_speech(tmp_path/"voice.wav","en","ru","Ask a question",[],1,model_examples=["Why are you warm?"],open_question_first=True,examples_allowed=False)
+    assert captured["open_question_first"] is True and captured["examples_allowed"] is False
+    assert captured["authored_model_examples"]==[] and captured["goal"]=="Ask a question"
 
 
 def test_target_and_native_text_share_one_semantic_turn():

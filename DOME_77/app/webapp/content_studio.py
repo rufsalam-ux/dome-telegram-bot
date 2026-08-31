@@ -247,8 +247,8 @@ def _summary(lesson_id: str) -> dict[str, Any]:
         "draft": draft is not None,
         "published": live is not None and lifecycle == "PUBLISHED" and bool(live.get("active", True)),
         "publication_status": lifecycle,
-        "source": "persistent" if persistent_live.exists() else "bundled",
-        "slide_count": len(current.get("slides") or []),
+        "source": "persistent" if persistent_live.exists() or draft is not None else "bundled",
+        "slide_count": len(current.get("steps") or current.get("slides") or []),
         "revision": int((live or current).get("revision") or 1),
     }
 
@@ -263,7 +263,7 @@ async def studio_page(_: web.Request) -> web.FileResponse:
 async def studio_static(request: web.Request) -> web.FileResponse:
     _require_enabled()
     filename = request.match_info["filename"]
-    if filename not in {"content_studio.css", "content_studio.js"}:
+    if filename not in {"content_studio.css", "content_studio_extensions.css", "content_studio.js"}:
         raise web.HTTPNotFound()
     response = web.FileResponse(Path(__file__).parent / "static" / filename)
     response.headers["Cache-Control"] = "no-store"
@@ -292,7 +292,7 @@ async def create_lesson(request: web.Request) -> web.Response:
     lesson_id = _lesson_id(data.get("lesson_id"))
     root = persistent_lessons_root() / lesson_id
     if root.exists() or (bundled_lessons_root() / lesson_id).exists():
-        raise web.HTTPConflict(text=json.dumps({"error": "Lesson already exists"}), content_type="application/json")
+        raise web.HTTPConflict(text=json.dumps({"error": "Урок с таким ID уже существует."}, ensure_ascii=False), content_type="application/json")
     lesson = {
         "schema_version": "2.1",
         "engine": "content_v1",
@@ -307,6 +307,7 @@ async def create_lesson(request: web.Request) -> web.Response:
         "max_completed_runs": 2,
         "expires_after_months": 10,
         "target_language": str(data.get("target_language") or "en"),
+        "explanation_language": str(data.get("explanation_language") or "ru"),
         "age_min": max(2, int(data.get("age_min") or 4)),
         "age_max": max(2, int(data.get("age_max") or 10)),
         "difficulty": str(data.get("difficulty") or "PRE_A1"),
@@ -408,7 +409,7 @@ async def duplicate_lesson(request: web.Request) -> web.Response:
     data = await request.json()
     target_id = _lesson_id(data.get("lesson_id"))
     if (persistent_lessons_root() / target_id).exists() or (bundled_lessons_root() / target_id).exists():
-        raise web.HTTPConflict(text=json.dumps({"error": "Target lesson already exists"}), content_type="application/json")
+        raise web.HTTPConflict(text=json.dumps({"error": "Урок-копия с таким ID уже существует."}, ensure_ascii=False), content_type="application/json")
     source = _editable_lesson(source_id)
     if source is None:
         raise web.HTTPNotFound()

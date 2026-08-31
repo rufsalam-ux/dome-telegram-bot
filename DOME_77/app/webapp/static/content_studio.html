@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>DOME Lesson Editor</title>
   <link rel="stylesheet" href="/content-studio/content_studio.css">
+  <link rel="stylesheet" href="/content-studio/content_studio_extensions.css">
 </head>
 <body>
   <header class="topbar">
@@ -23,6 +24,7 @@
   <main id="studioView" class="workspace hidden">
     <aside class="sidebar">
       <div class="sidebar-head"><h2>Уроки</h2><button id="refreshLessons" class="icon" title="Обновить">↻</button></div>
+      <button id="newLessonButton" class="primary full-width">+ Новый урок</button>
       <input id="lessonSearch" type="search" placeholder="Найти урок">
       <div id="lessonList" class="lesson-list"></div>
     </aside>
@@ -39,9 +41,18 @@
           <div class="toolbar">
             <button id="previewButton">▶ Предпросмотр</button>
             <button id="restoreButton">↶ Версия</button>
+            <button id="duplicateLessonButton">Дублировать</button>
+            <button id="toggleLessonButton">Отключить</button>
+            <button id="deleteLessonButton" class="danger">Удалить</button>
             <button id="saveButton" class="primary">Сохранить</button>
             <button id="publishButton" class="success">Опубликовать</button>
           </div>
+        </div>
+
+        <div class="lesson-settings card">
+          <label>Изучаемый язык<input id="lessonTargetLanguage" value="en" placeholder="en"></label>
+          <label>Язык объяснения<input id="lessonExplanationLanguage" value="ru" placeholder="ru"></label>
+          <label>Уровень<select id="lessonDifficulty"><option>PRE_A1</option><option>A1</option><option>A2</option><option>B1</option></select></label>
         </div>
 
         <div id="notice" class="notice hidden" role="status"></div>
@@ -49,12 +60,24 @@
 
         <div class="sequence-head">
           <div><h2>Шаги урока</h2><p class="muted">Идут в приложении именно в этом порядке.</p></div>
-          <div class="toolbar"><button id="addSlideButton" class="primary">+ Добавить слайд</button><button id="addVideoButton">+ Добавить видео</button></div>
+          <div class="toolbar"><button id="addSlideButton" class="primary">+ Добавить слайд</button><button id="addExerciseButton">+ Задание</button><button id="addVideoButton">+ Добавить видео</button></div>
         </div>
         <div id="steps" class="steps"></div>
       </div>
     </section>
   </main>
+
+  <dialog id="lessonDialog">
+    <form method="dialog" class="dialog-card">
+      <header><h2 id="lessonDialogTitle">Новый урок</h2><button value="cancel" class="icon" aria-label="Закрыть">×</button></header>
+      <div>
+        <label>ID урока (латиница, цифры, _ и -)<input id="newLessonId" required placeholder="my_lesson_001"></label>
+        <label>Название урока<input id="newLessonTitle" required placeholder="Мой новый урок"></label>
+        <div class="two"><label>Изучаемый язык<input id="newLessonTargetLanguage" value="en"></label><label>Язык объяснения<input id="newLessonExplanationLanguage" value="ru"></label></div>
+      </div>
+      <footer><button value="cancel">Отмена</button><button id="confirmLessonAction" value="default" class="primary">Создать урок</button></footer>
+    </form>
+  </dialog>
 
   <dialog id="stepDialog">
     <form method="dialog" class="dialog-card">
@@ -73,6 +96,7 @@
         <label class="check"><input id="videoAutoplay" type="checkbox" checked> Запускать автоматически</label>
         <label class="check"><input id="videoSkippable" type="checkbox" checked> Можно пропустить</label>
         <label class="check"><input id="videoReplay" type="checkbox" checked> Показывать кнопку повтора</label>
+        <label class="check"><input id="videoAutoContinue" type="checkbox" checked> Автоматически продолжить после видео</label>
       </div>
       <footer><button value="cancel">Отмена</button><button id="confirmAddStep" value="default" class="primary">Добавить</button></footer>
     </form>
@@ -112,19 +136,28 @@
         </div>
         <div class="fields-column">
           <div class="two"><label>ID шага<input data-field="slide_id"></label><label>Тип задания<select data-field="type"></select></label></div>
+          <label>Цель задания<textarea data-field="pedagogical_goal" rows="2" placeholder="Какое умение ребёнок должен показать"></textarea></label>
+          <label>Ребёнок в этом задании<select data-field="interaction_type"><option value="answer_question">Отвечает на вопрос</option><option value="ask_question">Задаёт вопрос</option><option value="describe">Описывает</option><option value="free_response">Говорит свободно</option><option value="choose">Выбирает</option><option value="explain_choice">Объясняет выбор</option><option value="repeat">Повторяет</option><option value="conversation">Ведёт диалог</option></select></label>
           <label>Инструкция для AI<textarea data-field="ai_instruction" rows="2"></textarea></label>
           <label>Фраза на изучаемом языке<input data-field="target_phrase"></label>
           <label>Объяснение на родном языке<textarea data-field="native_explanation" rows="2"></textarea></label>
+          <label>Пример для подсказки на изучаемом языке<input data-field="hint_example_target" placeholder="Короткая фраза, которую можно сказать"></label>
+          <label>Допустимые примеры — по одному на строке<textarea data-list="model_examples" rows="3"></textarea></label>
           <div class="controls-row">
             <label>Ответ<select data-control="answer"><option value="none">Не нужен</option><option value="optional">Можно ответить</option><option value="required">Обязательный</option></select></label>
             <label>Продолжить<select data-control="continue"><option value="always">Сразу доступно</option><option value="after_action">После действия</option><option value="after_answer">После ответа</option></select></label>
             <label class="check"><input type="checkbox" data-control="hint"> Подсказка</label>
             <label class="check"><input type="checkbox" data-control="follow"> Диалог</label>
           </div>
+          <div class="pedagogy-row">
+            <label class="check"><input type="checkbox" data-config="open_question_first"> Сначала открытый вопрос</label>
+            <label class="check"><input type="checkbox" data-config="examples_allowed"> Можно давать примеры</label>
+            <label class="check"><input type="checkbox" data-config="adaptive_scaffolding"> Адаптация уровня</label>
+          </div>
           <label class="task-options">Варианты ответа — по одному в строке<textarea data-list="options" rows="3"></textarea></label>
           <label class="drag-items">Перетаскиваемые предметы — по одному в строке<textarea data-list="drag_items" rows="3"></textarea></label>
           <label class="drag-items">Цели — по одной в строке<textarea data-list="drag_targets" rows="3"></textarea></label>
-          <div class="video-options hidden"><label class="check"><input type="checkbox" data-video="autoplay"> Автозапуск</label><label class="check"><input type="checkbox" data-video="skippable"> Можно пропустить</label><label class="check"><input type="checkbox" data-video="replay"> Повтор</label></div>
+          <div class="video-options hidden"><label class="check"><input type="checkbox" data-video="autoplay"> Автозапуск</label><label class="check"><input type="checkbox" data-video="skippable"> Можно пропустить</label><label class="check"><input type="checkbox" data-video="replay"> Повтор</label><label class="check"><input type="checkbox" data-video="auto_continue"> Автопродолжение</label></div>
         </div>
       </div>
     </article>

@@ -1,0 +1,9 @@
+.full-width{width:100%;margin-top:12px}
+.editor-head{flex-wrap:wrap}
+.editor-head>.grow{flex:1 0 300px}
+.editor-head>.toolbar{flex:1 1 650px}
+.lesson-settings{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:12px;padding:13px 16px}
+.lesson-settings label{display:grid;gap:6px;font-size:13px;font-weight:700}
+.video-options,.pedagogy-row{display:flex;gap:16px;flex-wrap:wrap;background:#eef7ff;padding:8px;border-radius:10px}
+.pedagogy-row{background:#f7f1ff}
+@media(max-width:600px){.lesson-settings{grid-template-columns:1fr}}

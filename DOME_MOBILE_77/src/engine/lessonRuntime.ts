@@ -152,10 +152,13 @@ export type ProgressiveHint={step:'REPHRASE'|'CHOICES'|'MODEL'|'RECOVER';prompt:
 export function progressiveHint(slide:any,attempt:number):ProgressiveHint{
   const question=String(slide?.task_goal||slide?.question||slide?.bot_says_target||'Попробуй ещё раз.').trim();
   const semanticHint=String(slide?.semantic_hint_target||slide?.semantic_hint||slide?.hint_target||question).trim();
-  const examples=(slide?.target_language_options||slide?.model_examples||[]).map((item:any)=>String(item?.text||item||'').trim()).filter(Boolean).slice(0,3);
+  const examplesAllowed=slide?.examples_allowed!==false;
+  const examples=examplesAllowed?(slide?.target_language_options||slide?.model_examples||[]).map((item:any)=>String(item?.text||item||'').trim()).filter(Boolean).slice(0,3):[];
   const example=String(examples[0]||slide?.simplified_text||slide?.model_answer_target||question).trim();
   const step=Math.max(1,Number(attempt)||1);
   if(step===1)return {step:'REPHRASE',prompt:semanticHint};
+  if(!examplesAllowed&&step===2)return {step:'REPHRASE',prompt:semanticHint};
+  if(!examplesAllowed)return {step:'RECOVER',prompt:'Спасибо за попытку. Продолжим без готового примера.'};
   if(step===2&&examples.length>1)return {step:'CHOICES',prompt:`Можно спросить или сказать так: ${examples.join(' / ')}`};
   if(step<=3)return {step:'MODEL',prompt:`Можно сказать: ${example}`};
   return {step:'RECOVER',prompt:`Скажи вместе со мной: ${example}`};
@@ -172,7 +175,7 @@ export function manualHintExample(slide:any,languageLevel='PRE_A1',difficulty=.1
   if(String(languageLevel).toUpperCase()!=='PRE_A1'&&difficulty>=.45){
     return String(slide?.richer_model_text||slide?.model_answer_richer||options[1]||options[0]||adaptiveModelPhrase(slide,languageLevel,difficulty)).trim();
   }
-  return String(options[0]||adaptiveModelPhrase(slide,languageLevel,difficulty)).trim();
+  return String(slide?.hint_example_target||slide?.hint_target||options[0]||adaptiveModelPhrase(slide,languageLevel,difficulty)).trim();
 }
 
 export function advanceAfterAssessment(response:{accepted?:boolean;advance_allowed?:boolean;needs_retry?:boolean;tutor_turn?:{follow_up_target?:string}}):'FOLLOW_UP'|'COMPLETE'|'RETRY'{
