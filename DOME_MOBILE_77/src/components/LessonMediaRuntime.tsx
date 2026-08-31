@@ -5,6 +5,7 @@ import {useVideoPlayer,VideoView,type VideoSource} from 'expo-video';
 
 import {lessonMediaSource} from '../api/mobile';
 import {mediaPhaseAfterEnd,normalizeMediaSequence,videoStepBehavior,type LessonMediaDescriptor} from '../engine/mediaRuntime';
+import {DomePressable} from './DomePressable';
 
 type ResolvedSource={uri:string;headers?:Record<string,string>;useCaching?:boolean};
 
@@ -20,8 +21,8 @@ function VideoStage({source,poster,item,onEnd,onPlaybackChange}:{source:Resolved
     <VideoView testID={`lesson-media-${item.id}`} player={player} nativeControls contentFit='contain' style={{width:'100%',height:'100%'}}/>
     {!ready&&poster?<Image testID='lesson-video-poster' source={poster} resizeMode='contain' style={{position:'absolute',inset:0,width:'100%',height:'100%',backgroundColor:'#111'}}/>:null}
     {!ready&&!poster?<View pointerEvents='none' style={{position:'absolute',inset:0,alignItems:'center',justifyContent:'center'}}><ActivityIndicator color='#fff'/></View>:null}
-    {ended&&item.replay!==false?<Pressable testID='lesson-video-replay' accessibilityRole='button' onPress={replay} style={{position:'absolute',left:14,bottom:14,minHeight:44,paddingHorizontal:16,borderRadius:22,backgroundColor:'rgba(0,0,0,.68)',alignItems:'center',justifyContent:'center'}}><Text style={{color:'#fff',fontWeight:'800'}}>↻ Ещё раз</Text></Pressable>:null}
-    {item.skippable!==false&&!ended?<Pressable testID='lesson-video-skip' accessibilityRole='button' onPress={()=>{try{player.pause()}catch{}onPlaybackChange?.(false);onEnd('skipped')}} style={{position:'absolute',right:14,top:14,minHeight:44,paddingHorizontal:16,borderRadius:22,backgroundColor:'rgba(0,0,0,.68)',alignItems:'center',justifyContent:'center'}}><Text style={{color:'#fff',fontWeight:'800'}}>Пропустить</Text></Pressable>:null}
+    {ended&&item.replay!==false?<DomePressable testID='lesson-video-replay' accessibilityRole='button' onPress={replay} style={{position:'absolute',left:14,bottom:14,minHeight:44,minWidth:120,borderRadius:22,backgroundColor:'rgba(0,0,0,.68)'}}><Text style={{color:'#fff',fontWeight:'800'}}>↻ Ещё раз</Text></DomePressable>:null}
+    {item.skippable!==false&&!ended?<DomePressable testID='lesson-video-skip' accessibilityRole='button' onPress={()=>{try{player.pause()}catch{}onPlaybackChange?.(false);onEnd('skipped')}} style={{position:'absolute',right:14,top:14,minHeight:44,minWidth:120,borderRadius:22,backgroundColor:'rgba(0,0,0,.68)'}}><Text style={{color:'#fff',fontWeight:'800'}}>Пропустить</Text></DomePressable>:null}
   </View>;
 }
 

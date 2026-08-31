@@ -621,3 +621,12 @@ test('central interaction feedback maps semantic events without component-specif
   for(const event of ['tap','primary','success','wrong','dragStart','drop','recordStart','recordStop','next'])assert.match(source,new RegExp(`${event}:`));
   assert.match(source,/dragStart:'DRAG_PICKUP'/);assert.match(source,/recordStart:'RECORDING_START'/);assert.match(source,/next:'BUTTON_CONTINUE'/);
 });
+
+test('shared native press animation is fast, subtle, and never delays the action',()=>{
+  const pressable=readFileSync(new URL('../src/components/DomePressable.tsx',import.meta.url),'utf8');
+  const ui=readFileSync(new URL('../src/components/Ui.tsx',import.meta.url),'utf8');
+  const shell=readFileSync(new URL('../src/components/LessonPortraitShell.tsx',import.meta.url),'utf8');
+  assert.match(pressable,/outputRange:\[1,\.955\]/);assert.match(pressable,/outputRange:\[0,2\]/);assert.match(pressable,/Animated\.spring/);assert.match(pressable,/duration:72/);
+  assert.match(ui,/DomePressable/);assert.match(shell,/outputRange:\[1,\.945\]/);
+  assert.doesNotMatch(pressable,/await.*onPress|setTimeout.*onPress/);
+});

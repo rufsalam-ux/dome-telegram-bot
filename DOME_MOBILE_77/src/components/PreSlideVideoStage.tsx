@@ -4,6 +4,7 @@ import {useVideoPlayer,VideoView,type VideoSource} from 'expo-video';
 
 import {lessonMediaSource} from '../api/mobile';
 import type {PreSlideVideoDescriptor} from '../engine/preSlideVideo';
+import {DomePressable} from './DomePressable';
 
 type ResolvedSource={uri:string;headers?:Record<string,string>;useCaching?:boolean};
 
@@ -19,6 +20,6 @@ export function PreSlideVideoStage({lessonId,video,onDone}:{lessonId:string;vide
   useEffect(()=>{let active=true;const timer=setTimeout(()=>finish('failed'),18_000);void lessonMediaSource(lessonId,video.uri).then(value=>{if(active){clearTimeout(timer);setSource(value)}}).catch(()=>finish('failed'));return()=>{active=false;clearTimeout(timer)}},[lessonId,video.uri]);
   return <View testID='pre-slide-video-stage' style={{flex:1,backgroundColor:'#000',alignItems:'center',justifyContent:'center'}}>
     {source?<Player source={source} video={video} onDone={finish}/>:<View style={{alignItems:'center',gap:12}}><ActivityIndicator size='large' color='#fff'/><Text style={{color:'#fff',fontWeight:'700'}}>Загружаю короткое видео…</Text></View>}
-    {video.skippable?<Pressable testID='pre-slide-video-skip' accessibilityRole='button' onPress={()=>finish('skipped')} style={{position:'absolute',right:16,top:18,minHeight:44,paddingHorizontal:18,borderRadius:22,backgroundColor:'rgba(0,0,0,.66)',alignItems:'center',justifyContent:'center'}}><Text style={{color:'#fff',fontSize:16,fontWeight:'800'}}>Пропустить</Text></Pressable>:null}
+    {video.skippable?<DomePressable testID='pre-slide-video-skip' accessibilityRole='button' onPress={()=>finish('skipped')} style={{position:'absolute',right:16,top:18,minHeight:44,minWidth:128,borderRadius:22,backgroundColor:'rgba(0,0,0,.66)'}}><Text style={{color:'#fff',fontSize:16,fontWeight:'800'}}>Пропустить</Text></DomePressable>:null}
   </View>;
 }

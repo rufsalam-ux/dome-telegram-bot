@@ -2,6 +2,7 @@ import React,{useCallback,useMemo,useRef,useState} from 'react';
 import {Animated,Image,PanResponder,Pressable,Text,useWindowDimensions,View} from 'react-native';
 import {movedPixelRect,suitcaseDropAccepted,suitcaseDropOutcome,suitcaseTapFallbackAvailable,updatePackedItems,validPixelRect,type PixelPoint,type PixelRect} from '../engine/lessonRuntime';
 import {emitDomeFeedback} from '../experience/useDomeFeedback';
+import {DomePressable} from './DomePressable';
 
 export type SuitcaseItem={id:string;label:string;image:any};
 
@@ -72,7 +73,7 @@ export function DragDropSuitcase({items,packed,onChange,onDragging,disabled=fals
     </View>
     <Text style={{fontSize:13,color:'#526072',textAlign:'center'}}>Перетащи предмет в чемодан. Его можно вынуть обратно.</Text>
     <View style={{minHeight:itemSize*2+4,flexDirection:'row',flexWrap:'wrap',justifyContent:'space-around',alignContent:'center'}}>
-      {available.map(item=><View key={item.id} style={{alignItems:'center'}}><Draggable item={item} targetRef={targetRef} packed={false} onCommit={commit} onDragging={onDragging} onHover={setHover} onFailedDrop={failed} size={itemSize}/>{suitcaseTapFallbackAvailable(failedDrags[item.id]||0)?<Pressable testID={`suitcase-tap-fallback-${item.id}`} accessibilityRole='button' accessibilityLabel={`Положить ${item.label} в чемодан`} onPress={()=>void accessiblePack(item)} style={{paddingHorizontal:6,paddingVertical:3,borderRadius:8,backgroundColor:'#e8f6ee'}}><Text style={{fontSize:11,color:'#087a43',fontWeight:'700'}}>Положить</Text></Pressable>:null}</View>) }
+      {available.map(item=><View key={item.id} style={{alignItems:'center'}}><Draggable item={item} targetRef={targetRef} packed={false} onCommit={commit} onDragging={onDragging} onHover={setHover} onFailedDrop={failed} size={itemSize}/>{suitcaseTapFallbackAvailable(failedDrags[item.id]||0)?<DomePressable testID={`suitcase-tap-fallback-${item.id}`} accessibilityRole='button' accessibilityLabel={`Положить ${item.label} в чемодан`} onPress={()=>void accessiblePack(item)} style={{minHeight:30,paddingHorizontal:6,borderRadius:8,backgroundColor:'#e8f6ee'}}><Text style={{fontSize:11,color:'#087a43',fontWeight:'700'}}>Положить</Text></DomePressable>:null}</View>) }
     </View>
   </View>;
 }
