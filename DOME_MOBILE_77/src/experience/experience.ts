@@ -2,6 +2,7 @@ import {Vibration} from 'react-native';
 
 export type ExperienceEvent=
   |'BUTTON_TAP'|'BUTTON_CONTINUE'|'RECORDING_START'|'CORRECT'|'EXCELLENT'|'TRY_AGAIN'|'DRAG_PICKUP'
+  |'RECORDING_STOP'
   |'DROP_CORRECT'|'PUZZLE_SNAP'|'TASK_COMPLETE'|'LESSON_COMPLETE'
   |'CAT_APPEAR'|'CAT_ACTION'|'WORLD_TRANSITION'|'MOVIE_START';
 
@@ -9,8 +10,12 @@ export type ExperiencePreferences={soundEffects:boolean;haptics:boolean;uiSoundV
 export type ExperienceFeedbackOptions={sound?:boolean;haptics?:boolean};
 
 const STORAGE_KEY='dome_experience_preferences_v1';
-export const DEFAULT_UI_SOUND_VOLUME=.16;
-const DEFAULTS:ExperiencePreferences={soundEffects:true,haptics:true,uiSoundVolume:DEFAULT_UI_SOUND_VOLUME};
+export const UI_SOUND_VOLUME=.16;
+export const UI_SOUNDS_ENABLED=true;
+export const HAPTICS_ENABLED=true;
+export const DEFAULT_UI_SOUND_VOLUME=UI_SOUND_VOLUME;
+export const DOME_AUDIO_CHANNELS={speech:'AI_LESSON_SPEECH',effects:'UI_EFFECTS'} as const;
+const DEFAULTS:ExperiencePreferences={soundEffects:UI_SOUNDS_ENABLED,haptics:HAPTICS_ENABLED,uiSoundVolume:UI_SOUND_VOLUME};
 const clickAsset=require('../../assets/sounds/soft-click.wav');
 const successAsset=require('../../assets/sounds/suitcase-pop.wav');
 const gentleAsset=require('../../assets/sounds/suitcase-return.wav');
@@ -52,12 +57,12 @@ function vibrationFor(event:ExperienceEvent):number|number[]{
   if(event==='DROP_CORRECT'||event==='PUZZLE_SNAP')return 18;
   if(event==='TRY_AGAIN')return [0,6,28,6];
   if(event==='DRAG_PICKUP'||event==='BUTTON_TAP'||event==='CAT_ACTION')return 8;
-  if(event==='BUTTON_CONTINUE'||event==='RECORDING_START')return 9;
+  if(event==='BUTTON_CONTINUE'||event==='RECORDING_START'||event==='RECORDING_STOP')return 9;
   return 12;
 }
 
 function assetFor(event:ExperienceEvent):any{
-  if(event==='TRY_AGAIN'||event==='WORLD_TRANSITION')return gentleAsset;
+  if(event==='TRY_AGAIN'||event==='WORLD_TRANSITION'||event==='RECORDING_STOP')return gentleAsset;
   if(['BUTTON_CONTINUE','CORRECT','EXCELLENT','DROP_CORRECT','PUZZLE_SNAP','TASK_COMPLETE','LESSON_COMPLETE','MOVIE_START'].includes(event))return successAsset;
   return clickAsset;
 }
@@ -73,6 +78,15 @@ async function playSound(event:ExperienceEvent):Promise<void>{
 
 export function setExperienceAudioSuppressed(reason:string,suppressed:boolean):void{
   if(suppressed)audioSuppressions.add(reason);else audioSuppressions.delete(reason);
+}
+
+export async function playRecordingBoundaryCue(event:'RECORDING_START'|'RECORDING_STOP'):Promise<void>{
+  if(!loaded)await loadExperiencePreferences();
+  if(!preferences.soundEffects||audioSuppressions.size>0)return;
+  await playSound(event);
+  // The bundled cue is deliberately tiny. Let it leave the output buffer
+  // before a recording session starts so it cannot enter the child's take.
+  await new Promise(resolve=>setTimeout(resolve,110));
 }
 
 export function playExperience(event:ExperienceEvent,options:ExperienceFeedbackOptions={}):void{

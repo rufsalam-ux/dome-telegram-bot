@@ -630,3 +630,12 @@ test('shared native press animation is fast, subtle, and never delays the action
   assert.match(ui,/DomePressable/);assert.match(shell,/outputRange:\[1,\.945\]/);
   assert.doesNotMatch(pressable,/await.*onPress|setTimeout.*onPress/);
 });
+
+test('quiet UI sounds have one config and recording cues stay outside the recorded take',()=>{
+  const experience=readFileSync(new URL('../src/experience/experience.ts',import.meta.url),'utf8');
+  const lesson=readFileSync(new URL('../src/screens/LessonPlayer.tsx',import.meta.url),'utf8');
+  for(const constant of ['UI_SOUND_VOLUME','UI_SOUNDS_ENABLED','HAPTICS_ENABLED','DOME_AUDIO_CHANNELS'])assert.match(experience,new RegExp(`export const ${constant}`));
+  assert.ok(lesson.indexOf("playRecordingBoundaryCue('RECORDING_START')")<lesson.indexOf('recorder.record()'));
+  assert.ok(lesson.indexOf("playRecordingBoundaryCue('RECORDING_STOP')")>lesson.indexOf("recorder.stop()"));
+  assert.match(lesson,/videoPlaying\|\|Boolean\(pendingPreSlide\)/);assert.match(experience,/audioSuppressions\.size>0/);
+});

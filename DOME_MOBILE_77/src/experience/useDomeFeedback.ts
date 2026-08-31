@@ -12,7 +12,7 @@ export const DOME_FEEDBACK_EVENT_MAP:Record<DomeFeedbackEvent,ExperienceEvent>={
   dragStart:'DRAG_PICKUP',
   drop:'DROP_CORRECT',
   recordStart:'RECORDING_START',
-  recordStop:'BUTTON_TAP',
+  recordStop:'RECORDING_STOP',
   next:'BUTTON_CONTINUE',
 };
 
