@@ -159,6 +159,19 @@ export function childSafeRuntimeMessage(operation:ChildSafeOperation):string{
   return 'Урок пока не открылся. Проверь интернет и попробуй ещё раз.';
 }
 
+export type LessonBootstrapStage='LESSON_SCHEMA'|'SESSION_START'|'VERSION_CHECK';
+
+export function lessonBootstrapErrorCode(error:any,stage:LessonBootstrapStage):string{
+  const status=Number(error?.status||0);
+  const backend=String(error?.code||'').replace(/[^A-Z0-9_]/gi,'_').toUpperCase().slice(0,60);
+  if(status>0)return `${stage}_HTTP_${status}${backend?`_${backend}`:''}`;
+  const message=String(error?.message||'');
+  if(message==='LESSON_VERSION_MISMATCH')return 'VERSION_CHECK_LESSON_VERSION_MISMATCH';
+  if(/timeout/i.test(message))return `${stage}_TIMEOUT`;
+  if(/network|fetch/i.test(message))return `${stage}_NETWORK`;
+  return `${stage}_RUNTIME`;
+}
+
 export function recoveryStageAfterFailure(slide:any,hasSelection=false):RuntimeStage{
   if(requiresSelection(slide)&&!hasSelection)return 'WAITING_ACTION';
   if(requiresVoice(slide))return 'WAITING_VOICE';

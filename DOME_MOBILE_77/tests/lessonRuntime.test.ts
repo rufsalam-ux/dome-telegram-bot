@@ -14,6 +14,7 @@ import {
   cardVoiceKey,
   childIdeaPrompt,
   childSafeRuntimeMessage,
+  lessonBootstrapErrorCode,
   completeHelperLanguage,
   computeHeroScale,
   droppedObjectTutorPrompt,
@@ -91,6 +92,12 @@ test('portrait lesson shell preserves the supplied artwork and central safe pane
     assert.ok(shell.content.width>width*.65&&shell.content.height>height*.27,`${width}x${height} central panel is too small`);
     assert.equal(shellContentIsClearOfControls(width,height),true);
   }
+});
+
+test('lesson bootstrap diagnostics preserve stage and backend status without hiding the failure',()=>{
+  assert.equal(lessonBootstrapErrorCode({status:500},'SESSION_START'),'SESSION_START_HTTP_500');
+  assert.equal(lessonBootstrapErrorCode({status:503,code:'SERVER_STORAGE_PRESSURE'},'SESSION_START'),'SESSION_START_HTTP_503_SERVER_STORAGE_PRESSURE');
+  assert.equal(lessonBootstrapErrorCode(new Error('LESSON_VERSION_MISMATCH'),'VERSION_CHECK'),'VERSION_CHECK_LESSON_VERSION_MISMATCH');
 });
 
 test('portrait shell motion is local, touch transparent, and reduced-motion aware',()=>{

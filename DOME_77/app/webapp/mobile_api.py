@@ -45,6 +45,7 @@ from app.services.subscription_provider import (
     restore_provider_current_plan,
     schedule_provider_plan_change,
 )
+from app.services.storage_pressure import ensure_runtime_storage_capacity
 
 log=logging.getLogger('dome.mobile_api')
 MOBILE_LANGUAGES={'ru','en','es','de','fr','it','pt','tr','ar','zh'}
@@ -553,7 +554,12 @@ async def hero_geometry_confirm(request:web.Request)->web.Response:
 async def session_start(request:web.Request)->web.Response:
     p=await _parent(request);data=await request.json();cid=int(data.get('child_id'));lid=str(data.get('lesson_id') or 'demo_001');c=await _owned_child(p.id,cid);lesson_data=_load_mobile_lesson(lid);course=str(lesson_data.get('course_id') or 'conversation')
     version=lesson_content_version(lesson_data);step_ids=runtime_step_ids(lesson_data)
+    capacity=await asyncio.to_thread(ensure_runtime_storage_capacity)
+    log.info('MOBILE_LESSON_OPEN_PRECHECK parent=%s child=%s lesson=%s course=%s published=%s version=%s steps=%s storage_before=%s storage_after=%s storage_ready=%s',p.id,cid,lid,course,lesson_data.get('publication_status'),version,len(step_ids),capacity['before'],capacity['after'],capacity['ready'])
+    if not capacity['ready']:
+        raise web.HTTPServiceUnavailable(text=json.dumps({'error':'Сервер временно освобождает место. Попробуйте открыть урок ещё раз.','code':'SERVER_STORAGE_PRESSURE'}),content_type='application/json')
     ok,reason,ent=await can_start(cid,lid,course)
+    log.info('MOBILE_LESSON_OPEN_ACCESS parent=%s child=%s lesson=%s course=%s allowed=%s reason=%s entitlement=%s completed_runs=%s max_completed_runs=%s',p.id,cid,lid,course,ok,reason,getattr(ent,'id',None),getattr(ent,'completed_runs',None),getattr(ent,'max_completed_runs',None))
     if not ok: raise web.HTTPForbidden(text=json.dumps({'error':f'Урок недоступен: {reason}'}),content_type='application/json')
     reset_reason=None
     async with SessionLocal() as db:

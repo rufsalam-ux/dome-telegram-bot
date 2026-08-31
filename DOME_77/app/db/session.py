@@ -2,6 +2,7 @@ from sqlalchemy import inspect, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app.core.config import settings
 from app.db.models import Base
+from app.services.storage_pressure import ensure_runtime_storage_capacity
 
 engine = create_async_engine(settings.database_url)
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False)
@@ -93,6 +94,10 @@ async def _backfill_subscription_price_versions(conn) -> None:
 
 
 async def init_db() -> None:
+    # Railway may restart while its persistent volume is full. Reclaim only
+    # regenerable caches before SQLite needs journal/WAL space; durable child,
+    # lesson, recording and movie data are never cleanup candidates.
+    ensure_runtime_storage_capacity()
     settings.storage_root.mkdir(parents=True, exist_ok=True)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
