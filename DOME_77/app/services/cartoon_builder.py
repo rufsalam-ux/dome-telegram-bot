@@ -390,6 +390,26 @@ def _visible_character_asset(source: Path, metadata: dict | None, output: Path) 
     return output,visible.width/max(visible.height,1)
 
 
+def _scene_animation_choice(render_strategy: str, capability_mode: str, clip: Path | None, error: Exception | None = None) -> tuple[str, str | None]:
+    """Select the richest scene animation that is known to be safe.
+
+    A missing facial/limb clip downgrades only that scene to the whole-body
+    compositor. The final static compositor remains available even when all
+    richer animation providers fail.
+    """
+
+    if render_strategy == "static":
+        return "CURRENT_STATIC_COMPOSITE", "static_renderer_requested"
+    if render_strategy == "safe":
+        return "SIMPLE_CHARACTER_MOTION", "safe_renderer_requested"
+    if clip is not None:
+        return capability_mode, None
+    if capability_mode == "STATIC_COMPOSITE":
+        return "CURRENT_STATIC_COMPOSITE", "avatar_has_no_safe_motion_capability"
+    reason = f"animation_provider_failed:{type(error).__name__}" if error is not None else "animation_clip_unavailable"
+    return "SIMPLE_CHARACTER_MOTION", reason
+
+
 def _desired_facing(segment: dict) -> str:
     explicit=str(segment.get("hero_facing") or "").upper()
     if explicit in {"LEFT","RIGHT","FRONT"}:return explicit
@@ -816,20 +836,37 @@ def build_timeline_cartoon(
             log.info("MOVIE_AVATAR_SCENE scene_id=%s asset_id=%s metadata_version=%s requested_facing=%s resolved_facing=%s source_facing=%s orientation_source=%s scale=%.5f x=%s y=%s ground_anchor=%s fallback=%s flip=%s displayed=%s",segment.get("phrase_id"),character_png.name,(character_metadata or {}).get("metadataVersion") or (character_metadata or {}).get("analysisVersion") or "legacy",desired,resolved_facing,source_facing,orientation_source,float(segment.get("height",0))/max(1,frame_height),segment.get("x",segment.get("x_start")),segment.get("y"),(character_metadata or {}).get("groundAnchor") or (character_metadata or {}).get("feetAnchor"),desired!=resolved_facing,applied_flip,displayed)
         _publish_progress(progress_callback, "RENDERING_AVATAR_MOTION", 42, render_strategy)
         ai_clips: list[Path | None] = []
+        scene_animation_modes: list[str] = []
         for index, segment in enumerate(timeline):
             if render_strategy != "rich":
                 ai_clips.append(None)
+                selected,reason=_scene_animation_choice(render_strategy,_animation_analysis["mode"],None)
+                scene_animation_modes.append(selected)
+                log.info("MOVIE_AVATAR_ANIMATION_SCENE scene_id=%s attempted=%s selected=%s fallback_reason=%s strategy=%s",segment.get("phrase_id"),_animation_analysis["mode"],selected,reason,render_strategy)
+                continue
+            if _animation_analysis["mode"] == "STATIC_COMPOSITE":
+                ai_clips.append(None)
+                selected,reason=_scene_animation_choice(render_strategy,_animation_analysis["mode"],None)
+                scene_animation_modes.append(selected)
+                log.info("MOVIE_AVATAR_ANIMATION_SCENE scene_id=%s attempted=%s selected=%s fallback_reason=%s strategy=%s",segment.get("phrase_id"),_animation_analysis["mode"],selected,reason,render_strategy)
                 continue
             try:
                 phrase_audio = Path(audio_by_phrase[segment["phrase_id"]]) if audio_by_phrase.get(segment["phrase_id"]) else None
                 animation_segment = {**segment, "resolved_facing": _resolved_facing(segment,source_facing).lower()}
-                ai_clips.append(prepare_character_animation(
+                clip=prepare_character_animation(
                     character_png, animation_segment, work / "ai-animation", phrase_audio,
                     metadata=character_metadata, allow_generate=allow_generate,
-                ))
+                )
+                ai_clips.append(clip)
+                selected,reason=_scene_animation_choice(render_strategy,_animation_analysis["mode"],clip)
+                scene_animation_modes.append(selected)
+                log.info("MOVIE_AVATAR_ANIMATION_SCENE scene_id=%s attempted=%s selected=%s fallback_reason=%s strategy=%s",segment.get("phrase_id"),_animation_analysis["mode"],selected,reason,render_strategy)
             except Exception as exc:
                 log.warning("AI animation fallback for scene %s: %s", index, exc)
                 ai_clips.append(None)
+                selected,reason=_scene_animation_choice(render_strategy,_animation_analysis["mode"],None,exc)
+                scene_animation_modes.append(selected)
+                log.info("MOVIE_AVATAR_ANIMATION_SCENE scene_id=%s attempted=%s selected=%s fallback_reason=%s strategy=%s",segment.get("phrase_id"),_animation_analysis["mode"],selected,reason,render_strategy)
 
         _publish_progress(progress_callback, "PREPARING_AUDIO", 50, render_strategy)
         audio_segments=[]
@@ -892,7 +929,7 @@ def build_timeline_cartoon(
                 else:
                     profile = animation_profile(primary_motion_action(segment), settings.storage_root / "animation-library")
                     pre = "hflip," if _should_hflip(segment,source_facing,bool(profile.get("mirror",False))) else ""
-                    rotation = 0.0 if render_strategy == "static" else float(profile.get("rotation", 0.012))
+                    rotation = 0.0 if scene_animation_modes[scene_index] == "CURRENT_STATIC_COMPOSITE" else float(profile.get("rotation", 0.012))
                     filters.append(
                         f"[{source}:v]setpts=PTS-STARTPTS,{pre}scale=-1:{height},"
                         f"rotate='{rotation}*sin(3.2*(t-{start:.3f}))':ow=rotw(iw):oh=roth(ih):c=none,"
@@ -900,7 +937,7 @@ def build_timeline_cartoon(
                         f"fade=t=out:st={max(start, end - 0.18):.3f}:d=0.18:alpha=1{hero_label}"
                     )
                 out = f"[overlay{local_index}]"
-                y_expression = str(float(segment.get("y", 245))) if render_strategy == "static" else _y_expression(segment)
+                y_expression = str(float(segment.get("y", 245))) if scene_animation_modes[scene_index] == "CURRENT_STATIC_COMPOSITE" else _y_expression(segment)
                 filters.append(
                     f"{previous}{hero_label}overlay=x='{_x_expression(segment)}':y='{y_expression}':"
                     f"enable='between(t,{start:.3f},{end:.3f})':eof_action=pass{out}"

@@ -40,7 +40,7 @@
     "height_norm": 0.44,
     "floor_y_norm": 0.94,
     "animation": "stand_front_talk",
-    "x_norm": 0.16,
+    "x_norm": 0.24,
     "max_width_norm": 0.50,
     "protected_boxes_norm": [[0.38, 0.17, 0.28, 0.78]],
     "placement_side": "left",

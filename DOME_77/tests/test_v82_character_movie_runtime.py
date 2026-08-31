@@ -10,6 +10,7 @@ from app.services.cartoon_builder import (
     _desired_facing,
     _resolved_facing,
     _resolve_normalized_timeline,
+    _scene_animation_choice,
     _scheduled_voice_duration,
     _should_hflip,
     _visible_character_asset,
@@ -273,7 +274,7 @@ def test_lyosha_mila_parrot_and_required_movie_contract_remain_authored():
     assert timeline["lesha_clothes"]["placement_side"] == "left"
     assert timeline["lesha_clothes"]["height_norm"] >= .44
     assert timeline["lesha_clothes"]["x_end_norm"] == pytest.approx(.38)
-    assert timeline["mila_gift"]["x_norm"] == pytest.approx(.16)
+    assert timeline["mila_gift"]["x_norm"] == pytest.approx(.24)
     assert timeline["mila_gift"]["placement_side"] == "left"
     assert timeline["mila_gift"]["height_norm"] >= .42
     for phrase in ("mila_gift","take_trip","polar_bear","parrot","giraffe","penguin","zebra"):
@@ -300,3 +301,27 @@ def test_animation_mode_is_capability_based_and_always_keeps_static_fallback():
     assert analyze_hero_for_animation(simple)["mode"]=="SIMPLE_CHARACTER_MOTION"
     assert analyze_hero_for_animation(None)["mode"]=="STATIC_COMPOSITE"
     assert all(analyze_hero_for_animation(value).get("static_fallback") for value in (full,partial,simple,None))
+
+
+def test_each_movie_scene_selects_the_richest_safe_animation_and_keeps_static_fallback(tmp_path: Path):
+    clip=tmp_path/"talk.webm";clip.write_bytes(b"clip")
+    assert _scene_animation_choice("rich","FULL_RIG",clip)==("FULL_RIG",None)
+    assert _scene_animation_choice("rich","PARTIAL_RIG",None)==("SIMPLE_CHARACTER_MOTION","animation_clip_unavailable")
+    assert _scene_animation_choice("rich","STATIC_COMPOSITE",None)==("CURRENT_STATIC_COMPOSITE","avatar_has_no_safe_motion_capability")
+    assert _scene_animation_choice("safe","FULL_RIG",None)==("SIMPLE_CHARACTER_MOTION","safe_renderer_requested")
+    assert _scene_animation_choice("static","FULL_RIG",None)==("CURRENT_STATIC_COMPOSITE","static_renderer_requested")
+    source=(ROOT/"app/services/cartoon_builder.py").read_text("utf-8")
+    assert "MOVIE_AVATAR_ANIMATION_SCENE" in source
+    for field in ("attempted=%s","selected=%s","fallback_reason=%s","strategy=%s"):
+        assert field in source
+
+
+def test_mila_scene_moves_right_when_safe_but_collision_fallback_protects_mila():
+    source=json.loads((LESSON_DIR/"timeline.json").read_text("utf-8"))
+    mila=next(item for item in source if item["phrase_id"]=="mila_gift")
+    normal=_resolve_normalized_timeline([mila],1920,1080,character_aspect=.6,ground_ratio=1)[0]
+    wide=_resolve_normalized_timeline([mila],1920,1080,character_aspect=2.0,ground_ratio=.92)[0]
+    assert normal["x"]>round(.16*1920)
+    for placed,aspect in ((normal,.6),(wide,2.0)):
+        hero_right=(placed["x"]+round(placed["height"]*aspect))/1920
+        assert hero_right<.38
