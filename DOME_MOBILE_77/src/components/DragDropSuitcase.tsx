@@ -1,6 +1,6 @@
 import React,{useCallback,useMemo,useRef,useState} from 'react';
-import {Animated,Image,PanResponder,Pressable,Text,useWindowDimensions,View} from 'react-native';
-import {movedPixelRect,suitcaseDropAccepted,suitcaseDropOutcome,suitcaseTapFallbackAvailable,updatePackedItems,validPixelRect,type PixelPoint,type PixelRect} from '../engine/lessonRuntime';
+import {Animated,Image,PanResponder,Pressable,Text,View} from 'react-native';
+import {movedPixelRect,suitcaseDropAccepted,suitcaseDropOutcome,suitcaseFitLayout,suitcaseTapFallbackAvailable,updatePackedItems,validPixelRect,type PixelPoint,type PixelRect} from '../engine/lessonRuntime';
 import {emitDomeFeedback,emitDragTextureFeedback} from '../experience/useDomeFeedback';
 import {DomePressable} from './DomePressable';
 
@@ -52,8 +52,8 @@ function Draggable({item,targetRef,packed,onCommit,onDragging,onHover,onFailedDr
   </Animated.View>;
 }
 
-export function DragDropSuitcase({items,packed,onChange,onDragging,disabled=false}:{items:SuitcaseItem[];packed:string[];onChange:(next:string[])=>void|Promise<void>;onDragging:(value:boolean)=>void;disabled?:boolean}){
-  const targetRef=useRef<NativeView>(null);const {width}=useWindowDimensions();const itemSize=width<390?48:58;
+export function DragDropSuitcase({items,packed,onChange,onDragging,maxHeight=188,disabled=false}:{items:SuitcaseItem[];packed:string[];onChange:(next:string[])=>void|Promise<void>;onDragging:(value:boolean)=>void;maxHeight?:number;disabled?:boolean}){
+  const targetRef=useRef<NativeView>(null);const[containerWidth,setContainerWidth]=useState(260);const fit=suitcaseFitLayout(containerWidth,maxHeight,items.length);const itemSize=fit.itemSize;
   const[hover,setHover]=useState(false);const[failedDrags,setFailedDrags]=useState<Record<string,number>>({});
   const[committing,setCommitting]=useState(false);const committingRef=useRef(false);
   const available=items.filter(item=>!packed.includes(item.id));const selected=items.filter(item=>packed.includes(item.id));
@@ -63,17 +63,17 @@ export function DragDropSuitcase({items,packed,onChange,onDragging,disabled=fals
   },[disabled,onChange,packed]);
   const failed=useCallback((id:string)=>{setFailedDrags(current=>({...current,[id]:(current[id]||0)+1}))},[]);
   async function accessiblePack(item:SuitcaseItem){if(disabled||!suitcaseTapFallbackAvailable(failedDrags[item.id]||0))return;emitDomeFeedback('drop');await commit(item.id,true)}
-  return <View pointerEvents={disabled||committing?'none':'auto'} style={{gap:6}}>
-    <View ref={targetRef} collapsable={false} testID='suitcase-drop-zone' accessibilityLabel='Чемодан — зона для предметов' style={{height:width<390?116:138,borderWidth:hover?5:3,borderStyle:'dashed',borderColor:hover?'#13a864':'#6aa6d8',borderRadius:18,overflow:'hidden',alignItems:'center',justifyContent:'center',backgroundColor:hover?'#dff8e9':'#eef8ff'}}>
+  return <View testID='suitcase-fit-container' onLayout={event=>{const width=event.nativeEvent.layout.width;if(width>0&&Math.abs(width-containerWidth)>.5)setContainerWidth(width)}} pointerEvents={disabled||committing?'none':'auto'} style={{height:Math.min(maxHeight,fit.totalHeight),gap:3,overflow:'hidden'}}>
+    <View ref={targetRef} collapsable={false} testID='suitcase-drop-zone' accessibilityLabel='Чемодан — зона для предметов' style={{height:fit.targetHeight,borderWidth:hover?5:3,borderStyle:'dashed',borderColor:hover?'#13a864':'#6aa6d8',borderRadius:16,overflow:'hidden',alignItems:'center',justifyContent:'center',backgroundColor:hover?'#dff8e9':'#eef8ff'}}>
       <Image source={require('../../assets/lesson/demo_001/suitcase-authored/suitcase-target.png')} style={{position:'absolute',width:'96%',height:'96%',resizeMode:'contain'}}/>
       <View pointerEvents='box-none' style={{position:'absolute',left:'12%',right:'12%',bottom:6,flexDirection:'row',flexWrap:'wrap',justifyContent:'center'}}>
-        {selected.map(item=><Draggable key={`packed-${item.id}`} item={item} targetRef={targetRef} packed onCommit={commit} onDragging={onDragging} onHover={setHover} onFailedDrop={failed} size={Math.max(38,itemSize-10)}/>) }
+        {selected.map(item=><Draggable key={`packed-${item.id}`} item={item} targetRef={targetRef} packed onCommit={commit} onDragging={onDragging} onHover={setHover} onFailedDrop={failed} size={fit.packedItemSize}/>) }
       </View>
       {hover?<Text pointerEvents='none' style={{position:'absolute',top:4,right:10,fontWeight:'800',color:'#087a43'}}>Отпусти здесь ✓</Text>:null}
     </View>
-    <Text style={{fontSize:13,color:'#526072',textAlign:'center'}}>Перетащи предмет в чемодан. Его можно вынуть обратно.</Text>
-    <View style={{minHeight:itemSize*2+4,flexDirection:'row',flexWrap:'wrap',justifyContent:'space-around',alignContent:'center'}}>
-      {available.map(item=><View key={item.id} style={{alignItems:'center'}}><Draggable item={item} targetRef={targetRef} packed={false} onCommit={commit} onDragging={onDragging} onHover={setHover} onFailedDrop={failed} size={itemSize}/>{suitcaseTapFallbackAvailable(failedDrags[item.id]||0)?<DomePressable testID={`suitcase-tap-fallback-${item.id}`} accessibilityRole='button' accessibilityLabel={`Положить ${item.label} в чемодан`} onPress={()=>void accessiblePack(item)} style={{minHeight:30,paddingHorizontal:6,borderRadius:8,backgroundColor:'#e8f6ee'}}><Text style={{fontSize:11,color:'#087a43',fontWeight:'700'}}>Положить</Text></DomePressable>:null}</View>) }
+    <Text numberOfLines={1} style={{height:22,fontSize:11,color:'#526072',textAlign:'center'}}>Перетащи предмет в чемодан · можно вынуть обратно</Text>
+    <View testID='suitcase-all-items-grid' style={{height:fit.itemsHeight,flexDirection:'row',flexWrap:'wrap',justifyContent:'center',alignContent:'center'}}>
+      {available.map(item=><View key={item.id} style={{width:containerWidth/fit.columns,height:itemSize+2,alignItems:'center',justifyContent:'center'}}><Draggable item={item} targetRef={targetRef} packed={false} onCommit={commit} onDragging={onDragging} onHover={setHover} onFailedDrop={failed} size={itemSize}/>{suitcaseTapFallbackAvailable(failedDrags[item.id]||0)?<DomePressable testID={`suitcase-tap-fallback-${item.id}`} accessibilityRole='button' accessibilityLabel={`Положить ${item.label} в чемодан`} onPress={()=>void accessiblePack(item)} style={{position:'absolute',inset:0,borderRadius:8,backgroundColor:'rgba(232,246,238,.92)'}}><Text style={{fontSize:10,color:'#087a43',fontWeight:'700'}}>Положить</Text></DomePressable>:null}</View>) }
     </View>
   </View>;
 }

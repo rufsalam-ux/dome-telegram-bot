@@ -8,7 +8,7 @@
   "hero_layout": {
     "anchors": {
       "left_of_lyosha": [0.02, 0.38, 0.39, 0.44],
-      "left_of_mila": [0.04, 0.49, 0.50, 0.46],
+      "left_of_mila": [0.07, 0.49, 0.50, 0.46],
       "left": [0.02, 0.30, 0.44, 0.66],
       "right": [0.54, 0.30, 0.44, 0.66],
       "bottom_left": [0.02, 0.46, 0.44, 0.50],
@@ -487,7 +487,7 @@
       "hero_placement": "left_of_mila",
       "hero_anchor": "left_of_mila",
       "hero_fallback_anchors": [],
-      "hero_box": [0.04, 0.49, 0.50, 0.46],
+      "hero_box": [0.07, 0.49, 0.50, 0.46],
       "hero_facing": "right",
       "hero_target_visual_height_ratio": 0.44,
       "hero_min_visual_height_ratio": 0.36,

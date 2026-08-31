@@ -43,6 +43,7 @@ import {
   stageAfterTutorSpeech,
   suitcaseDropOutcome,
   suitcaseDropAccepted,
+  suitcaseFitLayout,
   suitcaseTapFallbackAvailable,
   tutorAudioTransition,
   tutorAudioErrorCode,
@@ -80,12 +81,12 @@ const cards={slide_id:'slide_09',type:'card_selector',answer_mode:'none',card_qu
 const mila={slide_id:'slide_20',answer_mode:'required_voice',interaction_kind:'gift_selector',selection_options:[{id:'book'}],hero_placement:'left_of_mila',hero_box:[0.04,0.35,0.24,0.61]};
 
 test('portrait lesson shell preserves the supplied artwork and central safe panel',()=>{
-  const asset=readFileSync(new URL('../assets/lesson-shell/dome-lesson-shell.jpg',import.meta.url));
-  assert.equal(createHash('sha256').update(asset).digest('hex'),'e2c3df3d906eedd982dc505c63a66225606725a864a09ccff0a6a9ef23a40844');
+  const asset=readFileSync(new URL('../assets/lesson-shell/dome-lesson-shell-extended-v1.png',import.meta.url));
+  assert.equal(createHash('sha256').update(asset).digest('hex'),'9b522f7117032b8b0a0e52781edc560327027433ea87017af604616224693b93');
   for(const [width,height] of [[320,568],[360,640],[360,800],[390,844],[430,932]]){
     const shell=lessonShellLayout(width,height);assert.ok(Math.abs(shell.image.width/shell.image.height-DOME_LESSON_SHELL_SIZE.width/DOME_LESSON_SHELL_SIZE.height)<1e-12);
-    assert.equal(shell.fitMode,'contain');
-    assert.ok(shell.image.left>=-.001&&shell.image.top>=-.001&&shell.image.left+shell.image.width<=width+.001&&shell.image.top+shell.image.height<=height+.001,`${width}x${height} full artwork must remain visible`);
+    assert.equal(shell.fitMode,'extended-fill');
+    assert.ok(shell.image.left<=.001&&shell.image.top<=.001&&shell.image.left+shell.image.width>=width-.001&&shell.image.top+shell.image.height>=height-.001,`${width}x${height} extended artwork must leave no empty bands`);
     assert.ok(shell.content.left>=4&&shell.content.left+shell.content.width<=width-4,`${width}x${height} content must remain visible`);
     assert.ok(shell.content.width>width*.65&&shell.content.height>height*.27,`${width}x${height} central panel is too small`);
     assert.equal(shellContentIsClearOfControls(width,height),true);
@@ -96,8 +97,8 @@ test('portrait shell motion is local, touch transparent, and reduced-motion awar
   const shell=readFileSync(new URL('../src/components/LessonPortraitShell.tsx',import.meta.url),'utf8');
   assert.match(shell,/EnvironmentMotionLayer/);assert.match(shell,/AccessibilityInfo\.isReduceMotionEnabled/);
   assert.match(shell,/reduceMotionChanged/);assert.match(shell,/pointerEvents='none'/);
-  assert.match(shell,/skyGlow/);assert.match(shell,/catSparkle/);assert.doesNotMatch(shell,/Animated\.View[^\n]+dome-lesson-shell-artwork/);
-  assert.match(shell,/maxHeight:'27%'/);assert.match(shell,/marginBottom:'7%'/);
+  assert.match(shell,/dome-balloon-motion/);assert.match(shell,/dome-cat-breathing/);assert.match(shell,/dome-cat-blink-left/);assert.doesNotMatch(shell,/Animated\.View[^\n]+dome-lesson-shell-artwork/);
+  assert.match(shell,/maxHeight:'27%'/);assert.match(shell,/marginBottom:'4%'/);assert.match(shell,/width:'78%'/);
 });
 
 test('movie identity is stable across completion, polling and library response shapes',()=>{
@@ -307,6 +308,12 @@ test('Android suitcase drag atomically packs, persists visually, unpacks, and of
   assert.equal(suitcaseTapFallbackAvailable(2),false);assert.equal(suitcaseTapFallbackAvailable(3),true);
   assert.equal(droppedObjectTutorPrompt('Camera','What will you take?'),'Camera! What will you take?');
   assert.equal(nextEnabled('WAITING_VOICE',true,{requiredForMovie:false}),true);
+});
+
+test('all ten suitcase objects fit simultaneously without an internal ScrollView',()=>{
+  for(const [width,height] of [[220,150],[250,178],[270,188],[500,260]] as const){const fit=suitcaseFitLayout(width,height,10);assert.equal(fit.columns,5);assert.equal(fit.rows,2);assert.ok(fit.totalHeight<=height+1,`${width}x${height} suitcase overflows`);assert.ok(fit.itemSize>=24)}
+  const suitcase=readFileSync(new URL('../src/components/DragDropSuitcase.tsx',import.meta.url),'utf8');const player=readFileSync(new URL('../src/screens/LessonPlayer.tsx',import.meta.url),'utf8');
+  assert.match(suitcase,/suitcase-all-items-grid/);assert.match(suitcase,/suitcaseFitLayout/);assert.doesNotMatch(player,/testID='lesson-visual-scroll'/);assert.match(player,/testID='lesson-visual-fit'/);
 });
 
 test('generic media supports an authored intro-video to image sequence',()=>{

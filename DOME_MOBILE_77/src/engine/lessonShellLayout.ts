@@ -1,16 +1,16 @@
-export const DOME_LESSON_SHELL_SIZE={width:853,height:1280} as const;
+export const DOME_LESSON_SHELL_SIZE={width:841,height:1870} as const;
 
 export type ShellRect={left:number;top:number;width:number;height:number};
 
 type SourceRect={x:number;y:number;width:number;height:number};
 
 const SOURCE_RECTS={
-  content:{x:132,y:202,width:608,height:602},
-  replay:{x:143,y:1023,width:126,height:130},
-  answer:{x:298,y:1000,width:174,height:174},
-  hint:{x:493,y:1023,width:126,height:130},
-  more:{x:635,y:1023,width:126,height:130},
-  continue:{x:151,y:1174,width:561,height:75},
+  content:{x:126,y:506,width:598,height:706},
+  replay:{x:137,y:1417,width:128,height:135},
+  answer:{x:287,y:1390,width:181,height:181},
+  hint:{x:472,y:1417,width:130,height:135},
+  more:{x:617,y:1417,width:131,height:135},
+  continue:{x:148,y:1575,width:545,height:80},
 } satisfies Record<string,SourceRect>;
 
 function mapRect(rect:SourceRect,scale:number,offsetX:number,offsetY:number):ShellRect{
@@ -19,14 +19,15 @@ function mapRect(rect:SourceRect,scale:number,offsetX:number,offsetY:number):She
 
 export function lessonShellLayout(width:number,height:number){
   const safeWidth=Math.max(1,width);const safeHeight=Math.max(1,height);
-  // The artwork contains the frame and physical controls as one composition.
-  // Fitting it prevents tall phones from cover-cropping the cat and scenery.
-  const scale=Math.min(safeWidth/DOME_LESSON_SHELL_SIZE.width,safeHeight/DOME_LESSON_SHELL_SIZE.height);
+  // This release asset was outpainted to the common phone aspect ratio. A
+  // minimal edge fill avoids synthetic blue bands; only the added outer
+  // scenery may leave the viewport while the authored panel and controls stay.
+  const scale=Math.max(safeWidth/DOME_LESSON_SHELL_SIZE.width,safeHeight/DOME_LESSON_SHELL_SIZE.height);
   const imageWidth=DOME_LESSON_SHELL_SIZE.width*scale;const imageHeight=DOME_LESSON_SHELL_SIZE.height*scale;
   const offsetX=(safeWidth-imageWidth)/2;const offsetY=(safeHeight-imageHeight)/2;
   const mappedContent=mapRect(SOURCE_RECTS.content,scale,offsetX,offsetY);const contentLeft=Math.max(4,mappedContent.left);const contentRight=Math.min(safeWidth-4,mappedContent.left+mappedContent.width);
   return {
-    fitMode:'contain' as const,
+    fitMode:'extended-fill' as const,
     scale,
     image:{left:offsetX,top:offsetY,width:imageWidth,height:imageHeight},
     content:{...mappedContent,left:contentLeft,width:Math.max(1,contentRight-contentLeft)},

@@ -250,6 +250,16 @@ export function lessonLayoutPolicy(width:number,height:number,bottomInset=0):Lay
   return {landscape,compact,visualFlex:landscape?1.35:0,controlFlex:landscape?1:0,contentPadding:compact?8:14,bottomPadding:Math.max(bottomInset,8),visualMinHeight:Math.min(visualMaxHeight,compact?188:216),visualMaxHeight,controlsPinned:true};
 }
 
+export type SuitcaseFitLayout={columns:number;rows:number;itemSize:number;packedItemSize:number;targetHeight:number;itemsHeight:number;totalHeight:number};
+export function suitcaseFitLayout(width:number,height:number,itemCount:number):SuitcaseFitLayout{
+  const safeWidth=Math.max(180,Number(width)||180);const safeHeight=Math.max(150,Number(height)||150);const count=Math.max(1,Math.floor(itemCount||1));
+  const columns=Math.min(count,count>=8?5:count>=5?4:count);const rows=Math.max(1,Math.ceil(count/columns));const labelHeight=22;const gap=6;
+  const targetHeight=Math.min(98,Math.max(62,Math.floor(safeHeight*.4)));const cellWidth=Math.floor(safeWidth/columns);
+  const availableItemsHeight=Math.max(rows*24,safeHeight-targetHeight-labelHeight-gap);const itemSize=Math.max(24,Math.min(50,cellWidth-4,Math.floor(availableItemsHeight/rows)-2));
+  const itemsHeight=rows*(itemSize+2);const packedRows=Math.max(1,Math.ceil(count/columns));const packedItemSize=Math.max(22,Math.min(itemSize-4,cellWidth-8,Math.floor((targetHeight-8)/packedRows)));
+  return {columns,rows,itemSize,packedItemSize,targetHeight,itemsHeight,totalHeight:targetHeight+labelHeight+gap+itemsHeight};
+}
+
 function tuple(value:any):RectTuple|null{
   if(!Array.isArray(value)||value.length!==4)return null;
   const result=value.map(Number) as RectTuple;return result.every(Number.isFinite)?result:null;
