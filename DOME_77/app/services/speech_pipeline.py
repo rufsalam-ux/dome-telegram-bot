@@ -204,6 +204,10 @@ async def _evaluate_with_chat(prompt: dict) -> dict | None:
         "follow_up_target must be empty unless dialogue_policy.allow_follow_up is true, the answer is correct, and follow-up slots remain. "
         "When allowed, ask exactly one short, naturally connected question based on the child's answer. Never create an unrelated task. "
         "When the child needs help, give one short usable example that directly answers the CURRENT goal. Never reuse nouns, animals, places, facts, or questions from another task. "
+        "pedagogical_intent is an immutable authored speech act. Never turn ask_person_question into answer_question, repeat, or say-the-answer. "
+        "For ask_person_question, evaluate whether the child ASKED the person a relevant question; corrected_target and model_answer_target must also be questions, never factual answers. "
+        "Follow pedagogical_instruction only inside the current goal and safety constraints. At independent_attempt do not reveal an authored model answer before evaluating the child's idea. "
+        "Use authored_model_examples only for scaffolding/correction, as meaning-equivalent possibilities rather than exact-string requirements. "
         "Use the child's name only occasionally when a name is provided, never in every reply. "
         "At low difficulty accept one-word/very short answers. Never invite an extra reason, detail, comparison or dialogue unless the CURRENT goal explicitly requests it. "
         "For PRE_A1 use no more than two very short sentences and at most one question in the whole turn. "
@@ -256,6 +260,11 @@ async def assess_speech(
     follow_up_count: int = 0,
     conversation_goal: str = "",
     runtime_context: dict | None = None,
+    pedagogical_intent: str = "",
+    pedagogical_instruction: str = "",
+    target_meaning: str = "",
+    model_examples: list[str] | None = None,
+    scaffold_stage: str = "independent_attempt",
 ) -> SpeechAssessment:
     transcript, detected, confidence = await transcribe_audio(wav_path, target_language, native_language, goal)
     if is_non_speech_transcript(transcript) or confidence < 0.35:
@@ -298,6 +307,11 @@ async def assess_speech(
         "transcription_detected_language": detected,
         "goal": goal,
         "conversation_goal": conversation_goal or goal,
+        "pedagogical_intent": pedagogical_intent or "answer_question",
+        "pedagogical_instruction": pedagogical_instruction,
+        "target_meaning": target_meaning or goal,
+        "authored_model_examples": [str(value) for value in (model_examples or []) if str(value).strip()][:3],
+        "scaffold_stage": scaffold_stage,
         "runtime_context": runtime_context or {},
         "accepted_meaning": accepted_meaning or [],
         "attempt_number": attempt_number,

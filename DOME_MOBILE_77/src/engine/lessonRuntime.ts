@@ -147,28 +147,32 @@ export function recoveryStageAfterFailure(slide:any,hasSelection=false):RuntimeS
   return 'COMPLETE';
 }
 
-export type ProgressiveHint={step:'REPHRASE'|'EXAMPLE'|'STARTER'|'CHOICES';prompt:string};
-
-function sentenceStarter(value:string):string{
-  const words=String(value||'').replace(/[.!?]+$/,'').trim().split(/\s+/).filter(Boolean);
-  return words.slice(0,Math.min(3,Math.max(1,words.length-1))).join(' ')+(words.length>1?'…':'');
-}
+export type ProgressiveHint={step:'REPHRASE'|'CHOICES'|'MODEL'|'RECOVER';prompt:string};
 
 export function progressiveHint(slide:any,attempt:number):ProgressiveHint{
   const question=String(slide?.task_goal||slide?.question||slide?.bot_says_target||'Попробуй ещё раз.').trim();
-  const example=String(slide?.model_examples?.[0]||slide?.simplified_text||slide?.model_answer_target||question).trim();
-  const labels=(slide?.selection_options||slide?.riddle_options||[]).map((item:any)=>String(item?.label||item?.answer_value_ru||item?.id||'').trim()).filter(Boolean);
+  const semanticHint=String(slide?.semantic_hint_target||slide?.semantic_hint||slide?.hint_target||question).trim();
+  const examples=(slide?.target_language_options||slide?.model_examples||[]).map((item:any)=>String(item?.text||item||'').trim()).filter(Boolean).slice(0,3);
+  const example=String(examples[0]||slide?.simplified_text||slide?.model_answer_target||question).trim();
   const step=Math.max(1,Number(attempt)||1);
-  if(step===1)return {step:'REPHRASE',prompt:question};
-  if(step===2)return {step:'EXAMPLE',prompt:`Можно сказать: ${example}`};
-  if(step===3)return {step:'STARTER',prompt:`Начни так: ${sentenceStarter(example)}`};
-  return {step:'CHOICES',prompt:labels.length?`Выбери: ${labels.slice(0,4).join(' или ')}.`:`Попробуй ещё раз. Можно сказать: ${example}`};
+  if(step===1)return {step:'REPHRASE',prompt:semanticHint};
+  if(step===2&&examples.length>1)return {step:'CHOICES',prompt:`Можно спросить или сказать так: ${examples.join(' / ')}`};
+  if(step<=3)return {step:'MODEL',prompt:`Можно сказать: ${example}`};
+  return {step:'RECOVER',prompt:`Скажи вместе со мной: ${example}`};
 }
 
 export function adaptiveModelPhrase(slide:any,languageLevel='PRE_A1',difficulty=.15):string{
   const simple=String(slide?.model_examples?.[0]||slide?.simplified_text||slide?.model_answer_target||slide?.task_goal||slide?.question||'').trim();
   const richer=String(slide?.richer_model_text||slide?.model_answer_richer||'').trim();
   return richer&&String(languageLevel).toUpperCase()!=='PRE_A1'&&difficulty>=.45?richer:simple;
+}
+
+export function manualHintExample(slide:any,languageLevel='PRE_A1',difficulty=.15):string{
+  const options=(slide?.target_language_options||slide?.model_examples||[]).map((item:any)=>String(item?.text||item||'').trim()).filter(Boolean);
+  if(String(languageLevel).toUpperCase()!=='PRE_A1'&&difficulty>=.45){
+    return String(slide?.richer_model_text||slide?.model_answer_richer||options[1]||options[0]||adaptiveModelPhrase(slide,languageLevel,difficulty)).trim();
+  }
+  return String(options[0]||adaptiveModelPhrase(slide,languageLevel,difficulty)).trim();
 }
 
 export function advanceAfterAssessment(response:{accepted?:boolean;advance_allowed?:boolean;needs_retry?:boolean;tutor_turn?:{follow_up_target?:string}}):'FOLLOW_UP'|'COMPLETE'|'RETRY'{

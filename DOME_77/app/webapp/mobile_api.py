@@ -676,7 +676,13 @@ async def voice(request:web.Request)->web.Response:
         n=(await db.scalar(select(func.count(VoiceAttempt.id)).where(VoiceAttempt.lesson_session_id==sid,VoiceAttempt.phrase_id==storage_phrase_id))) or 0
     attempt_number=int(n)+1;max_attempts=max(1,int(sl.get('max_attempts') or 3))
     authored_goal=str(sl.get('task_goal') or ph.get('target_text') or sl.get('question') or sl.get('bot_says_target') or '')
-    goal=contextual_assessment_goal(prompt or authored_goal,runtime_context)
+    # A client-rendered prompt may be localized or stale, but it must never
+    # replace the published speech act. Only an active follow-up or an
+    # authoritative selected-item task needs the exact current client prompt.
+    contextual_prompt=prompt if conversation_turn>0 or runtime_context.get('selected_items') else (
+        f'{authored_goal}\nCurrent localized wording shown to the child: {prompt}' if prompt and prompt.strip()!=authored_goal.strip() else authored_goal
+    )
+    goal=contextual_assessment_goal(contextual_prompt or authored_goal,runtime_context)
     context_follow_up=bool(runtime_context.get('selected_items')) and str(sl.get('follow_up_policy') or '')=='optional'
     accepted_meaning=ph.get('accepted_meaning') or sl.get('accepted_intents') or sl.get('accepted_meaning') or []
     if str(runtime_context.get('selection_policy') or '')=='child_choice' and runtime_context.get('selected_items'):
@@ -698,6 +704,11 @@ async def voice(request:web.Request)->web.Response:
             follow_up_count=conversation_turn,
             conversation_goal=str(sl.get('conversation_goal') or goal),
             runtime_context=runtime_context,
+            pedagogical_intent=str(sl.get('pedagogical_intent') or sl.get('interaction_intent') or 'answer_question'),
+            pedagogical_instruction=str(sl.get('ai_instruction') or sl.get('tutor_instruction') or ''),
+            target_meaning=str(sl.get('target_meaning') or authored_goal),
+            model_examples=[str(value) for value in (sl.get('model_examples') or [ph.get('simplified_text') or ph.get('target_text') or '']) if str(value).strip()],
+            scaffold_stage='independent_attempt' if attempt_number<=1 else ('semantic_hint' if attempt_number==2 else 'model_support'),
         )
     else:
         assessment=SpeechAssessment(status='NO_SPEECH')

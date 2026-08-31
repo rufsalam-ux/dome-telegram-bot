@@ -114,6 +114,35 @@ async def test_ai_reference_to_invisible_item_is_rejected_before_child_response(
     assert not result.tutor_turn or (not result.tutor_turn.reaction_target and not result.tutor_turn.follow_up_target)
 
 
+@pytest.mark.asyncio
+async def test_published_pedagogical_intent_is_sent_as_an_immutable_speech_act(monkeypatch, tmp_path):
+    captured = {}
+    monkeypatch.setattr(speech_pipeline.settings, "openai_api_key", "test-key")
+    monkeypatch.setattr(speech_pipeline, "transcribe_audio", lambda *_args, **_kwargs: _async(("Why are you wearing a warm coat?", "en", .97)))
+
+    async def evaluate(prompt):
+        captured.update(prompt)
+        return {
+            "decision": "CORRECT", "semantic_match": .98,
+            "reaction_target": "That is a clear question for Lyosha!", "emotion": "happy",
+        }
+
+    monkeypatch.setattr(speech_pipeline, "_evaluate_with_chat", evaluate)
+    result = await speech_pipeline.assess_speech(
+        tmp_path / "voice.wav", "en", "ru", "Ask Lyosha why he is dressed warmly.",
+        ["ask why he is dressed warmly"], 1,
+        pedagogical_intent="ask_person_question",
+        pedagogical_instruction="Keep this as a question to Lyosha.",
+        target_meaning="ask Lyosha about the warm clothes",
+        model_examples=["Why are you dressed so warmly?", "Aren't you hot?"],
+    )
+    assert result.status == "ACCEPTED_CORRECT"
+    assert captured["pedagogical_intent"] == "ask_person_question"
+    assert captured["scaffold_stage"] == "independent_attempt"
+    assert captured["authored_model_examples"] == ["Why are you dressed so warmly?", "Aren't you hot?"]
+    assert "question to Lyosha" in captured["pedagogical_instruction"]
+
+
 def test_target_and_native_text_share_one_semantic_turn():
     turn = selected_item_turn(
         "You chose the camera!", "Ты выбрал фотоаппарат!",

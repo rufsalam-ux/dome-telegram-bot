@@ -760,9 +760,24 @@
       "order": 19,
       "type": "guided_scene",
       "image": "lesson-images/slide-19.png",
-      "bot_says_target": "Посмотри на Лёшу. На Мадагаскаре жарко, а он одет очень тепло. Скажи: ему жарко или холодно?",
-      "bot_explains_native": "Ответь только: ему жарко или холодно. Потом будет отдельная короткая реплика для мультфильма.",
-      "question": "Лёше жарко или холодно?",
+      "bot_says_target": "Посмотри на Лёшу: на Мадагаскаре жарко, а он одет очень тепло. Задай Лёше вопрос об этом.",
+      "bot_explains_native": "Нужно спросить Лёшу, почему он так тепло одет. Можно задать свой короткий вопрос.",
+      "question": "Что ты спросишь у Лёши о его тёплой одежде?",
+      "task_goal": "Спроси Лёшу, почему он так тепло одет.",
+      "pedagogical_intent": "ask_person_question",
+      "target_meaning": "ask Lyosha a relevant question about why he is wearing very warm clothes in hot Madagascar",
+      "ai_instruction": "Сохраняй речевой акт: ребёнок должен задать Лёше вопрос. Не превращай задание в ответ о том, жарко ему или холодно. Сначала оцени самостоятельный вопрос; затем дай смысловую подсказку, потом варианты вопроса и только затем одну модель.",
+      "semantic_hint_target": "Посмотри на шапку и тёплую куртку Лёши. Что здесь необычно и о чём можно его спросить?",
+      "target_language_options": [
+        "Лёша, почему ты так тепло одет?",
+        "Почему ты в тёплой одежде?",
+        "Тебе не жарко?"
+      ],
+      "model_examples": [
+        "Лёша, почему ты так тепло одет?",
+        "Почему ты в тёплой одежде?",
+        "Тебе не жарко?"
+      ],
       "answer_mode": "required_voice",
       "required_phrase_id": "lesha_clothes",
       "max_attempts": 3,
@@ -790,7 +805,7 @@
       "hero_min_visual_height_ratio": 0.36,
       "strict_target_language": true,
       "expects_answer": true,
-      "simplified_text": "Ему жарко.",
+      "simplified_text": "Почему ты тепло одет?",
       "must_wait_for_answer": true,
       "allow_ai_followup": false,
       "suppress_ai_followup": true

@@ -25,6 +25,7 @@ import {
   isRequiredForMovie,
   LessonRuntimeTimeoutError,
   lessonLayoutPolicy,
+  manualHintExample,
   movedPixelRect,
   nextCardQuestion,
   nextEnabled,
@@ -515,9 +516,19 @@ test('regression: cat state remains independent from child avatar identity',()=>
   for(const stage of RUNTIME_STAGES){assert.equal(canonicalChildAvatarUri({heroUrl:uri},'https://api.test'),uri);assert.ok(CAT_ACTIVITY_STATES.includes(catStateForStage(stage)))}
 });
 
-test('progressive assistance advances from rephrase to example, starter, and choices',()=>{
-  const slide={question:'Какой должен быть друг?',simplified_text:'Мой друг должен быть добрым.',selection_options:[{label:'Добрый'},{label:'Весёлый'}]};
-  assert.equal(progressiveHint(slide,1).step,'REPHRASE');assert.equal(progressiveHint(slide,2).step,'EXAMPLE');assert.equal(progressiveHint(slide,3).step,'STARTER');assert.equal(progressiveHint(slide,4).step,'CHOICES');assert.match(progressiveHint(slide,4).prompt,/Добрый.*Весёлый/);
+test('progressive assistance changes strategy and preserves the authored speech act',()=>{
+  const slide={pedagogical_intent:'ask_person_question',question:'Что ты спросишь?',semantic_hint_target:'Посмотри на его тёплую куртку. Что необычно?',target_language_options:['Почему ты тепло одет?','Тебе не жарко?','Зачем тебе шапка?'],simplified_text:'Почему ты тепло одет?'};
+  assert.equal(progressiveHint(slide,1).step,'REPHRASE');assert.match(progressiveHint(slide,1).prompt,/Что необычно/);
+  assert.equal(progressiveHint(slide,2).step,'CHOICES');assert.match(progressiveHint(slide,2).prompt,/Почему.*Тебе.*Зачем/);
+  assert.equal(progressiveHint(slide,3).step,'MODEL');assert.match(progressiveHint(slide,3).prompt,/Почему ты тепло одет/);
+  assert.equal(progressiveHint(slide,4).step,'RECOVER');assert.match(progressiveHint(slide,4).prompt,/Скажи вместе/);
+  assert.equal(manualHintExample(slide,'PRE_A1',.15),'Почему ты тепло одет?');
+});
+
+test('Lyosha task is authored as asking a question and Hint is audible target-language help',()=>{
+  const lyosha=(bundledLesson.slides as any[]).find(slide=>slide.slide_id==='slide_19');
+  assert.equal(lyosha.pedagogical_intent,'ask_person_question');assert.match(lyosha.task_goal,/Спроси Лёшу/);assert.doesNotMatch(lyosha.simplified_text,/Ему жарко/);
+  const player=readFileSync(new URL('../src/screens/LessonPlayer.tsx',import.meta.url),'utf8');assert.match(player,/async function useHint/);assert.match(player,/manualHintExample/);assert.match(player,/await speakTutor\(spoken\|\|source/);assert.doesNotMatch(player,/onPress:\(\)=>setShowHint/);
 });
 
 test('cold startup is isolated from lesson native modules and cannot wait forever',async()=>{
