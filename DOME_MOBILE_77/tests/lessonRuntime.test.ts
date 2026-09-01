@@ -100,6 +100,13 @@ test('lesson bootstrap diagnostics preserve stage and backend status without hid
   assert.equal(lessonBootstrapErrorCode(new Error('LESSON_VERSION_MISMATCH'),'VERSION_CHECK'),'VERSION_CHECK_LESSON_VERSION_MISMATCH');
 });
 
+test('protected lesson visuals are downloaded with bearer auth before native Image decoding',()=>{
+  const api=readFileSync(new URL('../src/api/mobile.ts',import.meta.url),'utf8');
+  const player=readFileSync(new URL('../src/screens/LessonPlayer.tsx',import.meta.url),'utf8');
+  assert.match(api,/cacheProtectedVisualSource/);assert.match(api,/downloadAsync\(source\.uri,temporary,\{headers:source\.headers\|\|\{\}\}\)/);
+  assert.match(player,/Image\.getSize\(localized\.uri/);assert.doesNotMatch(player,/Image\.getSizeWithHeaders\(localized\.uri/);
+});
+
 test('portrait shell motion is local, touch transparent, and reduced-motion aware',()=>{
   const shell=readFileSync(new URL('../src/components/LessonPortraitShell.tsx',import.meta.url),'utf8');
   assert.match(shell,/EnvironmentMotionLayer/);assert.match(shell,/AccessibilityInfo\.isReduceMotionEnabled/);

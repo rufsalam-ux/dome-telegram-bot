@@ -554,13 +554,21 @@ async def hero_geometry_confirm(request:web.Request)->web.Response:
 async def session_start(request:web.Request)->web.Response:
     p=await _parent(request);data=await request.json();cid=int(data.get('child_id'));lid=str(data.get('lesson_id') or 'demo_001');c=await _owned_child(p.id,cid);lesson_data=_load_mobile_lesson(lid);course=str(lesson_data.get('course_id') or 'conversation')
     version=lesson_content_version(lesson_data);step_ids=runtime_step_ids(lesson_data)
+    # Access is checked read-only before the capacity gate so production logs
+    # always distinguish entitlement/progress failures from storage pressure.
+    # The QA authorization audit is committed only after write capacity is safe.
+    ok,reason,ent=await can_start(cid,lid,course,audit=False)
+    async with SessionLocal() as snapshot_db:
+        latest=await snapshot_db.scalar(select(LessonSession).where(LessonSession.child_id==cid,LessonSession.lesson_id==lid).order_by(LessonSession.id.desc()))
+    log.info('MOBILE_LESSON_OPEN_ACCESS parent=%s child=%s lesson=%s course=%s allowed=%s reason=%s entitlement=%s entitlement_status=%s completed_runs=%s max_completed_runs=%s expires_at=%s latest_session=%s latest_status=%s latest_step=%s latest_step_id=%s latest_version=%s published_version=%s',p.id,cid,lid,course,ok,reason,getattr(ent,'id',None),getattr(ent,'status',None),getattr(ent,'completed_runs',None),getattr(ent,'max_completed_runs',None),getattr(ent,'expires_at',None),getattr(latest,'id',None),getattr(latest,'status',None),getattr(latest,'current_step',None),getattr(latest,'current_step_id',None),getattr(latest,'lesson_version',None),version)
+    if not ok: raise web.HTTPForbidden(text=json.dumps({'error':f'Урок недоступен: {reason}'}),content_type='application/json')
     capacity=await asyncio.to_thread(ensure_runtime_storage_capacity)
-    log.info('MOBILE_LESSON_OPEN_PRECHECK parent=%s child=%s lesson=%s course=%s published=%s version=%s steps=%s storage_before=%s storage_after=%s storage_ready=%s',p.id,cid,lid,course,lesson_data.get('publication_status'),version,len(step_ids),capacity['before'],capacity['after'],capacity['ready'])
+    log.info('MOBILE_LESSON_OPEN_PRECHECK parent=%s child=%s lesson=%s course=%s published=%s version=%s steps=%s storage_before=%s storage_after=%s storage_target=%s storage_minimum=%s storage_target_met=%s storage_ready=%s',p.id,cid,lid,course,lesson_data.get('publication_status'),version,len(step_ids),capacity['before'],capacity['after'],capacity['target'],capacity.get('minimum'),capacity.get('target_met'),capacity['ready'])
     if not capacity['ready']:
         raise web.HTTPServiceUnavailable(text=json.dumps({'error':'Сервер временно освобождает место. Попробуйте открыть урок ещё раз.','code':'SERVER_STORAGE_PRESSURE'}),content_type='application/json')
-    ok,reason,ent=await can_start(cid,lid,course)
-    log.info('MOBILE_LESSON_OPEN_ACCESS parent=%s child=%s lesson=%s course=%s allowed=%s reason=%s entitlement=%s completed_runs=%s max_completed_runs=%s',p.id,cid,lid,course,ok,reason,getattr(ent,'id',None),getattr(ent,'completed_runs',None),getattr(ent,'max_completed_runs',None))
-    if not ok: raise web.HTTPForbidden(text=json.dumps({'error':f'Урок недоступен: {reason}'}),content_type='application/json')
+    if reason=='QA_RUN_LIMIT_BYPASS':
+        ok,reason,ent=await can_start(cid,lid,course,audit=True)
+        if not ok: raise web.HTTPForbidden(text=json.dumps({'error':f'Урок недоступен: {reason}'}),content_type='application/json')
     reset_reason=None
     async with SessionLocal() as db:
         existing=await db.scalar(select(LessonSession).where(LessonSession.child_id==cid,LessonSession.lesson_id==lid,LessonSession.status=='IN_PROGRESS').order_by(LessonSession.id.desc()))

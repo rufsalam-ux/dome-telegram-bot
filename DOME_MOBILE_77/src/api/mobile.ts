@@ -41,6 +41,27 @@ async function cacheRemoteAudioSource(source:TutorAudioSource,namespace:string,e
   return {uri:destination,name:source.name||`dome-audio.${extension}`};
 }
 
+async function cacheProtectedVisualSource(source:TutorAudioSource,extension:string):Promise<TutorAudioSource>{
+  const FileSystem=require('expo-file-system/legacy');const cacheRoot=String(FileSystem.cacheDirectory||'');
+  if(!cacheRoot)return source;
+  const directory=`${cacheRoot}dome-lesson-visuals/`;const destination=`${directory}${tutorAudioCacheKey(source.uri)}.${extension}`;const temporary=`${destination}.download`;
+  const existing=await FileSystem.getInfoAsync(destination,{size:true});
+  if(existing.exists&&Number(existing.size||0)>0)return {uri:destination};
+  await FileSystem.makeDirectoryAsync(directory,{intermediates:true});
+  await FileSystem.deleteAsync(temporary,{idempotent:true}).catch(()=>{});
+  const downloaded=await FileSystem.downloadAsync(source.uri,temporary,{headers:source.headers||{}});
+  if(Number(downloaded.status)<200||Number(downloaded.status)>=300){
+    await FileSystem.deleteAsync(temporary,{idempotent:true}).catch(()=>{});
+    if(Number(downloaded.status)===401)await invalidateApiSession();
+    throw new MobileApiError(Number(downloaded.status),`LESSON_VISUAL_DOWNLOAD_HTTP_${downloaded.status}`,'LESSON_VISUAL_DOWNLOAD_FAILED');
+  }
+  const info=await FileSystem.getInfoAsync(temporary,{size:true});
+  if(!info.exists||Number(info.size||0)<=0){await FileSystem.deleteAsync(temporary,{idempotent:true}).catch(()=>{});throw new Error('LESSON_VISUAL_DOWNLOAD_EMPTY')}
+  await FileSystem.deleteAsync(destination,{idempotent:true}).catch(()=>{});
+  await FileSystem.moveAsync({from:temporary,to:destination});
+  return {uri:destination};
+}
+
 export function cacheTutorAudioSource(source:TutorAudioSource):Promise<TutorAudioSource>{
   return cacheRemoteAudioSource(source,'dome-tutor-audio','ogg');
 }
@@ -174,10 +195,12 @@ export function listLessons(childId:string|number){
 export async function lessonVisualSource(lessonId:string,imagePath:string,childId:string|number,version:string|number='1'){
   const filename=String(imagePath||'').split('/').pop()||'';
   const query=new URLSearchParams({child_id:String(childId),version:String(version)});
-  return {
+  const source={
     uri:`${API_BASE}/api/mobile/lesson/${encodeURIComponent(lessonId)}/visual/${encodeURIComponent(filename)}?${query.toString()}`,
     headers:{Authorization:`Bearer ${await requiredToken()}`},
   };
+  const extension=(filename.split('.').pop()||'png').toLowerCase();
+  return cacheProtectedVisualSource(source,/^(png|jpe?g|webp)$/.test(extension)?extension:'png');
 }
 
 export async function lessonMediaSource(lessonId:string,mediaPath:string){

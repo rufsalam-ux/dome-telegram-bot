@@ -49,3 +49,35 @@ def test_runtime_storage_reports_pressure_when_safe_cache_is_insufficient(tmp_pa
     assert result["ready"] is False
     assert result["files"] == 0
     assert recording.read_bytes() == b"preserve-me"
+
+
+def test_runtime_storage_allows_sqlite_writes_below_cleanup_high_water(tmp_path: Path, monkeypatch):
+    storage = tmp_path / "storage"
+    storage.mkdir()
+    monkeypatch.setattr(storage_pressure, "_free_bytes", lambda _path: 9_207_808)
+
+    result = storage_pressure.ensure_runtime_storage_capacity(
+        64 * 1024 * 1024,
+        storage,
+        minimum_free_bytes=4 * 1024 * 1024,
+    )
+
+    assert result["target_met"] is False
+    assert result["minimum"] == 4 * 1024 * 1024
+    assert result["after"] == 9_207_808
+    assert result["ready"] is True
+
+
+def test_runtime_storage_still_blocks_below_sqlite_write_minimum(tmp_path: Path, monkeypatch):
+    storage = tmp_path / "storage"
+    storage.mkdir()
+    monkeypatch.setattr(storage_pressure, "_free_bytes", lambda _path: 3 * 1024 * 1024)
+
+    result = storage_pressure.ensure_runtime_storage_capacity(
+        64 * 1024 * 1024,
+        storage,
+        minimum_free_bytes=4 * 1024 * 1024,
+    )
+
+    assert result["target_met"] is False
+    assert result["ready"] is False

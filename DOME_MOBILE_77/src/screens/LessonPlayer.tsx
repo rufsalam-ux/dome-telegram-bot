@@ -109,7 +109,7 @@ export function LessonPlayer({lessonId}:{lessonId:string}){
     if(!needsRemote)return;
     let active=true;(async()=>{try{
       const localized=await lessonVisualSource(lesson.lesson_id||lessonId,artworkSlide.image,child.id,lesson.visual_asset_version||lesson.revision||1);
-      await loadVisualAssetWithRetry(()=>Image.getSizeWithHeaders(localized.uri,localized.headers||{}),2,18_000,650);
+      await loadVisualAssetWithRetry(()=>new Promise<void>((resolve,reject)=>Image.getSize(localized.uri,()=>resolve(),reject)),2,18_000,650);
       if(active&&requestId===visualRequestRef.current)setVisualAsset(current=>useLocalizedVisualAsset(current,localized));
     }catch(error:any){if(active&&requestId===visualRequestRef.current)setVisualAsset(current=>current.source?{...current,status:'fallback',error:error.message||'Localized visual unavailable'}:failVisualAsset(current,error.message||'Иллюстрация пока недоступна'))}})();
     return()=>{active=false};

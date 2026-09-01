@@ -1,6 +1,8 @@
 from datetime import datetime, timedelta
 
 import pytest
+from aiohttp import web
+from aiohttp.test_utils import TestClient, TestServer
 from sqlalchemy import func, inspect, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -23,6 +25,8 @@ from app.services.qa_access import (
     grant_run_limit_access,
     revoke_run_limit_access,
 )
+from app.services.mobile_tokens import issue_session_token
+from app.webapp import mobile_api
 
 
 async def _memory_database():
@@ -197,6 +201,67 @@ async def test_explicit_qa_grant_allows_unlimited_runs_and_audits(monkeypatch):
             assert events[-1].completed_runs == 3
             assert (await db.get(LessonEntitlement, entitlement_id)) is not None
     finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_qa_mobile_session_starts_with_production_like_free_space(monkeypatch):
+    engine, sessions = await _memory_database()
+    client = None
+    try:
+        parent_id, child_id, _ = await _account_with_entitlement(
+            sessions, role=QA_TEST_ROLE, completed_runs=16
+        )
+        async with sessions() as db:
+            await grant_run_limit_access(
+                db,
+                child_id=child_id,
+                lesson_id="demo_001",
+                course_id="conversation",
+                actor="owner-approved-test",
+                reason="QA regression testing",
+                account_role=QA_TEST_ROLE,
+            )
+            await db.commit()
+
+        monkeypatch.setattr(lesson_access, "SessionLocal", sessions)
+        monkeypatch.setattr(qa_access, "SessionLocal", sessions)
+        monkeypatch.setattr(mobile_api, "SessionLocal", sessions)
+        monkeypatch.setattr(settings, "mobile_auth_secret", "qa-session-start-secret-that-is-long-enough")
+        monkeypatch.setattr(mobile_api, "ensure_runtime_storage_capacity", lambda: {
+            "before": 9_207_808,
+            "after": 9_207_808,
+            "target": 64 * 1024 * 1024,
+            "minimum": 4 * 1024 * 1024,
+            "target_met": False,
+            "files": 0,
+            "bytes": 0,
+            "ready": True,
+        })
+
+        app = web.Application()
+        mobile_api.register_mobile_routes(app)
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        response = await client.post(
+            "/api/mobile/session/start",
+            headers={"Authorization": f"Bearer {issue_session_token(parent_id)}"},
+            json={"child_id": child_id, "lesson_id": "demo_001"},
+        )
+        payload = await response.json()
+
+        assert response.status == 200
+        assert payload["lesson_id"] == "demo_001"
+        assert payload["run_number"] == 17
+        assert payload["lesson_version"].startswith("demo_001:r")
+        async with sessions() as db:
+            assert await db.scalar(select(func.count(LessonSession.id))) == 1
+            events = list((await db.scalars(select(QaAccessAuditEvent).order_by(QaAccessAuditEvent.id))).all())
+            assert events[-1].event_type == "RUN_LIMIT_BYPASS_AUTHORIZED"
+            assert events[-1].completed_runs == 16
+    finally:
+        if client is not None:
+            await client.close()
         await engine.dispose()
 
 

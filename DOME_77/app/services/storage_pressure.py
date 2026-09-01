@@ -10,10 +10,13 @@ from app.core.config import settings
 
 log = logging.getLogger("dome.storage_pressure")
 
-# Keep enough space for SQLite WAL/journal writes and normal request metadata.
-# Large movie intermediates already use ephemeral storage; these directories
-# contain only reproducible AI output and are safe to rebuild on demand.
+# Try to keep a comfortable high-water mark by pruning regenerable caches, but
+# do not confuse that cleanup target with the much smaller amount SQLite needs
+# for a normal session/audit write. Large movie intermediates already use
+# ephemeral storage; these directories contain only reproducible AI output and
+# are safe to rebuild on demand.
 RUNTIME_STORAGE_RESERVE_BYTES = 64 * 1024 * 1024
+RUNTIME_DATABASE_MIN_FREE_BYTES = 4 * 1024 * 1024
 RUNTIME_CACHE_GRACE_SECONDS = 60
 REGENERABLE_CACHE_NAMES = ("tts-cache-mobile", "tts-cache", "translation-cache")
 
@@ -49,8 +52,14 @@ def _cache_candidates(root: Path, now: float) -> list[tuple[int, float, Path]]:
 def ensure_runtime_storage_capacity(
     target_free_bytes: int = RUNTIME_STORAGE_RESERVE_BYTES,
     storage_root: Path | None = None,
+    *,
+    minimum_free_bytes: int = RUNTIME_DATABASE_MIN_FREE_BYTES,
 ) -> dict[str, int | bool]:
-    """Reserve database write space by pruning only regenerable caches.
+    """Protect database writes while pruning only regenerable caches.
+
+    ``target_free_bytes`` is a best-effort cleanup high-water mark. ``ready``
+    is based on ``minimum_free_bytes`` so a healthy SQLite database is not
+    taken offline merely because a small Railway volume cannot reach 64 MiB.
 
     Child profiles, lesson progress, recordings, movies, authored content,
     localized visual assets and avatar files are deliberately outside the
@@ -59,10 +68,13 @@ def ensure_runtime_storage_capacity(
 
     root = Path(storage_root or settings.storage_root)
     target = max(1, int(target_free_bytes))
+    minimum = max(1, min(int(minimum_free_bytes), target))
     result: dict[str, int | bool] = {
         "before": 0,
         "after": 0,
         "target": target,
+        "minimum": minimum,
+        "target_met": False,
         "files": 0,
         "bytes": 0,
         "ready": False,
@@ -75,6 +87,7 @@ def ensure_runtime_storage_capacity(
         return result
     if int(result["before"]) >= target:
         result["after"] = result["before"]
+        result["target_met"] = True
         result["ready"] = True
         return result
 
@@ -99,13 +112,16 @@ def ensure_runtime_storage_capacity(
         result["after"] = _free_bytes(root)
     except OSError:
         result["after"] = 0
-    result["ready"] = int(result["after"]) >= target
+    result["target_met"] = int(result["after"]) >= target
+    result["ready"] = int(result["after"]) >= minimum
     log.warning(
-        "RUNTIME_STORAGE_RECLAIM root=%s before=%s after=%s target=%s files=%s bytes=%s ready=%s",
+        "RUNTIME_STORAGE_RECLAIM root=%s before=%s after=%s target=%s minimum=%s target_met=%s files=%s bytes=%s ready=%s",
         root,
         result["before"],
         result["after"],
         target,
+        minimum,
+        result["target_met"],
         result["files"],
         result["bytes"],
         result["ready"],
