@@ -1,5 +1,5 @@
 from __future__ import annotations
-import asyncio, base64, json, logging, mimetypes, secrets, time
+import asyncio, base64, binascii, hashlib, json, logging, mimetypes, os, secrets, shutil, tempfile, time
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -45,15 +45,76 @@ from app.services.subscription_provider import (
     restore_provider_current_plan,
     schedule_provider_plan_change,
 )
-from app.services.storage_pressure import ensure_runtime_storage_capacity
+from app.services.storage_pressure import RUNTIME_DATABASE_MIN_FREE_BYTES,RUNTIME_STORAGE_RESERVE_BYTES,ensure_runtime_storage_capacity
 
 log=logging.getLogger('dome.mobile_api')
 MOBILE_LANGUAGES={'ru','en','es','de','fr','it','pt','tr','ar','zh'}
 _movie_tasks:set[asyncio.Task]=set()
+_voice_upload_locks:dict[str,asyncio.Lock]={}
 MOVIE_RETRY_MESSAGE='Мультфильм пока не собрался. Все записи сохранены — попробуйте ещё раз.'
 MOVIE_ACTIVE_STATES={'QUEUED','RUNNING'}
 MOVIE_SUCCESS_STATES={'SUCCEEDED','READY'}
 MOVIE_RETRY_STATES={'FAILED','TIMED_OUT'}
+VOICE_MAX_UPLOAD_BYTES=32*1024*1024
+
+
+def _voice_error(status:int,code:str,message:str,**details)->web.Response:
+    return web.Response(
+        status=status,
+        text=json.dumps({'error':message,'code':code,**details},ensure_ascii=False),
+        content_type='application/json',
+    )
+
+
+def _voice_upload_size_error(size:int)->web.Response|None:
+    if int(size)<=0:return _voice_error(400,'VOICE_EMPTY','Запись не содержит аудио.')
+    if int(size)>VOICE_MAX_UPLOAD_BYTES:return _voice_error(413,'VOICE_TOO_LARGE','Запись слишком длинная. Запишите короткий ответ.')
+    return None
+
+
+def _voice_recording_id(request:web.Request)->str:
+    value=str(request.headers.get('Idempotency-Key') or request.headers.get('X-Idempotency-Key') or '').strip()
+    if not value:return ''
+    if len(value)>160 or any(ch not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:-' for ch in value):
+        raise web.HTTPBadRequest(text=json.dumps({'error':'Invalid recording id','code':'VOICE_RECORDING_ID_INVALID'}),content_type='application/json')
+    return value
+
+
+def _voice_temp_root(session_id:int)->Path:
+    root=Path(tempfile.gettempdir())/'dome-mobile-voice'/str(session_id);root.mkdir(parents=True,exist_ok=True);return root
+
+
+def _write_atomic(path:Path,data:bytes)->None:
+    staging=path.with_name(path.name+'.uploading')
+    with staging.open('wb') as stream:
+        stream.write(data);stream.flush();os.fsync(stream.fileno())
+    os.replace(staging,path)
+
+
+def _copy_atomic(source:Path,destination:Path)->None:
+    destination.parent.mkdir(parents=True,exist_ok=True);staging=destination.with_name(destination.name+'.uploading')
+    try:
+        with source.open('rb') as src,staging.open('wb') as dst:
+            shutil.copyfileobj(src,dst,length=1024*1024);dst.flush();os.fsync(dst.fileno())
+        os.replace(staging,destination)
+    except Exception:
+        try:staging.unlink(missing_ok=True)
+        except OSError:pass
+        raise
+
+
+def _cleanup_voice_temp(request:web.Request)->None:
+    for value in request.get('_voice_temp_paths',[]):
+        try:Path(value).unlink(missing_ok=True)
+        except OSError:pass
+
+
+def _voice_storage_capacity(required_bytes:int)->dict[str,int|bool]:
+    minimum=max(RUNTIME_DATABASE_MIN_FREE_BYTES,int(required_bytes)+RUNTIME_DATABASE_MIN_FREE_BYTES)
+    return ensure_runtime_storage_capacity(
+        max(RUNTIME_STORAGE_RESERVE_BYTES,minimum),
+        minimum_free_bytes=minimum,
+    )
 
 
 def _utcnow() -> datetime:
@@ -633,20 +694,52 @@ def _phrase(lesson_data:dict,pid:str|None)->dict:
     return next((x for x in lesson_data.get('required_phrases',[]) if x.get('phrase_id')==pid),{}) if pid else {}
 
 async def voice(request:web.Request)->web.Response:
+    """Serialize and replay one native recording id without consuming its body twice."""
+
+    sid=int(request.match_info['session_id']);recording_id=_voice_recording_id(request)
+    lock_key=f'{sid}:{recording_id}' if recording_id else ''
+    lock=_voice_upload_locks.setdefault(lock_key,asyncio.Lock()) if lock_key else None
+    try:
+        if lock is None:return await _voice_impl(request)
+        async with lock:
+            async with SessionLocal() as db:
+                existing=await db.scalar(select(VoiceAttempt).where(
+                    VoiceAttempt.lesson_session_id==sid,
+                    VoiceAttempt.client_recording_id==recording_id,
+                ))
+                if existing and existing.response_json:
+                    path=Path(str(existing.audio_path or ''))
+                    if path.is_file() and path.stat().st_size>0:
+                        payload=json.loads(existing.response_json);payload['idempotent_replay']=True
+                        log.info('MOBILE_VOICE_IDEMPOTENT_REPLAY session=%s recording_id=%s attempt_id=%s path=%s bytes=%s',sid,recording_id,existing.id,path,existing.audio_size_bytes or path.stat().st_size)
+                        return web.json_response(payload)
+                    log.error('MOBILE_VOICE_ACK_FILE_MISSING session=%s recording_id=%s attempt_id=%s path=%s',sid,recording_id,existing.id,path)
+                    return _voice_error(409,'VOICE_ACK_FILE_MISSING','Сохранённая запись временно недоступна. Повторите отправку.')
+            return await _voice_impl(request)
+    finally:
+        _cleanup_voice_temp(request)
+
+
+async def _voice_impl(request:web.Request)->web.Response:
     started=time.perf_counter();p=await _parent(request);sid=int(request.match_info['session_id'])
     async with SessionLocal() as db:
         sess=await db.get(LessonSession,sid)
         if not sess:raise web.HTTPNotFound()
         c=await db.get(Child,sess.child_id)
         if not c or c.parent_id!=p.id:raise web.HTTPForbidden()
-    fields={};raw=None
-    root=settings.storage_root/'children'/str(c.id)/'mobile-voice'/str(sid);root.mkdir(parents=True,exist_ok=True)
+    fields={};raw=None;audio_mime_type='audio/mp4';recording_id=_voice_recording_id(request)
+    root=settings.storage_root/'children'/str(c.id)/'mobile-voice'/str(sid)
+    incoming_root=_voice_temp_root(sid)
+    request['_voice_temp_paths']=[]
     if request.content_type.startswith('application/json'):
         data=await request.json();payload=str(data.get('audio_base64') or '')
-        if not payload:raise web.HTTPBadRequest(text=json.dumps({'error':'No audio received'}),content_type='application/json')
-        raw=root/f'voice_{secrets.token_hex(6)}.m4a'
-        try:raw.write_bytes(base64.b64decode(payload,validate=True))
-        except Exception:raise web.HTTPBadRequest(text=json.dumps({'error':'Invalid audio_base64'}),content_type='application/json')
+        if not payload:return _voice_error(400,'VOICE_EMPTY','Запись не содержит аудио.')
+        raw=incoming_root/f'voice_{secrets.token_hex(6)}.m4a';request['_voice_temp_paths'].append(str(raw));request['_voice_temp_paths'].append(str(raw)+'.uploading')
+        try:decoded=base64.b64decode(payload,validate=True);_write_atomic(raw,decoded)
+        except (ValueError,binascii.Error):return _voice_error(400,'VOICE_INVALID_BASE64','Формат записи не распознан.')
+        except OSError as exc:
+            log.exception('MOBILE_VOICE_TEMP_WRITE_FAILED session=%s recording_id=%s',sid,recording_id or '-')
+            return _voice_error(503,'VOICE_TEMP_WRITE_FAILED','Запись сохранена на телефоне. Попробуйте отправить её ещё раз.',retryable=True,detail=str(exc)[:160])
         fields={'slide_id':str(data.get('slide_id') or ''),'prompt':str(data.get('prompt') or ''),'phrase_id':data.get('phrase_id'),'conversation_turn':data.get('conversation_turn',0),'runtime_context':data.get('runtime_context') or {},'retake':bool(data.get('retake'))}
     else:
         reader=await request.multipart()
@@ -654,14 +747,30 @@ async def voice(request:web.Request)->web.Response:
             part=await reader.next()
             if part is None:break
             if part.name=='audio':
-                raw=root/f'voice_{secrets.token_hex(6)}.m4a'
-                with raw.open('wb') as f:
-                    while True:
-                        chunk=await part.read_chunk()
-                        if not chunk:break
-                        f.write(chunk)
+                audio_mime_type=str(part.headers.get('Content-Type') or 'audio/mp4').split(';',1)[0].strip()[:80] or 'audio/mp4'
+                raw=incoming_root/f'voice_{secrets.token_hex(6)}.m4a';staging=raw.with_name(raw.name+'.uploading');request['_voice_temp_paths'].extend([str(raw),str(staging)])
+                try:
+                    with staging.open('wb') as f:
+                        while True:
+                            chunk=await part.read_chunk()
+                            if not chunk:break
+                            f.write(chunk)
+                            if f.tell()>VOICE_MAX_UPLOAD_BYTES:return _voice_error(413,'VOICE_TOO_LARGE','Запись слишком длинная. Запишите короткий ответ.')
+                        f.flush();os.fsync(f.fileno())
+                    os.replace(staging,raw)
+                except OSError as exc:
+                    log.exception('MOBILE_VOICE_TEMP_WRITE_FAILED session=%s recording_id=%s',sid,recording_id or '-')
+                    return _voice_error(503,'VOICE_TEMP_WRITE_FAILED','Запись сохранена на телефоне. Попробуйте отправить её ещё раз.',retryable=True,detail=str(exc)[:160])
             else:fields[part.name]=await part.text()
-    if raw is None:raise web.HTTPBadRequest(text=json.dumps({'error':'No audio received'}),content_type='application/json')
+    if raw is None:return _voice_error(400,'VOICE_EMPTY','Запись не содержит аудио.')
+    upload_size=raw.stat().st_size if raw.exists() else 0
+    size_error=_voice_upload_size_error(upload_size)
+    if size_error is not None:return size_error
+    storage_report=_voice_storage_capacity(upload_size)
+    if not bool(storage_report.get('ready')):
+        log.error('MOBILE_VOICE_STORAGE_FULL session=%s recording_id=%s bytes=%s before=%s after=%s minimum=%s',sid,recording_id or '-',upload_size,storage_report.get('before'),storage_report.get('after'),storage_report.get('minimum'))
+        return _voice_error(507,'VOICE_STORAGE_FULL','Запись сохранена на телефоне. Сейчас её не удалось отправить — попробуйте ещё раз.',retryable=True,recording_id=recording_id)
+    log.info('MOBILE_VOICE_UPLOAD_RECEIVED session=%s child=%s recording_id=%s bytes=%s mime=%s temp_path=%s storage_free=%s',sid,c.id,recording_id or '-',upload_size,audio_mime_type,raw,storage_report.get('after'))
     uploaded=time.perf_counter()
     slide_id=fields.get('slide_id','');prompt=fields.get('prompt','');pid=fields.get('phrase_id') or None;retake_mode=fields.get('retake') is True or str(fields.get('retake') or '').lower() in {'1','true','yes'}
     try:conversation_turn=max(0,int(fields.get('conversation_turn') or 0))
@@ -678,12 +787,13 @@ async def voice(request:web.Request)->web.Response:
         activity=VoiceActivity(0.0,0.0,0.0,None,None,False,'TOO_SHORT')
     else:
         activity=await asyncio.to_thread(analyze_voice_activity,raw)
-    wav=raw.with_suffix('.wav');max_sec=None
+    wav=raw.with_suffix('.wav');request['_voice_temp_paths'].append(str(wav));max_sec=None
     if activity.has_speech:
         try:await asyncio.to_thread(prepare_child_voice,raw,wav,max_sec)
-        except Exception as exc:raise web.HTTPBadRequest(text=json.dumps({'error':f'Не удалось обработать запись: {exc}'}),content_type='application/json')
-    else:
-        wav=raw
+        except Exception as exc:
+            log.exception('MOBILE_VOICE_PREPARE_FAILED session=%s recording_id=%s bytes=%s mime=%s temp_path=%s',sid,recording_id or '-',upload_size,audio_mime_type,raw)
+            return _voice_error(422,'VOICE_AUDIO_PREPARE_FAILED','Не удалось подготовить запись. Она сохранена на телефоне — попробуйте отправить ещё раз.',retryable=True,recording_id=recording_id,detail=str(exc)[:240])
+    else:wav=raw
     prepared=time.perf_counter()
     storage_phrase_id=str(pid or sl.get('required_phrase_id') or slide_id)
     async with SessionLocal() as db:
@@ -800,32 +910,43 @@ async def voice(request:web.Request)->web.Response:
             native_hint=follow_up_translation or model_translation,
         )
         feedback=tutor_turn.reaction_native or (model_translation if not accepted else '') or feedback
-    async with SessionLocal() as db:
-        db_child=await db.get(Child,c.id)
-        va=VoiceAttempt(lesson_session_id=sid,phrase_id=storage_phrase_id,attempt_number=attempt_number,audio_path=str(wav),status=status,transcript=assessment.transcript,detected_language=assessment.detected_language,confidence=assessment.confidence,grammar_errors=json.dumps(assessment.grammar_errors,ensure_ascii=False),pronunciation_errors=json.dumps(assessment.pronunciation_errors,ensure_ascii=False),semantic_match=assessment.semantic_match);db.add(va);await db.flush();await record_movie_voice_slot(db,sid,storage_phrase_id,va,lesson_data)
-        adaptive_signals={
-            'response_latency_ms':_bounded_int(client_context.get('response_latency_ms'),120_000) if isinstance(client_context,dict) else 0,
-            'hints_used':_bounded_int(client_context.get('hints_used'),5) if isinstance(client_context,dict) else 0,
-            'open_question':bool(client_context.get('open_question')) if isinstance(client_context,dict) else False,
-            'used_native_language':bool(assessment.detected_language and c.native_language and c.target_language and assessment.detected_language==c.native_language and c.native_language!=c.target_language),
-        }
-        if retake_mode:
-            working_difficulty=float(db_child.working_difficulty or 0.15);language_level=db_child.language_level or 'PRE_A1'
-        else:
-            working_difficulty,language_level=apply_adaptive_assessment(db_child,va,assessment,adaptive_signals)
-        try:
-            runtime=json.loads(sess.runtime_state_json or '{}')
-        except (TypeError,ValueError,json.JSONDecodeError):
-            runtime={}
-        runtime['adaptive_profile']={'working_difficulty':working_difficulty,'language_level':language_level,'proficiency_band':proficiency_band(working_difficulty),'answers_count':int(db_child.answers_count or 0)}
-        db_session=await db.get(LessonSession,sid);db_session.runtime_state_json=json.dumps(runtime,ensure_ascii=False)
-        await db.commit()
-    if wav!=raw and wav.exists():
-        try:raw.unlink(missing_ok=True)
-        except OSError as exc:log.warning('MOBILE_VOICE_REDUNDANT_SOURCE_CLEANUP_FAILED path=%s error=%s',raw,exc)
+    durable_name=(f"voice_{hashlib.sha256(recording_id.encode()).hexdigest()[:20]}.m4a" if recording_id else f'voice_{secrets.token_hex(10)}.m4a')
+    durable_path=root/durable_name
+    try:_copy_atomic(raw,durable_path)
+    except OSError as exc:
+        log.exception('MOBILE_VOICE_DURABLE_WRITE_FAILED session=%s recording_id=%s source=%s destination=%s bytes=%s',sid,recording_id or '-',raw,durable_path,upload_size)
+        return _voice_error(507,'VOICE_STORAGE_FULL','Запись сохранена на телефоне. Сейчас её не удалось отправить — попробуйте ещё раз.',retryable=True,recording_id=recording_id,detail=str(exc)[:160])
+    response_payload:dict={}
+    try:
+        async with SessionLocal() as db:
+            db_child=await db.get(Child,c.id)
+            va=VoiceAttempt(lesson_session_id=sid,phrase_id=storage_phrase_id,attempt_number=attempt_number,audio_path=str(durable_path),client_recording_id=recording_id or None,audio_size_bytes=upload_size,audio_mime_type=audio_mime_type,status=status,transcript=assessment.transcript,detected_language=assessment.detected_language,confidence=assessment.confidence,grammar_errors=json.dumps(assessment.grammar_errors,ensure_ascii=False),pronunciation_errors=json.dumps(assessment.pronunciation_errors,ensure_ascii=False),semantic_match=assessment.semantic_match);db.add(va);await db.flush();await record_movie_voice_slot(db,sid,storage_phrase_id,va,lesson_data)
+            adaptive_signals={
+                'response_latency_ms':_bounded_int(client_context.get('response_latency_ms'),120_000) if isinstance(client_context,dict) else 0,
+                'hints_used':_bounded_int(client_context.get('hints_used'),5) if isinstance(client_context,dict) else 0,
+                'open_question':bool(client_context.get('open_question')) if isinstance(client_context,dict) else False,
+                'used_native_language':bool(assessment.detected_language and c.native_language and c.target_language and assessment.detected_language==c.native_language and c.native_language!=c.target_language),
+            }
+            if retake_mode:
+                working_difficulty=float(db_child.working_difficulty or 0.15);language_level=db_child.language_level or 'PRE_A1'
+            else:
+                working_difficulty,language_level=apply_adaptive_assessment(db_child,va,assessment,adaptive_signals)
+            try:runtime=json.loads(sess.runtime_state_json or '{}')
+            except (TypeError,ValueError,json.JSONDecodeError):runtime={}
+            runtime['adaptive_profile']={'working_difficulty':working_difficulty,'language_level':language_level,'proficiency_band':proficiency_band(working_difficulty),'answers_count':int(db_child.answers_count or 0)}
+            db_session=await db.get(LessonSession,sid);db_session.runtime_state_json=json.dumps(runtime,ensure_ascii=False)
+            response_payload={'status':status,'feedback_state':feedback_state,'accepted':accepted,'movie_take_accepted':movie_take_accepted,'retake':retake_mode,'retake_replaced':retake_mode and (accepted or movie_take_accepted),'advance_allowed':outcome.advance_allowed,'needs_retry':outcome.needs_retry,'attempt_number':attempt_number,'max_attempts':max_attempts,'transcript':assessment.transcript,'task_goal':goal,'task_goal_source':'active_follow_up' if conversation_turn else 'authored_lesson','accepted_intents':accepted_meaning,'target_meaning':sl.get('target_meaning') or authored_goal,'model_examples':sl.get('model_examples') or [simple_example],'target_response':target_response,'helper_translation':helper_translation,'follow_up_question':follow_up_question,'follow_up_translation':follow_up_translation,'model_phrase':model_phrase,'model_translation':model_translation,'child_phrase_target':assessment.transcript if accepted else '','child_phrase_translation':child_phrase_translation,'feedback':feedback,'feedback_source_language':c.native_language or 'ru','correction_target':correction_target if not accepted else '','correction_source_language':c.target_language or 'ru','response_target':assessment.response_target,'response_native':tutor_turn.reaction_native if tutor_turn else '','semantic_match':assessment.semantic_match,'semantic_response':{'task_type':runtime_context.get('task_type'),'selection_policy':runtime_context.get('selection_policy'),'selected_item_ids':[item.get('id') for item in runtime_context.get('selected_items') or []],'reaction_target':target_response,'reaction_native':helper_translation,'follow_up_target':follow_up_question,'follow_up_native':follow_up_translation},'runtime_context':runtime_context,'tutor_turn':tutor_turn.payload() if tutor_turn else None,'voice_activity':{'reason':activity.reason,'duration_seconds':activity.duration_seconds,'speech_seconds':activity.speech_seconds,'speech_ratio':activity.speech_ratio,'mean_volume_db':activity.mean_volume_db,'max_volume_db':activity.max_volume_db},'adaptive_profile':{'working_difficulty':working_difficulty,'language_level':language_level,'support':complexity_support(working_difficulty)},'client_recording_id':recording_id or None,'audio_size_bytes':upload_size,'audio_mime_type':audio_mime_type,'idempotent_replay':False}
+            va.response_json=json.dumps(response_payload,ensure_ascii=False)
+            await db.commit()
+    except Exception as exc:
+        try:durable_path.unlink(missing_ok=True)
+        except OSError:pass
+        log.exception('MOBILE_VOICE_ATOMIC_SAVE_FAILED session=%s recording_id=%s path=%s bytes=%s',sid,recording_id or '-',durable_path,upload_size)
+        return _voice_error(503,'VOICE_SAVE_FAILED','Запись сохранена на телефоне. Сейчас её не удалось отправить — попробуйте ещё раз.',retryable=True,recording_id=recording_id,detail=str(exc)[:160])
     saved=time.perf_counter()
+    log.info('MOBILE_VOICE_SAVE_SUCCESS session=%s child=%s slide=%s phrase=%s recording_id=%s path=%s bytes=%s mime=%s db_attempt=%s movie_take=%s',sid,c.id,slide_id,storage_phrase_id,recording_id or '-',durable_path,upload_size,audio_mime_type,attempt_number,movie_take_accepted)
     log.info('MOBILE_VOICE_LATENCY session=%s slide=%s phrase=%s upload_ms=%d prepare_ms=%d assess_ms=%d save_ms=%d total_ms=%d attempt=%d status=%s activity=%s speech_ms=%d retake=%s',sid,slide_id,storage_phrase_id,round((uploaded-started)*1000),round((prepared-uploaded)*1000),round((assessed-prepared)*1000),round((saved-assessed)*1000),round((saved-started)*1000),attempt_number,status,activity.reason,round(activity.speech_seconds*1000),retake_mode)
-    return web.json_response({'status':status,'feedback_state':feedback_state,'accepted':accepted,'movie_take_accepted':movie_take_accepted,'retake':retake_mode,'retake_replaced':retake_mode and (accepted or movie_take_accepted),'advance_allowed':outcome.advance_allowed,'needs_retry':outcome.needs_retry,'attempt_number':attempt_number,'max_attempts':max_attempts,'transcript':assessment.transcript,'task_goal':goal,'task_goal_source':'active_follow_up' if conversation_turn else 'authored_lesson','accepted_intents':accepted_meaning,'target_meaning':sl.get('target_meaning') or authored_goal,'model_examples':sl.get('model_examples') or [simple_example],'target_response':target_response,'helper_translation':helper_translation,'follow_up_question':follow_up_question,'follow_up_translation':follow_up_translation,'model_phrase':model_phrase,'model_translation':model_translation,'child_phrase_target':assessment.transcript if accepted else '','child_phrase_translation':child_phrase_translation,'feedback':feedback,'feedback_source_language':c.native_language or 'ru','correction_target':correction_target if not accepted else '','correction_source_language':c.target_language or 'ru','response_target':assessment.response_target,'response_native':tutor_turn.reaction_native if tutor_turn else '','semantic_match':assessment.semantic_match,'semantic_response':{'task_type':runtime_context.get('task_type'),'selection_policy':runtime_context.get('selection_policy'),'selected_item_ids':[item.get('id') for item in runtime_context.get('selected_items') or []],'reaction_target':target_response,'reaction_native':helper_translation,'follow_up_target':follow_up_question,'follow_up_native':follow_up_translation},'runtime_context':runtime_context,'tutor_turn':tutor_turn.payload() if tutor_turn else None,'voice_activity':{'reason':activity.reason,'duration_seconds':activity.duration_seconds,'speech_seconds':activity.speech_seconds,'speech_ratio':activity.speech_ratio,'mean_volume_db':activity.mean_volume_db,'max_volume_db':activity.max_volume_db},'adaptive_profile':{'working_difficulty':working_difficulty,'language_level':language_level,'support':complexity_support(working_difficulty)}})
+    return web.json_response(response_payload)
 
 
 async def current_voice_take(request:web.Request)->web.StreamResponse:

@@ -123,6 +123,26 @@ export function microphonePermissionDecision(granted:boolean,canAskAgain:boolean
 }
 
 export type RecordingGateState={speechStarted:boolean;silenceStartedAt:number|null;stopReason:'SPEECH_COMPLETE'|'SAFETY_LIMIT'|null};
+export type VoiceUploadState='IDLE'|'RECORDING'|'FINALIZING'|'LOCAL_READY'|'UPLOADING'|'UPLOAD_FAILED'|'ACKNOWLEDGED';
+export type VoiceUploadEvent='START'|'STOP'|'LOCAL_FINALIZED'|'UPLOAD'|'FAIL'|'ACK'|'RESET';
+
+export function voiceUploadTransition(state:VoiceUploadState,event:VoiceUploadEvent):VoiceUploadState{
+  if(event==='RESET')return 'IDLE';
+  if(event==='START'&&['IDLE','ACKNOWLEDGED'].includes(state))return 'RECORDING';
+  if(event==='STOP'&&state==='RECORDING')return 'FINALIZING';
+  if(event==='LOCAL_FINALIZED'&&state==='FINALIZING')return 'LOCAL_READY';
+  if(event==='UPLOAD'&&['LOCAL_READY','UPLOAD_FAILED'].includes(state))return 'UPLOADING';
+  if(event==='FAIL'&&state==='UPLOADING')return 'UPLOAD_FAILED';
+  if(event==='ACK'&&state==='UPLOADING')return 'ACKNOWLEDGED';
+  return state;
+}
+
+export function recorderDurationForGate(recordingStartedAt:number,nowMillis:number,reportedDurationMillis:number):number{
+  const elapsed=Math.max(0,nowMillis-recordingStartedAt);return Math.max(0,Math.min(Number(reportedDurationMillis||0),elapsed+250));
+}
+
+export function voiceUploadFailureStage(requiredForMovie:boolean):RuntimeStage{return requiredForMovie?'WAITING_VOICE':'COMPLETE'}
+
 export function recordingGate(previous:RecordingGateState,durationMillis:number,metering:number|undefined,nowMillis:number,hardLimitMillis=25_000,silenceMillis=1_250):RecordingGateState{
   if(durationMillis>=hardLimitMillis)return {...previous,stopReason:'SAFETY_LIMIT'};
   if(!Number.isFinite(metering as number))return {...previous,stopReason:null};

@@ -43,6 +43,12 @@ def test_no_speech_never_becomes_correct_even_when_retries_are_exhausted():
     assert not is_non_speech_transcript("yes")
 
 
+@pytest.mark.parametrize(("size","status"),[(0,400),(1,None),(999,None),(1000,None),(mobile_api.VOICE_MAX_UPLOAD_BYTES,None),(mobile_api.VOICE_MAX_UPLOAD_BYTES+1,413)])
+def test_mobile_voice_upload_size_boundaries(size,status):
+    response=mobile_api._voice_upload_size_error(size)
+    assert (response.status if response is not None else None)==status
+
+
 def test_asr_confidence_uses_provider_evidence_and_fails_closed_without_it():
     high = _transcription_confidence({"logprobs":[{"token":"Yes","logprob":-0.05},{"token":".","logprob":-0.1}]})
     quiet_whisper = _transcription_confidence({"segments":[{"start":0,"end":2,"avg_logprob":-0.3,"no_speech_prob":0.9}]})
@@ -307,6 +313,55 @@ async def test_mobile_silence_gate_three_attempts_and_resume_selection(monkeypat
             slot=await db.scalar(select(MovieVoiceSlot).where(MovieVoiceSlot.lesson_session_id==session_id,MovieVoiceSlot.required_voice_id=="lesha_clothes"));assert slot.status=="RECORDED"
     finally:
         await client.close();await engine.dispose()
+
+
+async def _voice_upload_test_db(email: str):
+    engine=create_async_engine("sqlite+aiosqlite:///:memory:");sessions=async_sessionmaker(engine,expire_on_commit=False)
+    async with engine.begin() as connection:await connection.run_sync(Base.metadata.create_all)
+    async with sessions() as db:
+        parent=Parent(email=email,email_verified=True);db.add(parent);await db.flush()
+        child=Child(parent_id=parent.id,display_name="Voice QA",target_language="en",native_language="ru");db.add(child);await db.flush()
+        lesson_session=LessonSession(child_id=child.id,lesson_id="demo_001",status="IN_PROGRESS");db.add(lesson_session);await db.commit()
+        return engine,sessions,parent.id,child.id,lesson_session.id
+
+
+@pytest.mark.asyncio
+async def test_mobile_voice_retry_is_idempotent_and_keeps_one_durable_compressed_take(monkeypatch,tmp_path):
+    engine,sessions,parent_id,child_id,session_id=await _voice_upload_test_db("voice-idempotent@example.com")
+    def fake_activity(_raw):return VoiceActivity(2.0,1.4,.7,-24.0,-7.0,True,"SPEECH_DETECTED")
+    def fake_prepare(_raw,wav,_max):wav.write_bytes(b"RIFF"+b"prepared"*250);return wav
+    async def fake_assess(*_args,**_kwargs):return SpeechAssessment(transcript="Why are you warm?",detected_language="en",confidence=.98,semantic_match=.98,status="ACCEPTED_CORRECT",grammar_errors=[],pronunciation_errors=[])
+    async def fake_translate(text,_source,_target):return text
+    monkeypatch.setattr(mobile_api,"SessionLocal",sessions);monkeypatch.setattr(mobile_api,"analyze_voice_activity",fake_activity);monkeypatch.setattr(mobile_api,"prepare_child_voice",fake_prepare);monkeypatch.setattr(mobile_api,"assess_speech",fake_assess);monkeypatch.setattr(mobile_api,"translate_text",fake_translate)
+    monkeypatch.setattr(settings,"storage_root",tmp_path/"storage");monkeypatch.setattr(settings,"mobile_auth_secret","voice-idempotent-secret-that-is-long-enough")
+    token=issue_session_token(parent_id);headers={"Authorization":f"Bearer {token}","Idempotency-Key":"v1-session-qa-same-file"};payload={"audio_base64":base64.b64encode(b"compressed-m4a"*200).decode(),"slide_id":"slide_19","phrase_id":"lesha_clothes","prompt":"Why are you dressed so warmly?"}
+    app=web.Application();mobile_api.register_mobile_routes(app);client=TestClient(TestServer(app));await client.start_server()
+    try:
+        first=await client.post(f"/api/mobile/session/{session_id}/voice",headers=headers,json=payload);second=await client.post(f"/api/mobile/session/{session_id}/voice",headers=headers,json=payload)
+        assert first.status==200 and second.status==200
+        first_payload=await first.json();second_payload=await second.json();assert first_payload["idempotent_replay"] is False and second_payload["idempotent_replay"] is True
+        async with sessions() as db:
+            attempts=(await db.scalars(select(VoiceAttempt).where(VoiceAttempt.lesson_session_id==session_id))).all();assert len(attempts)==1
+            attempt=attempts[0];durable=Path(attempt.audio_path);assert attempt.client_recording_id=="v1-session-qa-same-file" and attempt.response_json
+            assert attempt.audio_size_bytes==len(b"compressed-m4a"*200) and attempt.audio_mime_type=="audio/mp4"
+            assert durable.suffix==".m4a" and durable.is_file() and durable.stat().st_size==attempt.audio_size_bytes
+            slot=await db.scalar(select(MovieVoiceSlot).where(MovieVoiceSlot.lesson_session_id==session_id,MovieVoiceSlot.required_voice_id=="lesha_clothes"));assert slot and slot.source_attempt_id==attempt.id
+    finally:await client.close();await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_mobile_voice_full_storage_fails_before_assessment_without_db_or_child_file(monkeypatch,tmp_path):
+    engine,sessions,parent_id,child_id,session_id=await _voice_upload_test_db("voice-full@example.com")
+    async def forbidden_assessment(*_args,**_kwargs):raise AssertionError("assessment must not run when durable storage is full")
+    monkeypatch.setattr(mobile_api,"SessionLocal",sessions);monkeypatch.setattr(mobile_api,"assess_speech",forbidden_assessment);monkeypatch.setattr(mobile_api,"_voice_storage_capacity",lambda required:{"ready":False,"before":0,"after":0,"minimum":required+4*1024*1024})
+    monkeypatch.setattr(settings,"storage_root",tmp_path/"storage");monkeypatch.setattr(settings,"mobile_auth_secret","voice-full-secret-that-is-definitely-long-enough")
+    token=issue_session_token(parent_id);headers={"Authorization":f"Bearer {token}","Idempotency-Key":"v1-full-storage"};payload={"audio_base64":base64.b64encode(b"compressed-m4a"*200).decode(),"slide_id":"slide_19","phrase_id":"lesha_clothes","prompt":"Why are you dressed so warmly?"}
+    app=web.Application();mobile_api.register_mobile_routes(app);client=TestClient(TestServer(app));await client.start_server()
+    try:
+        response=await client.post(f"/api/mobile/session/{session_id}/voice",headers=headers,json=payload);body=await response.json();assert response.status==507 and body["code"]=="VOICE_STORAGE_FULL" and body["retryable"] is True
+        async with sessions() as db:assert not (await db.scalars(select(VoiceAttempt).where(VoiceAttempt.lesson_session_id==session_id))).all()
+        child_root=tmp_path/"storage"/"children"/str(child_id)/"mobile-voice"/str(session_id);assert not child_root.exists() or not list(child_root.glob("*"))
+    finally:await client.close();await engine.dispose()
 
 
 @pytest.mark.asyncio

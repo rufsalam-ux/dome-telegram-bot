@@ -2,6 +2,8 @@ import * as SecureStore from 'expo-secure-store';
 
 const DEFAULT_BASE='https://dome-telegram-bot-production.up.railway.app';
 const TOKEN_KEY='dome_mobile_token';
+const PENDING_VOICE_KEY='dome_pending_voice_v1';
+const MAX_LOCAL_VOICE_BYTES=32*1024*1024;
 
 export const API_BASE=(process.env.EXPO_PUBLIC_DOME_API_BASE_URL||process.env.EXPO_PUBLIC_API_URL||DEFAULT_BASE).replace(/\/$/,'');
 
@@ -14,6 +16,57 @@ const sessionInvalidatedListeners=new Set<SessionInvalidatedListener>();
 async function readUriBase64(uri:string):Promise<string>{
   const FileSystem=require('expo-file-system/legacy');
   return FileSystem.readAsStringAsync(uri,{encoding:FileSystem.EncodingType.Base64});
+}
+
+export type PendingVoiceRecording={
+  version:1;recordingId:string;uri:string;size:number;mimeType:string;createdAt:number;
+  sessionId:number;slideId:string;phraseId?:string;prompt:string;conversationTurn:number;
+  runtimeContext:Record<string,unknown>;retake:boolean;
+};
+
+async function readPendingVoiceQueue():Promise<PendingVoiceRecording[]>{
+  try{
+    const raw=await SecureStore.getItemAsync(PENDING_VOICE_KEY);const parsed=raw?JSON.parse(raw):[];
+    return Array.isArray(parsed)?parsed.filter(item=>item&&item.version===1&&item.recordingId&&item.uri):[];
+  }catch(error){console.warn('VOICE_PENDING_METADATA_READ_FAILED',error);return []}
+}
+
+async function writePendingVoiceQueue(items:PendingVoiceRecording[]):Promise<void>{
+  if(items.length)await SecureStore.setItemAsync(PENDING_VOICE_KEY,JSON.stringify(items.slice(-24)));
+  else await SecureStore.deleteItemAsync(PENDING_VOICE_KEY);
+}
+
+function voiceExtension(uri:string):string{
+  const clean=String(uri||'').split(/[?#]/,1)[0]||'';const match=clean.match(/\.([a-z0-9]{2,5})$/i);const value=String(match?.[1]||'m4a').toLowerCase();return ['m4a','caf','wav','aac'].includes(value)?value:'m4a';
+}
+
+function voiceMimeType(extension:string):string{return extension==='wav'?'audio/wav':extension==='caf'?'audio/x-caf':extension==='aac'?'audio/aac':'audio/mp4'}
+
+export async function finalizeLocalVoiceRecording(sourceUri:string,metadata:Omit<PendingVoiceRecording,'version'|'recordingId'|'uri'|'size'|'mimeType'|'createdAt'>):Promise<PendingVoiceRecording>{
+  const FileSystem=require('expo-file-system/legacy');const source=await FileSystem.getInfoAsync(sourceUri,{size:true});const sourceSize=Number(source.size||0);
+  if(!source.exists||sourceSize<=0)throw new MobileApiError(0,'Файл записи не создан','VOICE_LOCAL_EMPTY');
+  if(sourceSize>MAX_LOCAL_VOICE_BYTES)throw new MobileApiError(0,'Запись слишком длинная','VOICE_LOCAL_TOO_LARGE');
+  const root=String(FileSystem.documentDirectory||'');if(!root)throw new MobileApiError(0,'Хранилище записи недоступно','VOICE_LOCAL_STORAGE_UNAVAILABLE');
+  const extension=voiceExtension(sourceUri);const recordingId=`v1-${metadata.sessionId}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,10)}`;
+  const directory=`${root}dome-pending-voice/`;const destination=`${directory}${recordingId}.${extension}`;const temporary=`${destination}.uploading`;
+  await FileSystem.makeDirectoryAsync(directory,{intermediates:true});await FileSystem.deleteAsync(temporary,{idempotent:true}).catch(()=>{});await FileSystem.copyAsync({from:sourceUri,to:temporary});
+  const copied=await FileSystem.getInfoAsync(temporary,{size:true});const size=Number(copied.size||0);if(!copied.exists||size<=0){await FileSystem.deleteAsync(temporary,{idempotent:true}).catch(()=>{});throw new MobileApiError(0,'Файл записи не создан','VOICE_LOCAL_COPY_EMPTY')}
+  await FileSystem.moveAsync({from:temporary,to:destination});
+  const pending:PendingVoiceRecording={version:1,recordingId,uri:destination,size,mimeType:voiceMimeType(extension),createdAt:Date.now(),...metadata};
+  const queue=(await readPendingVoiceQueue()).filter(item=>item.recordingId!==recordingId);queue.push(pending);
+  try{await writePendingVoiceQueue(queue)}catch(error){await FileSystem.deleteAsync(destination,{idempotent:true}).catch(()=>{});console.error('VOICE_PENDING_METADATA_SAVE_FAILED',{recording_id:recordingId,error});throw new MobileApiError(0,'Не удалось надёжно сохранить запись на телефоне','VOICE_LOCAL_METADATA_SAVE_FAILED',{cause:String((error as any)?.message||error)})}
+  console.info('VOICE_LOCAL_FINALIZED',{recording_id:recordingId,session_id:pending.sessionId,slide_id:pending.slideId,phrase_id:pending.phraseId,size,path:destination,mime_type:pending.mimeType});return pending;
+}
+
+export async function pendingLocalVoiceRecording(sessionId:number,slideId:string,phraseId?:string):Promise<PendingVoiceRecording|undefined>{
+  const FileSystem=require('expo-file-system/legacy');const queue=await readPendingVoiceQueue();let changed=false;const valid:PendingVoiceRecording[]=[];
+  for(const item of queue){const info=await FileSystem.getInfoAsync(item.uri,{size:true}).catch(()=>({exists:false,size:0}));if(info.exists&&Number(info.size||0)>0)valid.push({...item,size:Number(info.size||item.size||0)});else changed=true}
+  if(changed)await writePendingVoiceQueue(valid).catch(error=>console.warn('VOICE_PENDING_METADATA_PRUNE_FAILED',error));
+  return [...valid].reverse().find(item=>item.sessionId===sessionId&&item.slideId===slideId&&String(item.phraseId||'')===String(phraseId||''));
+}
+
+export async function acknowledgeLocalVoiceRecording(recording:PendingVoiceRecording):Promise<void>{
+  const FileSystem=require('expo-file-system/legacy');const queue=(await readPendingVoiceQueue()).filter(item=>item.recordingId!==recording.recordingId);await writePendingVoiceQueue(queue);await FileSystem.deleteAsync(recording.uri,{idempotent:true}).catch((error:unknown)=>console.warn('VOICE_ACK_LOCAL_DELETE_FAILED',{recording_id:recording.recordingId,error}));console.info('VOICE_SERVER_ACKNOWLEDGED',{recording_id:recording.recordingId,session_id:recording.sessionId,slide_id:recording.slideId,phrase_id:recording.phraseId});
 }
 
 export type TutorAudioSource={uri:string;headers?:Record<string,string>;name?:string};
@@ -222,9 +275,12 @@ export function saveSessionProgress(sessionId:number,currentStepId:string,lesson
   return request(`/api/mobile/session/${sessionId}/progress`,jsonInit('POST',{current_step_id:currentStepId,lesson_version:lessonVersion,...(currentStep===undefined?{}:{current_step:currentStep})}));
 }
 
-export async function sendVoice(sessionId:number,uri:string,slideId:string,phraseId:string|undefined,prompt:string,conversationTurn=0,runtimeContext:Record<string,unknown>={},retake=false){
-  const audio_base64=await readUriBase64(uri);
-  return request(`/api/mobile/session/${sessionId}/voice`,jsonInit('POST',{audio_base64,slide_id:slideId,phrase_id:phraseId||null,prompt:prompt||'',conversation_turn:conversationTurn,runtime_context:runtimeContext,retake}));
+export async function sendVoice(sessionId:number,uri:string,slideId:string,phraseId:string|undefined,prompt:string,conversationTurn=0,runtimeContext:Record<string,unknown>={},retake=false,clientRecordingId='',mimeType='audio/mp4'){
+  const form=new FormData();
+  form.append('audio',{uri,name:`${clientRecordingId||'voice'}.m4a`,type:mimeType||'audio/mp4'} as any);
+  form.append('slide_id',slideId);form.append('phrase_id',phraseId||'');form.append('prompt',prompt||'');form.append('conversation_turn',String(conversationTurn));form.append('runtime_context',JSON.stringify(runtimeContext||{}));form.append('retake',retake?'true':'false');
+  console.info('VOICE_UPLOAD_REQUEST',{recording_id:clientRecordingId||null,session_id:sessionId,slide_id:slideId,phrase_id:phraseId||null,path:uri,mime_type:mimeType});
+  return request(`/api/mobile/session/${sessionId}/voice`,{method:'POST',headers:clientRecordingId?{'Idempotency-Key':clientRecordingId}:{},body:form});
 }
 
 export async function currentVoiceSource(sessionId:number,phraseId:string):Promise<TutorAudioSource>{

@@ -34,6 +34,7 @@ import {
   recordEnabled,
   renderedPerceptualHeightRatio,
   recordingGate,
+  recorderDurationForGate,
   recoveryStageAfterFailure,
   rectanglesOverlap,
   requiresSelection,
@@ -53,6 +54,8 @@ import {
   microphonePermissionDecision,
   updatePackedItems,
   visualRequiredForSlide,
+  voiceUploadFailureStage,
+  voiceUploadTransition,
   withLessonTimeout,
 } from '../src/engine/lessonRuntime.ts';
 
@@ -222,6 +225,20 @@ test('recording has no five-second cutoff and stops only after post-speech silen
   const hard=recordingGate({speechStarted:false,silenceStartedAt:null,stopReason:null},25_000,-80,25_000);assert.equal(hard.stopReason,'SAFETY_LIMIT');
 });
 
+test('voice upload state is double-stop safe and retries the same durable take',()=>{
+  let state:any='IDLE';state=voiceUploadTransition(state,'START');assert.equal(state,'RECORDING');
+  state=voiceUploadTransition(state,'STOP');assert.equal(state,'FINALIZING');
+  assert.equal(voiceUploadTransition(state,'STOP'),'FINALIZING');
+  state=voiceUploadTransition(state,'LOCAL_FINALIZED');assert.equal(state,'LOCAL_READY');
+  state=voiceUploadTransition(state,'UPLOAD');assert.equal(state,'UPLOADING');
+  state=voiceUploadTransition(state,'FAIL');assert.equal(state,'UPLOAD_FAILED');
+  state=voiceUploadTransition(state,'UPLOAD');assert.equal(state,'UPLOADING');
+  state=voiceUploadTransition(state,'ACK');assert.equal(state,'ACKNOWLEDGED');
+  assert.equal(voiceUploadFailureStage(true),'WAITING_VOICE');assert.equal(voiceUploadFailureStage(false),'COMPLETE');
+  assert.equal(recorderDurationForGate(10_000,10_500,9_000),750);
+  assert.equal(recorderDurationForGate(10_000,12_000,1_750),1_750);
+});
+
 test('third unsupported take advances without being accepted',()=>{
   assert.equal(advanceAfterAssessment({accepted:false,advance_allowed:true,needs_retry:false}),'COMPLETE');
   assert.equal(advanceAfterAssessment({accepted:false,advance_allowed:false,needs_retry:true}),'RETRY');
@@ -346,7 +363,10 @@ test('DOME cat is an independent companion and reward star stays in its own laye
   assert.doesNotMatch(cat,/star\.png|gameActive|cat-mini-game-star|assets\/heroes\/cat\.png/);assert.match(cat,/dome-splash-v2\.png/);assert.match(cat,/const focused=stage==='AI_SPEAKING'\|\|stage==='PROCESSING'/);assert.doesNotMatch(cat,/return null/);assert.match(reward,/star\.png/);assert.match(player,/<CatActivityLayer/);
   assert.match(player,/childIdeaPrompt\(labelRu,'suitcase'\)/);
   assert.match(player,/const adaptiveContext=\{\.\.\.voiceRuntimeContext/);
-  assert.match(player,/sendVoice\([^\n]+adaptiveContext,intent==='retake'\)/);
+  assert.match(player,/finalizeLocalVoiceRecording\(uri/);assert.match(player,/sendVoice\(localRecording\.sessionId/);
+  assert.match(player,/acknowledgeLocalVoiceRecording\(localRecording\)/);assert.match(player,/retryPendingVoice/);
+  const api=readFileSync(new URL('../src/api/mobile.ts',import.meta.url),'utf8');assert.match(api,/Idempotency-Key/);assert.match(api,/new FormData\(\)/);assert.match(api,/dome-pending-voice/);
+  assert.doesNotMatch(api.slice(api.indexOf('export async function sendVoice'),api.indexOf('export async function currentVoiceSource')),/audio_base64|readUriBase64/);
 });
 
 test('accepted optional conversation keeps Continue and Answer independently enabled',()=>{

@@ -196,6 +196,17 @@ async def init_db() -> None:
             "completion_state": "VARCHAR(30) NOT NULL DEFAULT 'ACTIVE'",
         })
         await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_lesson_sessions_lesson_version ON lesson_sessions(lesson_version)"))
+        await _add_columns(conn, "voice_attempts", {
+            "client_recording_id": "VARCHAR(160)",
+            "response_json": "TEXT",
+            "audio_size_bytes": "INTEGER",
+            "audio_mime_type": "VARCHAR(80)",
+        })
+        await conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_voice_attempt_session_client_recording "
+            "ON voice_attempts(lesson_session_id, client_recording_id) "
+            "WHERE client_recording_id IS NOT NULL AND client_recording_id <> ''"
+        ))
         if settings.database_url.startswith("sqlite"):
             await _add_columns(conn, "children", {
                 "country": "VARCHAR(120)", "language_level": "VARCHAR(20) NOT NULL DEFAULT 'PRE_A1'",

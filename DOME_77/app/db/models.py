@@ -91,11 +91,18 @@ class LessonSession(Base):
 
 class VoiceAttempt(Base):
     __tablename__ = "voice_attempts"
+    __table_args__ = (UniqueConstraint("lesson_session_id", "client_recording_id", name="uq_voice_attempt_session_client_recording"),)
     id: Mapped[int] = mapped_column(primary_key=True)
     lesson_session_id: Mapped[int] = mapped_column(ForeignKey("lesson_sessions.id"), index=True)
     phrase_id: Mapped[str] = mapped_column(String(100))
     attempt_number: Mapped[int] = mapped_column(Integer)
     audio_path: Mapped[str] = mapped_column(Text)
+    # Stable mobile-side identity makes a network retry return the original
+    # acknowledgement instead of grading/saving the same take twice.
+    client_recording_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    response_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    audio_size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    audio_mime_type: Mapped[str | None] = mapped_column(String(80), nullable=True)
     status: Mapped[str] = mapped_column(String(40), default="RECEIVED")
     transcript: Mapped[str | None] = mapped_column(Text, nullable=True)
     detected_language: Mapped[str | None] = mapped_column(String(30), nullable=True)
