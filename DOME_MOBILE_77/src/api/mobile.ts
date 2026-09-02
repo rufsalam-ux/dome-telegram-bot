@@ -338,11 +338,24 @@ export function saveSessionProgress(sessionId:number,currentStepId:string,lesson
   return request(`/api/mobile/session/${sessionId}/progress`,jsonInit('POST',{current_step_id:currentStepId,lesson_version:lessonVersion,...(currentStep===undefined?{}:{current_step:currentStep})}));
 }
 
+function nativeVoiceUploadFile(uri:string):any{
+  // Expo SDK 56's fetch serializer deliberately rejects React Native's legacy
+  // {uri,name,type} FormData part.  expo-file-system's File is a native,
+  // file-backed Blob implementation (it exposes bytes()), which that serializer
+  // supports in Expo Go on both Android and iOS.
+  const {File}=require('expo-file-system');const file=new File(uri);
+  if(!file||typeof file.bytes!=='function')throw new MobileApiError(0,'Не удалось подготовить запись к отправке','VOICE_NATIVE_FILE_UNAVAILABLE');
+  return file;
+}
+
 export async function sendVoice(sessionId:number,uri:string,slideId:string,phraseId:string|undefined,prompt:string,conversationTurn=0,runtimeContext:Record<string,unknown>={},retake=false,clientRecordingId='',mimeType='audio/mp4'){
   const form=new FormData();
-  form.append('audio',{uri,name:`${clientRecordingId||'voice'}.m4a`,type:mimeType||'audio/mp4'} as any);
+  const audioFile=nativeVoiceUploadFile(uri);
+  // Do not set Content-Type here: Expo's native multipart serializer owns the
+  // boundary. The file's durable local .m4a name and type travel with File.
+  form.append('audio',audioFile as any);
   form.append('slide_id',slideId);form.append('phrase_id',phraseId||'');form.append('prompt',prompt||'');form.append('conversation_turn',String(conversationTurn));form.append('runtime_context',JSON.stringify(runtimeContext||{}));form.append('retake',retake?'true':'false');
-  console.info('VOICE_UPLOAD_REQUEST',{recording_id:clientRecordingId||null,session_id:sessionId,slide_id:slideId,phrase_id:phraseId||null,path:uri,mime_type:mimeType});
+  console.info('VOICE_UPLOAD_REQUEST',{recording_id:clientRecordingId||null,session_id:sessionId,slide_id:slideId,phrase_id:phraseId||null,path:uri,mime_type:mimeType,transport:'expo-file-formdata'});
   const response=await request(`/api/mobile/session/${sessionId}/voice`,{method:'POST',headers:clientRecordingId?{'Idempotency-Key':clientRecordingId}:{},body:form});
   console.info('VOICE_UPLOAD_RESPONSE',{http_status:200,recording_id:clientRecordingId||null,session_id:sessionId,slide_id:slideId,phrase_id:phraseId||null,accepted:Boolean(response?.accepted),movie_take_accepted:Boolean(response?.movie_take_accepted)});
   return response;

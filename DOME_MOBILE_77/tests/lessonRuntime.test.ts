@@ -14,6 +14,7 @@ import {
   cardVoiceKey,
   childIdeaPrompt,
   childSafeRuntimeMessage,
+  containedMediaFrame,
   lessonBootstrapErrorCode,
   completeHelperLanguage,
   computeHeroScale,
@@ -66,7 +67,7 @@ test('movie completion polling exposes normalized identity, retry and player dia
   for(const marker of ['MOVIE_RETRY_STARTED','MOVIE_MOBILE_POLL_START','MOVIE_MOBILE_POLL_RESPONSE','MOVIE_MOBILE_READY_RECEIVED','MOVIE_MOBILE_URL_SET'])assert.match(lesson+root,new RegExp(marker));
   assert.match(lesson,/getMovieStatus\(session\)/);assert.match(player,/MOVIE_PLAYER_OPENED/);assert.match(player,/MOVIE_PLAYER_ERROR/);
 });
-import {avatarCanvasStyle,avatarFacing,avatarGroundRatio,avatarRenderTrace,avatarScaleX,canonicalChildAvatarUri,lessonAvatarConfig,slideAvatarConfig,sourceAvatarFacing,visibleCharacterAspect,visibleCharacterBox} from '../src/engine/avatarRuntime.ts';
+import {avatarCanvasStyle,avatarFacing,avatarGroundRatio,avatarImageFrame,avatarRenderTrace,avatarScaleX,canonicalChildAvatarUri,lessonAvatarConfig,slideAvatarConfig,sourceAvatarFacing,visibleCharacterAspect,visibleCharacterBox} from '../src/engine/avatarRuntime.ts';
 import {completedMoviePayload,normalizeMovieState,MOVIE_RETRY_STATES} from '../src/engine/movieRuntime.ts';
 import {CAT_ACTIVITY_STATES,catProcessingState,catStateForStage} from '../src/engine/catRuntime.ts';
 import {isStandaloneVideoStep,mediaPhaseAfterEnd,normalizeMediaSequence,usesGenericMediaRuntime,videoStepBehavior} from '../src/engine/mediaRuntime.ts';
@@ -365,7 +366,7 @@ test('DOME cat is an independent companion and reward star stays in its own laye
   assert.match(player,/const adaptiveContext=\{\.\.\.voiceRuntimeContext/);
   assert.match(player,/finalizeLocalVoiceRecording\(uri/);assert.match(player,/sendVoice\(localRecording\.sessionId/);
   assert.match(player,/acknowledgeLocalVoiceRecording\(localRecording\)/);assert.match(player,/retryPendingVoice/);
-  const api=readFileSync(new URL('../src/api/mobile.ts',import.meta.url),'utf8');assert.match(api,/Idempotency-Key/);assert.match(api,/new FormData\(\)/);assert.match(api,/dome-pending-voice/);
+  const api=readFileSync(new URL('../src/api/mobile.ts',import.meta.url),'utf8');assert.match(api,/Idempotency-Key/);assert.match(api,/new FormData\(\)/);assert.match(api,/dome-pending-voice/);assert.match(api,/const \{File\}=require\('expo-file-system'\)/);assert.match(api,/new File\(uri\)/);assert.match(api,/form\.append\('audio',audioFile as any\)/);assert.doesNotMatch(api,/form\.append\('audio',\{uri/);
   assert.doesNotMatch(api.slice(api.indexOf('export async function sendVoice'),api.indexOf('export async function currentVoiceSource')),/audio_base64|readUriBase64/);
 });
 
@@ -543,6 +544,19 @@ test('confirmed geometry drives the same perceptual canvas and ground anchor',()
   const confirmation=readFileSync(new URL('../src/screens/HeroConfirmScreen.tsx',import.meta.url),'utf8');
   for(const marker of ['ГОЛОВА','ПЕРЕД','ЗАД','ЛЕВАЯ ЛАПА','ПРАВАЯ ЛАПА','НОГИ / ОПОРА'])assert.match(confirmation,new RegExp(marker));
   assert.match(confirmation,/PanResponder\.create/);assert.match(confirmation,/confirmHeroGeometry/);
+});
+
+test('lesson media fit preserves every original slide aspect without cropping or scrolling',()=>{
+  for(const [width,height,aspect] of [[360,280,4/3],[360,280,16/9],[360,280,9/16],[412,236,2.75]] as const){
+    const frame=containedMediaFrame(width,height,aspect);assert.ok(frame.width<=width+.001);assert.ok(frame.height<=height+.001);assert.ok(Math.abs(frame.width/frame.height-aspect)<.0001);assert.ok(frame.left>=-.001&&frame.top>=-.001);assert.ok(frame.left+frame.width<=width+.001&&frame.top+frame.height<=height+.001);
+  }
+  const player=readFileSync(new URL('../src/screens/LessonPlayer.tsx',import.meta.url),'utf8');const media=readFileSync(new URL('../src/components/LessonMediaRuntime.tsx',import.meta.url),'utf8');assert.match(player,/containedMediaFrame/);assert.match(player,/resizeMode='contain'/);assert.doesNotMatch(media,/aspectRatio:item\?\.type==='video'\?behavior\.aspectRatio:16\/9/);
+});
+
+test('non-square and unusual child drawings retain one proportional source scale',()=>{
+  const wide=avatarImageFrame({sourceWidth:1600,sourceHeight:400,characterBoundingBox:[.1,.1,.8,.8]},120,240);assert.ok(Math.abs(wide.width/wide.height-4)<.0001);assert.ok(wide.visibleWidth<=120+.001&&wide.visibleHeight<=240+.001);
+  const tall=avatarImageFrame({sourceWidth:400,sourceHeight:1600,characterBoundingBox:[.12,.06,.76,.88]},240,120);assert.ok(Math.abs(tall.width/tall.height-.25)<.0001);assert.ok(tall.visibleWidth<=240+.001&&tall.visibleHeight<=120+.001);
+  const avatar=readFileSync(new URL('../src/components/ChildAvatarLayer.tsx',import.meta.url),'utf8');assert.match(avatar,/avatarImageFrame/);assert.match(avatar,/resizeMode='contain'/);assert.doesNotMatch(avatar,/resizeMode='stretch'/);assert.doesNotMatch(avatar,/scaleY/);
 });
 
 test('My Hero flow is React Native safe and never calls browser reload APIs',()=>{

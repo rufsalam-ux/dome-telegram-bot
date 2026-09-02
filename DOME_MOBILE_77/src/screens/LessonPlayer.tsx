@@ -17,7 +17,7 @@ import bundledLesson from '../data/botLesson.json';
 import {lessonImages,suitcaseImages} from '../data/lessonImages';
 import {ANIMAL_PAIR_OPTIONS,CARD_OPTIONS,MOOD_EMOJIS,SUITCASE_ITEMS,buildRuntimeOrder,type NormalizedRect,type SelectableImageOption} from '../data/lessonInteractions';
 import {API_BASE,acknowledgeLocalVoiceRecording,cacheChildRecordingSource,cacheTutorAudioSource,completeSession,currentVoiceSource,finalizeLocalVoiceRecording,getLesson,getMovieStatus,isUnauthorizedError,lessonVisualSource,pendingLocalVoiceRecording,retryMovieBuild,saveSessionProgress,sendInteractive,sendVoice,startSession,translateText,ttsSource,TUTOR_AUDIO_CACHE_TIMEOUT_MS,type PendingVoiceRecording} from '../api/mobile';
-import {adaptiveCardQuestionText,adaptiveModelPhrase,advanceAfterAssessment,answerEnabled,buildVoiceRuntimeContext,cardQuestions,cardSelectionAllowed,cardVoiceKey,childIdeaPrompt,childSafeRuntimeMessage,completeHelperLanguage,hasCorrectiveFeedback,heroBox,initialBilingualHint,interactionGuidance,isRequiredForMovie,lessonBootstrapErrorCode,lessonLayoutPolicy,manualHintExample,microphonePermissionDecision,nextCardQuestion,nextEnabled,progressiveHint,recorderDurationForGate,recordingGate,recoveryStageAfterFailure,requiresSelection,requiresVoice,runtimePrompt,stageAfterTutorSpeech,tutorAudioErrorCode,tutorAudioFailureStage,tutorAudioTransition,tutorAudioWatchdogStage,visualRequiredForSlide,voiceUploadFailureStage,voiceUploadTransition,withLessonTimeout,type LessonBootstrapStage,type RecordingGateState,type RuntimeStage,type VoiceUploadState} from '../engine/lessonRuntime';
+import {adaptiveCardQuestionText,adaptiveModelPhrase,advanceAfterAssessment,answerEnabled,buildVoiceRuntimeContext,cardQuestions,cardSelectionAllowed,cardVoiceKey,childIdeaPrompt,childSafeRuntimeMessage,completeHelperLanguage,containedMediaFrame,hasCorrectiveFeedback,heroBox,initialBilingualHint,interactionGuidance,isRequiredForMovie,lessonBootstrapErrorCode,lessonLayoutPolicy,manualHintExample,microphonePermissionDecision,nextCardQuestion,nextEnabled,progressiveHint,recorderDurationForGate,recordingGate,recoveryStageAfterFailure,requiresSelection,requiresVoice,runtimePrompt,stageAfterTutorSpeech,tutorAudioErrorCode,tutorAudioFailureStage,tutorAudioTransition,tutorAudioWatchdogStage,visualRequiredForSlide,voiceUploadFailureStage,voiceUploadTransition,withLessonTimeout,type LessonBootstrapStage,type RecordingGateState,type RuntimeStage,type VoiceUploadState} from '../engine/lessonRuntime';
 import {avatarFacing,canonicalChildAvatarUri,lessonAvatarConfig,slideAvatarConfig,type AvatarFacing} from '../engine/avatarRuntime';
 import {isStandaloneVideoStep,usesGenericMediaRuntime,videoStepBehavior} from '../engine/mediaRuntime';
 import {markPreSlideVideoShown,preSlideVideoTargetIndex,type PreSlideVideoDescriptor,type PreSlideVideoState} from '../engine/preSlideVideo';
@@ -43,6 +43,16 @@ function genericChoiceOptions(slide:any):Array<{id:string;label:string;correct:b
 }
 function rectStyle(rect:NormalizedRect|number[]){const values=Array.isArray(rect)?{left:rect[0]||0,top:rect[1]||0,width:rect[2]||0,height:rect[3]||0}:rect;return {left:`${values.left*100}%`,top:`${values.top*100}%`,width:`${values.width*100}%`,height:`${values.height*100}%`} as any}
 
+function assetAspect(source:any):number{
+  try{const asset=Image.resolveAssetSource(source);const width=Number(asset?.width||0);const height=Number(asset?.height||0);if(width>0&&height>0)return width/height}catch{}
+  return 16/9;
+}
+
+function assetUri(source:any):string{
+  if(source&&typeof source==='object'&&typeof source.uri==='string')return source.uri;
+  try{return String(Image.resolveAssetSource(source)?.uri||'')}catch{return ''}
+}
+
 const RECORDING_STOP_TIMEOUT_MS=20_000;
 const VOICE_ANALYSIS_TIMEOUT_MS=120_000;
 const CHILD_RECORDING_OPTIONS={...RecordingPresets.HIGH_QUALITY,isMeteringEnabled:true};
@@ -59,10 +69,15 @@ function movieStageMessage(stage:string):string{
 }
 
 function SelectableArtwork({slide,source,minHeight,heroUri,heroRect,heroFacing,heroAnim,heroMetadata,options,selected,attention,onSelect,onImageError}:{slide:any;source:any;minHeight:number;heroUri?:string;heroRect:number[]|null;heroFacing:AvatarFacing;heroAnim:Animated.Value;heroMetadata?:any;options:SelectableImageOption[];selected:string;attention:Animated.Value;onSelect:(value:string)=>void;onImageError:()=>void}){
-  return <View testID='lesson-visual-frame' style={{position:'relative',width:'100%',minHeight,aspectRatio:16/9,borderRadius:18,overflow:'hidden',backgroundColor:'#eaf4fb'}}>
+  const[viewport,setViewport]=useState({width:0,height:0});const[aspect,setAspect]=useState(()=>assetAspect(source));
+  useEffect(()=>{let active=true;const initial=assetAspect(source);setAspect(initial);const uri=assetUri(source);if(uri&&initial===16/9)Image.getSize(uri,(width,height)=>{if(active&&width>0&&height>0)setAspect(width/height)},()=>{});return()=>{active=false}},[source]);
+  const frame=containedMediaFrame(viewport.width,viewport.height,aspect);const hasViewport=viewport.width>0&&viewport.height>0;
+  return <View testID='lesson-visual-fit-container' onLayout={event=>{const{width,height}=event.nativeEvent.layout;if(Math.abs(width-viewport.width)>.5||Math.abs(height-viewport.height)>.5)setViewport({width,height})}} style={{position:'relative',flex:1,minHeight}}>
+    <View testID='lesson-visual-frame' style={hasViewport?{position:'absolute',left:frame.left,top:frame.top,width:frame.width,height:frame.height,borderRadius:18,overflow:'hidden',backgroundColor:'#eaf4fb'}:{position:'absolute',left:0,top:0,right:0,bottom:0,borderRadius:18,overflow:'hidden',backgroundColor:'#eaf4fb'}}>
     <Image testID='lesson-visual-image' source={source} onError={onImageError} resizeMode='contain' style={{position:'absolute',inset:0,width:'100%',height:'100%',zIndex:1}}/>
     <ChildAvatarLayer uri={heroUri} rect={heroRect} facing={heroFacing} animation={heroAnim} metadata={heroMetadata}/>
     {options.map(option=><DomePressable key={option.id} testID={`lesson-target-${slide.slide_id}-${option.id}`} accessibilityRole='button' accessibilityLabel={option.label} onPress={()=>onSelect(option.id)} style={[{position:'absolute',zIndex:7,borderRadius:12,borderWidth:selected===option.id?5:(selected?0:2),borderColor:selected===option.id?'#13a864':'rgba(255,255,255,0.82)',backgroundColor:selected===option.id?'rgba(19,168,100,0.18)':'transparent'},rectStyle(option.rect)]}>{!selected?<Animated.View pointerEvents='none' style={{position:'absolute',inset:-3,borderRadius:14,borderWidth:4,borderColor:'#ffd54a',opacity:attention}}/>:null}{selected===option.id?<Text style={{position:'absolute',right:4,bottom:3,backgroundColor:'#fff',borderRadius:11,paddingHorizontal:6,fontWeight:'900'}}>✓</Text>:null}</DomePressable>)}
+    </View>
   </View>;
 }
 
@@ -218,7 +233,7 @@ export function LessonPlayer({lessonId}:{lessonId:string}){
   const nextTitle=completionRecovery?'Завершить урок':stage!=='COMPLETE'&&!requiredForMovie?'Пропустить →':idx<runtimeOrder.length-1?'Дальше →':'Завершить урок';
   const visual=<View testID='lesson-visual-fit' style={layout.landscape?{flexGrow:layout.visualFlex,flexShrink:1,maxHeight:layout.visualMaxHeight,minHeight:0,overflow:'hidden'}:{flex:1,minHeight:0,overflow:'hidden'}}>
     {showArtwork&&displayedVisualSource?<SelectableArtwork slide={slide} source={displayedVisualSource} minHeight={layout.visualMinHeight} heroUri={heroUri} heroRect={heroRect} heroFacing={heroDirection} heroAnim={heroAnim} heroMetadata={child?.heroMetadata} options={artworkOptions} selected={choice} attention={interactionAttention} onSelect={chooseArtwork} onImageError={handleVisualImageError}/>:null}
-    {genericMedia?<View style={{position:'relative',width:'100%',minHeight:layout.visualMinHeight,aspectRatio:standaloneVideo?videoBehavior.aspectRatio:16/9}}><LessonMediaRuntime lessonId={String(lesson.lesson_id||lessonId)} slide={artworkSlide} minHeight={layout.visualMinHeight} bundledImage={originalVisualSource} onVideoDone={standaloneVideo?finishVideoStep:undefined} onVideoPlaybackChange={standaloneVideo?handleVideoPlaybackChange:undefined}/>{!standaloneVideo?<ChildAvatarLayer uri={heroUri} rect={heroRect} facing={heroDirection} animation={heroAnim} metadata={child?.heroMetadata}/>:null}</View>:null}
+    {genericMedia?<View style={{position:'relative',width:'100%',minHeight:layout.visualMinHeight,flex:1}}><LessonMediaRuntime lessonId={String(lesson.lesson_id||lessonId)} slide={artworkSlide} minHeight={layout.visualMinHeight} bundledImage={originalVisualSource} onVideoDone={standaloneVideo?finishVideoStep:undefined} onVideoPlaybackChange={standaloneVideo?handleVideoPlaybackChange:undefined}/>{!standaloneVideo?<ChildAvatarLayer uri={heroUri} rect={heroRect} facing={heroDirection} animation={heroAnim} metadata={child?.heroMetadata}/>:null}</View>:null}
     {showArtwork&&!displayedVisualSource?<View testID='lesson-visual-placeholder' style={{minHeight:layout.visualMinHeight,borderRadius:18,backgroundColor:'#eaf4fb',alignItems:'center',justifyContent:'center',padding:16}}><Text style={{fontSize:34}}>🖼️</Text><Body compact muted>Загружаю картинку…</Body></View>:null}
     {showArtwork&&displayedVisualStatus==='unavailable'?<Card compact><Body compact>Иллюстрация временно недоступна.</Body><Button compact secondary title='Попробовать ещё раз' onPress={()=>setVisualRetryNonce(value=>value+1)}/></Card>:null}
     {isGenericSelector&&!showArtwork?<Card compact={layout.compact}><H2 compact={layout.compact}>{String(slide.instruction||slide.question||'Выбери ответ')}</H2><View style={{gap:6}}>{genericOptions.map(option=><Button key={option.id} compact={layout.compact} secondary={!choice.split('|').includes(option.id)} title={`${choice.split('|').includes(option.id)?'✓ ':''}${option.label}`} onPress={()=>chooseArtwork(option.id)}/>)}</View></Card>:null}

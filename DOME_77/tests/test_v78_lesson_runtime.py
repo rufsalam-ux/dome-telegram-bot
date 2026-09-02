@@ -9,7 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from aiohttp import web
+from aiohttp import FormData, web
 from aiohttp.test_utils import TestClient, TestServer
 from PIL import Image
 from sqlalchemy import select
@@ -346,6 +346,28 @@ async def test_mobile_voice_retry_is_idempotent_and_keeps_one_durable_compressed
             assert attempt.audio_size_bytes==len(b"compressed-m4a"*200) and attempt.audio_mime_type=="audio/mp4"
             assert durable.suffix==".m4a" and durable.is_file() and durable.stat().st_size==attempt.audio_size_bytes
             slot=await db.scalar(select(MovieVoiceSlot).where(MovieVoiceSlot.lesson_session_id==session_id,MovieVoiceSlot.required_voice_id=="lesha_clothes"));assert slot and slot.source_attempt_id==attempt.id
+    finally:await client.close();await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_mobile_voice_native_multipart_contract_keeps_the_durable_take(monkeypatch,tmp_path):
+    """The Expo File-backed multipart request must reach the same voice parser as JSON retries."""
+    engine,sessions,parent_id,child_id,session_id=await _voice_upload_test_db("voice-native-multipart@example.com")
+    def fake_activity(_raw):return VoiceActivity(2.0,1.4,.7,-24.0,-7.0,True,"SPEECH_DETECTED")
+    def fake_prepare(_raw,wav,_max):wav.write_bytes(b"RIFF"+b"prepared"*250);return wav
+    async def fake_assess(*_args,**_kwargs):return SpeechAssessment(transcript="I am warm",detected_language="en",confidence=.98,semantic_match=.98,status="ACCEPTED_CORRECT",grammar_errors=[],pronunciation_errors=[])
+    async def fake_translate(text,_source,_target):return text
+    monkeypatch.setattr(mobile_api,"SessionLocal",sessions);monkeypatch.setattr(mobile_api,"analyze_voice_activity",fake_activity);monkeypatch.setattr(mobile_api,"prepare_child_voice",fake_prepare);monkeypatch.setattr(mobile_api,"assess_speech",fake_assess);monkeypatch.setattr(mobile_api,"translate_text",fake_translate)
+    monkeypatch.setattr(settings,"storage_root",tmp_path/"storage");monkeypatch.setattr(settings,"mobile_auth_secret","voice-native-multipart-secret-that-is-long-enough")
+    token=issue_session_token(parent_id);headers={"Authorization":f"Bearer {token}","Idempotency-Key":"v1-native-multipart"}
+    app=web.Application();mobile_api.register_mobile_routes(app);client=TestClient(TestServer(app));await client.start_server()
+    try:
+        form=FormData();form.add_field("audio",b"compressed-m4a"*200,filename="v1-native-multipart.m4a",content_type="audio/mp4")
+        for name,value in {"slide_id":"slide_19","phrase_id":"lesha_clothes","prompt":"Why are you dressed so warmly?","conversation_turn":"0","runtime_context":"{}","retake":"false"}.items():form.add_field(name,value)
+        response=await client.post(f"/api/mobile/session/{session_id}/voice",headers=headers,data=form);payload=await response.json();assert response.status==200 and payload["accepted"] is True
+        async with sessions() as db:
+            attempt=await db.scalar(select(VoiceAttempt).where(VoiceAttempt.lesson_session_id==session_id));assert attempt and attempt.client_recording_id=="v1-native-multipart" and attempt.audio_mime_type=="audio/mp4"
+            durable=Path(attempt.audio_path);assert durable.is_file() and durable.stat().st_size==len(b"compressed-m4a"*200)
     finally:await client.close();await engine.dispose()
 
 

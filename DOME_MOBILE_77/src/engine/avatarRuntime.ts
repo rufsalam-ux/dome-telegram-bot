@@ -136,3 +136,24 @@ export function avatarCanvasStyle(metadata:any):any{
   const box=visibleCharacterBox(metadata);const ground=avatarGroundRatio(metadata);const groundShift=(1-ground)*100;
   return {position:'absolute',left:`${-(box[0]/box[2])*100}%`,top:`${-(box[1]/box[3])*100+groundShift}%`,width:`${100/box[2]}%`,height:`${100/box[3]}%`};
 }
+
+export type AvatarImageFrame={left:number;top:number;width:number;height:number;visibleWidth:number;visibleHeight:number;sourceAspect:number};
+
+/**
+ * Converts confirmed transparent-padding geometry into one proportional image
+ * frame.  Width and height always derive from the same scale, so wide/tall
+ * child drawings retain their silhouette rather than being stretched to a
+ * scene rectangle.
+ */
+export function avatarImageFrame(metadata:any,containerWidth:number,containerHeight:number):AvatarImageFrame{
+  const boundsWidth=Math.max(0,Number(containerWidth)||0);const boundsHeight=Math.max(0,Number(containerHeight)||0);const box=visibleCharacterBox(metadata);
+  const sourceWidth=Number(metadata?.sourceWidth);const sourceHeight=Number(metadata?.sourceHeight);
+  const sourceAspect=Number.isFinite(sourceWidth)&&Number.isFinite(sourceHeight)&&sourceWidth>0&&sourceHeight>0
+    ?Math.max(.18,Math.min(6,sourceWidth/sourceHeight))
+    :Math.max(.18,Math.min(6,visibleCharacterAspect(metadata)*box[3]/Math.max(.01,box[2])));
+  const visibleAspect=Math.max(.18,Math.min(6,sourceAspect*box[2]/Math.max(.01,box[3])));
+  if(boundsWidth<=0||boundsHeight<=0)return {left:0,top:0,width:0,height:0,visibleWidth:0,visibleHeight:0,sourceAspect};
+  const visibleWidth=Math.min(boundsWidth,boundsHeight*visibleAspect);const visibleHeight=visibleWidth/visibleAspect;
+  const width=visibleWidth/Math.max(.01,box[2]);const height=width/sourceAspect;
+  return {left:(boundsWidth-visibleWidth)/2-box[0]*width,top:boundsHeight-visibleHeight-box[1]*height,width,height,visibleWidth,visibleHeight,sourceAspect};
+}

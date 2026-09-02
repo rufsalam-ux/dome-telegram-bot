@@ -284,6 +284,16 @@ export function lessonLayoutPolicy(width:number,height:number,bottomInset=0):Lay
   return {landscape,compact,visualFlex:landscape?1.35:0,controlFlex:landscape?1:0,contentPadding:compact?8:14,bottomPadding:Math.max(bottomInset,8),visualMinHeight:Math.min(visualMaxHeight,compact?188:216),visualMaxHeight,controlsPinned:true};
 }
 
+export type ContainedMediaFrame={left:number;top:number;width:number;height:number;aspectRatio:number};
+
+/** Fit a source into its available canvas without crop, stretch, or scroll. */
+export function containedMediaFrame(containerWidth:number,containerHeight:number,sourceAspect=16/9):ContainedMediaFrame{
+  const width=Math.max(0,Number(containerWidth)||0);const height=Math.max(0,Number(containerHeight)||0);const aspect=Math.max(.2,Math.min(5,Number(sourceAspect)||16/9));
+  if(width<=0||height<=0)return {left:0,top:0,width:0,height:0,aspectRatio:aspect};
+  const fittedWidth=Math.min(width,height*aspect);const fittedHeight=fittedWidth/aspect;
+  return {left:(width-fittedWidth)/2,top:(height-fittedHeight)/2,width:fittedWidth,height:fittedHeight,aspectRatio:aspect};
+}
+
 export type SuitcaseFitLayout={columns:number;rows:number;itemSize:number;packedItemSize:number;targetHeight:number;itemsHeight:number;totalHeight:number};
 export function suitcaseFitLayout(width:number,height:number,itemCount:number):SuitcaseFitLayout{
   const safeWidth=Math.max(180,Number(width)||180);const safeHeight=Math.max(150,Number(height)||150);const count=Math.max(1,Math.floor(itemCount||1));
