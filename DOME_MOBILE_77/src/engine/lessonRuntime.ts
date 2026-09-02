@@ -110,6 +110,7 @@ export function tutorAudioFailureStage(after:RuntimeStage):RuntimeStage{
 
 export function tutorAudioErrorCode(error:unknown):string{
   const message=String((error as any)?.message||error||'').toUpperCase();
+  if(message.includes('TTS_CACHE_TIMEOUT'))return 'TTS_CACHE_TIMEOUT';
   if(message.includes('TTS_DOWNLOAD_HTTP_503'))return 'TTS_SERVICE_UNAVAILABLE';
   if(message.includes('TTS_DOWNLOAD_HTTP_'))return 'TTS_DOWNLOAD_FAILED';
   if(message.includes('TIMEOUT'))return 'TTS_PLAYBACK_TIMEOUT';

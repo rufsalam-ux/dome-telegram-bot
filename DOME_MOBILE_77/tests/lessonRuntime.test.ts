@@ -193,10 +193,10 @@ test('home menu is a fixed responsive grid that fits common Android and iPhone v
 
 test('native tutor audio is cached and a service failure degrades without freezing the lesson',()=>{
   const api=readFileSync(new URL('../src/api/mobile.ts',import.meta.url),'utf8');const player=readFileSync(new URL('../src/screens/LessonPlayer.tsx',import.meta.url),'utf8');
-  assert.match(api,/\/api\/mobile\/tts\?/);assert.match(api,/cacheRemoteAudioSource\(source,'dome-tutor-audio','ogg'\)/);assert.match(api,/downloadAsync/);
-  assert.match(player,/cacheTutorAudioSource/);assert.match(player,/TUTOR_AUDIO_PLAYBACK_ERROR/);assert.doesNotMatch(player,/!tutorVoiceError&&answerEnabled/);assert.doesNotMatch(player,/!tutorVoiceError&&nextEnabled/);
+  assert.match(api,/\/api\/mobile\/tts\?/);assert.match(api,/cacheRemoteAudioSource\(source,'dome-tutor-audio','ogg'/);assert.match(api,/createDownloadResumable/);assert.match(api,/FileSystemSessionType\?\.FOREGROUND/);assert.match(api,/TUTOR_AUDIO_CACHE_TIMEOUT/);assert.match(api,/TUTOR_AUDIO_HTTP_RESPONSE/);assert.match(api,/TUTOR_AUDIO_CACHE_READY/);
+  assert.match(player,/cacheTutorAudioSource/);assert.match(player,/TUTOR_AUDIO_PLAYBACK_ERROR/);assert.match(player,/TUTOR_AUDIO_RECOVERY_READY/);assert.match(player,/VOICE_RECORDING_START_REQUEST/);assert.match(player,/VOICE_RECORDING_STARTED/);assert.match(player,/playRecordingCueSafely/);assert.match(player,/RECORDING_BOUNDARY_CUE_FAILED/);assert.doesNotMatch(player,/!tutorVoiceError&&answerEnabled/);assert.doesNotMatch(player,/!tutorVoiceError&&nextEnabled/);
   assert.equal(tutorAudioFailureStage('WAITING_ACTION'),'WAITING_ACTION');assert.equal(tutorAudioFailureStage('COMPLETE'),'COMPLETE');
-  assert.equal(tutorAudioErrorCode(new Error('TTS_DOWNLOAD_HTTP_503')),'TTS_SERVICE_UNAVAILABLE');
+  assert.equal(tutorAudioErrorCode(new Error('TTS_DOWNLOAD_HTTP_503')),'TTS_SERVICE_UNAVAILABLE');assert.equal(tutorAudioErrorCode(new Error('TTS_CACHE_TIMEOUT')),'TTS_CACHE_TIMEOUT');
   assert.equal(microphonePermissionDecision(false,true),'request');assert.equal(microphonePermissionDecision(false,false),'settings');assert.equal(microphonePermissionDecision(true,false),'record');
 });
 

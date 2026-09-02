@@ -1,6 +1,6 @@
 import * as SecureStore from 'expo-secure-store';
 
-const DEFAULT_BASE='https://dome-telegram-bot-production.up.railway.app';
+const DEFAULT_BASE='https://dome-telegram-bot-production-e6f6.up.railway.app';
 const TOKEN_KEY='dome_mobile_token';
 const PENDING_VOICE_KEY='dome_pending_voice_v1';
 const MAX_LOCAL_VOICE_BYTES=32*1024*1024;
@@ -71,27 +71,90 @@ export async function acknowledgeLocalVoiceRecording(recording:PendingVoiceRecor
 
 export type TutorAudioSource={uri:string;headers?:Record<string,string>;name?:string};
 
+// The mobile endpoint can perform two first-use provider syntheses and join
+// them before sending a byte. Its backend contract permits 90 seconds, so the
+// generic 18-second lesson timeout is not valid for this media transfer. The
+// download remains bounded and is explicitly cancelled if it does expire.
+export const TUTOR_AUDIO_CACHE_TIMEOUT_MS=95_000;
+const CHILD_AUDIO_CACHE_TIMEOUT_MS=30_000;
+const audioCacheInFlight=new Map<string,Promise<TutorAudioSource>>();
+
 export function tutorAudioCacheKey(uri:string):string{
   const value=String(uri||'');let forward=2166136261;let backward=2166136261;
   for(let index=0;index<value.length;index++){forward=Math.imul(forward^value.charCodeAt(index),16777619);backward=Math.imul(backward^value.charCodeAt(value.length-index-1),16777619)}
   return `${(forward>>>0).toString(16)}${(backward>>>0).toString(16)}-${value.length}`;
 }
 
-async function cacheRemoteAudioSource(source:TutorAudioSource,namespace:string,extension:string):Promise<TutorAudioSource>{
+function remoteAudioLogUrl(uri:string):string{
+  // Query values contain lesson phrases; retain a useful request identifier
+  // without copying child content into device diagnostics.
+  try{const parsed=new URL(uri);return `${parsed.origin}${parsed.pathname}`}
+  catch{return String(uri||'').split('?')[0]||''}
+}
+
+function headerValue(headers:Record<string,string>|undefined,name:string):string{
+  const expected=name.toLowerCase();const entry=Object.entries(headers||{}).find(([key])=>key.toLowerCase()===expected);return String(entry?.[1]||'');
+}
+
+function delay(ms:number):Promise<void>{return new Promise(resolve=>setTimeout(resolve,ms))}
+
+async function cancelAudioDownload(task:any,label:string):Promise<void>{
+  try{await Promise.race([Promise.resolve(task.cancelAsync()),delay(1_000)]);console.warn('TUTOR_AUDIO_CACHE_CANCELLED',{label})}
+  catch(error){console.warn('TUTOR_AUDIO_CACHE_CANCEL_FAILED',{label,error:String((error as any)?.message||error)})}
+}
+
+async function foregroundAudioDownload(FileSystem:any,source:TutorAudioSource,temporary:string,label:string,timeoutMs:number):Promise<any>{
+  const sessionType=FileSystem.FileSystemSessionType?.FOREGROUND;
+  const task=FileSystem.createDownloadResumable(source.uri,temporary,{headers:source.headers||{},...(sessionType===undefined?{}:{sessionType})},(progress:any)=>{
+    console.info('TUTOR_AUDIO_CACHE_PROGRESS',{label,bytes_written:Number(progress?.totalBytesWritten||0),bytes_expected:Number(progress?.totalBytesExpectedToWrite||0)});
+  });
+  const started=Promise.resolve(task.downloadAsync()).then(result=>({kind:'result' as const,result}),error=>({kind:'error' as const,error}));
+  const outcome=await Promise.race([started,delay(timeoutMs).then(()=>({kind:'timeout' as const}))]);
+  if(outcome.kind==='timeout'){
+    console.error('TUTOR_AUDIO_CACHE_TIMEOUT',{label,timeout_ms:timeoutMs,remote_url:remoteAudioLogUrl(source.uri)});
+    await cancelAudioDownload(task,label);
+    // Keep rejection handled even when the Android native task settles later.
+    void started.then(()=>{});
+    throw new Error('TTS_CACHE_TIMEOUT');
+  }
+  if(outcome.kind==='error')throw outcome.error;
+  if(!outcome.result)throw new Error('TTS_DOWNLOAD_CANCELLED');
+  return outcome.result;
+}
+
+async function cacheRemoteAudioSource(source:TutorAudioSource,namespace:string,extension:string,timeoutMs=CHILD_AUDIO_CACHE_TIMEOUT_MS):Promise<TutorAudioSource>{
   const FileSystem=require('expo-file-system/legacy');const cacheRoot=String(FileSystem.cacheDirectory||'');
-  if(!cacheRoot)return source;
-  const directory=`${cacheRoot}${namespace}/`;const destination=`${directory}${tutorAudioCacheKey(source.uri)}.${extension}`;const temporary=`${destination}.download`;
+  if(!cacheRoot){console.warn('TUTOR_AUDIO_CACHE_UNAVAILABLE',{namespace,remote_url:remoteAudioLogUrl(source.uri)});return source}
+  const directory=`${cacheRoot}${namespace}/`;const destination=`${directory}${tutorAudioCacheKey(source.uri)}.${extension}`;const temporary=`${destination}.download`;const cacheKey=`${namespace}:${destination}`;
   const existing=await FileSystem.getInfoAsync(destination,{size:true});
-  if(existing.exists&&Number(existing.size||0)>0)return {uri:destination,name:source.name||`dome-audio.${extension}`};
-  await FileSystem.makeDirectoryAsync(directory,{intermediates:true});
-  await FileSystem.deleteAsync(temporary,{idempotent:true}).catch(()=>{});
-  const downloaded=await FileSystem.downloadAsync(source.uri,temporary,{headers:source.headers||{}});
-  if(Number(downloaded.status)<200||Number(downloaded.status)>=300){await FileSystem.deleteAsync(temporary,{idempotent:true}).catch(()=>{});throw new Error(`TTS_DOWNLOAD_HTTP_${downloaded.status}`)}
-  const info=await FileSystem.getInfoAsync(temporary,{size:true});
-  if(!info.exists||Number(info.size||0)<=0){await FileSystem.deleteAsync(temporary,{idempotent:true}).catch(()=>{});throw new Error('TTS_DOWNLOAD_EMPTY')}
-  await FileSystem.deleteAsync(destination,{idempotent:true}).catch(()=>{});
-  await FileSystem.moveAsync({from:temporary,to:destination});
-  return {uri:destination,name:source.name||`dome-audio.${extension}`};
+  if(existing.exists&&Number(existing.size||0)>0){console.info('TUTOR_AUDIO_CACHE_HIT',{namespace,local_path:destination,byte_size:Number(existing.size||0)});return {uri:destination,name:source.name||`dome-audio.${extension}`}}
+  const running=audioCacheInFlight.get(cacheKey);if(running)return running;
+  const operation=(async()=>{
+    const label=namespace==='dome-tutor-audio'?'tutor voice cache':'child recording cache';
+    console.info('TUTOR_AUDIO_CACHE_REQUEST',{label,remote_url:remoteAudioLogUrl(source.uri),local_path:destination,timeout_ms:timeoutMs});
+    await FileSystem.makeDirectoryAsync(directory,{intermediates:true});
+    await FileSystem.deleteAsync(temporary,{idempotent:true}).catch(()=>{});
+    try{
+      const downloaded=await foregroundAudioDownload(FileSystem,source,temporary,label,timeoutMs);
+      const status=Number(downloaded.status||0);const contentType=headerValue(downloaded.headers,'content-type');
+      console.info('TUTOR_AUDIO_HTTP_RESPONSE',{label,http_status:status,content_type:contentType||null,remote_url:remoteAudioLogUrl(source.uri)});
+      if(status<200||status>=300)throw new Error(`TTS_DOWNLOAD_HTTP_${status}`);
+      if(contentType&&!/^audio\//i.test(contentType))throw new Error(`TTS_DOWNLOAD_CONTENT_TYPE_${contentType}`);
+      const info=await FileSystem.getInfoAsync(temporary,{size:true});const byteSize=Number(info.size||0);
+      if(!info.exists||byteSize<=0)throw new Error('TTS_DOWNLOAD_EMPTY');
+      await FileSystem.deleteAsync(destination,{idempotent:true}).catch(()=>{});
+      await FileSystem.moveAsync({from:temporary,to:destination});
+      const committed=await FileSystem.getInfoAsync(destination,{size:true});
+      if(!committed.exists||Number(committed.size||0)!==byteSize)throw new Error('TTS_CACHE_COMMIT_FAILED');
+      console.info('TUTOR_AUDIO_CACHE_READY',{label,local_path:destination,byte_size:byteSize,content_type:contentType||null});
+      return {uri:destination,name:source.name||`dome-audio.${extension}`};
+    }catch(error){
+      await FileSystem.deleteAsync(temporary,{idempotent:true}).catch(()=>{});
+      console.error('TUTOR_AUDIO_CACHE_FAILED',{label,remote_url:remoteAudioLogUrl(source.uri),error:String((error as any)?.message||error)});
+      throw error;
+    }
+  })();
+  audioCacheInFlight.set(cacheKey,operation);try{return await operation}finally{if(audioCacheInFlight.get(cacheKey)===operation)audioCacheInFlight.delete(cacheKey)}
 }
 
 async function cacheProtectedVisualSource(source:TutorAudioSource,extension:string):Promise<TutorAudioSource>{
@@ -116,7 +179,7 @@ async function cacheProtectedVisualSource(source:TutorAudioSource,extension:stri
 }
 
 export function cacheTutorAudioSource(source:TutorAudioSource):Promise<TutorAudioSource>{
-  return cacheRemoteAudioSource(source,'dome-tutor-audio','ogg');
+  return cacheRemoteAudioSource(source,'dome-tutor-audio','ogg',TUTOR_AUDIO_CACHE_TIMEOUT_MS);
 }
 
 export function cacheChildRecordingSource(source:TutorAudioSource):Promise<TutorAudioSource>{
@@ -280,7 +343,9 @@ export async function sendVoice(sessionId:number,uri:string,slideId:string,phras
   form.append('audio',{uri,name:`${clientRecordingId||'voice'}.m4a`,type:mimeType||'audio/mp4'} as any);
   form.append('slide_id',slideId);form.append('phrase_id',phraseId||'');form.append('prompt',prompt||'');form.append('conversation_turn',String(conversationTurn));form.append('runtime_context',JSON.stringify(runtimeContext||{}));form.append('retake',retake?'true':'false');
   console.info('VOICE_UPLOAD_REQUEST',{recording_id:clientRecordingId||null,session_id:sessionId,slide_id:slideId,phrase_id:phraseId||null,path:uri,mime_type:mimeType});
-  return request(`/api/mobile/session/${sessionId}/voice`,{method:'POST',headers:clientRecordingId?{'Idempotency-Key':clientRecordingId}:{},body:form});
+  const response=await request(`/api/mobile/session/${sessionId}/voice`,{method:'POST',headers:clientRecordingId?{'Idempotency-Key':clientRecordingId}:{},body:form});
+  console.info('VOICE_UPLOAD_RESPONSE',{http_status:200,recording_id:clientRecordingId||null,session_id:sessionId,slide_id:slideId,phrase_id:phraseId||null,accepted:Boolean(response?.accepted),movie_take_accepted:Boolean(response?.movie_take_accepted)});
+  return response;
 }
 
 export async function currentVoiceSource(sessionId:number,phraseId:string):Promise<TutorAudioSource>{
