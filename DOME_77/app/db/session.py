@@ -111,6 +111,13 @@ async def init_db() -> None:
             "email_verification_expires_at": "TIMESTAMP",
             "email_reports_enabled": "BOOLEAN NOT NULL DEFAULT FALSE",
             "phone": "VARCHAR(40)",
+            "first_name": "VARCHAR(80)",
+            "last_name": "VARCHAR(80)",
+            "country": "VARCHAR(80)",
+            "preferred_language": "VARCHAR(10) DEFAULT 'ru'",
+            "marketing_opt_in": "BOOLEAN NOT NULL DEFAULT FALSE",
+            "onboarding_stage": "VARCHAR(40) DEFAULT 'REGISTERED'",
+            "verification_status": "VARCHAR(40) DEFAULT 'UNVERIFIED'",
             "active_child_id": "INTEGER",
             "account_role": "VARCHAR(30) NOT NULL DEFAULT 'STANDARD'",
         })

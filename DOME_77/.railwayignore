@@ -1,8 +1,9 @@
-.git
+﻿.git
 .github
 __pycache__
 *.pyc
 .pytest_cache
+.pytest-tmp*/
 .venv
 venv
 .env
@@ -10,8 +11,7 @@ storage/
 *.log
 *.zip
 .DS_Store
-.pytest-tmp*/
 .lesson-editor-preview-storage/
 app/graphify-out/
-scripts/
 graphify-out/
+scripts/
