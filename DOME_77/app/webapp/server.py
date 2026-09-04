@@ -80,11 +80,70 @@ async def games_index(_: web.Request) -> web.FileResponse:
 
 
 
-async def payment_success(_: web.Request) -> web.Response:
-    return web.Response(text='Оплата получена. Вернитесь в Telegram — доступ откроется автоматически.',content_type='text/plain')
+async def payment_success(request: web.Request) -> web.Response:
+    sub_id = request.query.get("subscription_id") or request.query.get("ba_token") or ""
+    child_id = request.query.get("child_id") or ""
+    html = f"""<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DOME · Оплата успешна</title>
+<style>
+body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f172a; color: #fff; margin: 0; padding: 24px; display: flex; align-items: center; justify-content: center; min-height: 100vh; box-sizing: border-box; text-align: center; }}
+.card {{ background: #1e293b; border-radius: 24px; padding: 36px 28px; max-width: 420px; width: 100%; box-shadow: 0 20px 40px rgba(0,0,0,0.5); border: 1px solid #334155; }}
+.icon {{ font-size: 56px; margin-bottom: 16px; }}
+h1 {{ font-size: 24px; margin: 0 0 12px; color: #38bdf8; }}
+p {{ font-size: 15px; color: #94a3b8; line-height: 1.5; margin: 0 0 24px; }}
+.btn {{ display: inline-block; width: 100%; padding: 14px 20px; border-radius: 14px; background: #0284c7; color: #fff; text-decoration: none; font-weight: 700; font-size: 16px; box-sizing: border-box; transition: background .2s; }}
+.btn:hover {{ background: #0369a1; }}
+</style>
+<script>
+window.addEventListener('DOMContentLoaded', () => {{
+  const deepLink = "dome://payment/success?subscription_id={sub_id}&child_id={child_id}";
+  setTimeout(() => {{ window.location.href = deepLink; }}, 800);
+}});
+</script>
+</head>
+<body>
+<div class="card">
+  <div class="icon">🎉</div>
+  <h1>Оплата успешно завершена!</h1>
+  <p>Ваша подписка активирована. Возвращаемся в приложение DOME...</p>
+  <a class="btn" href="dome://payment/success?subscription_id={sub_id}&child_id={child_id}">Открыть приложение DOME</a>
+</div>
+</body>
+</html>"""
+    return web.Response(text=html, content_type='text/html')
 
-async def payment_cancel(_: web.Request) -> web.Response:
-    return web.Response(text='Оплата отменена. Можно вернуться в Telegram и выбрать тариф позже.',content_type='text/plain')
+
+async def payment_cancel(request: web.Request) -> web.Response:
+    child_id = request.query.get("child_id") or ""
+    html = f"""<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DOME · Оплата отменена</title>
+<style>
+body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f172a; color: #fff; margin: 0; padding: 24px; display: flex; align-items: center; justify-content: center; min-height: 100vh; box-sizing: border-box; text-align: center; }}
+.card {{ background: #1e293b; border-radius: 24px; padding: 36px 28px; max-width: 420px; width: 100%; box-shadow: 0 20px 40px rgba(0,0,0,0.5); border: 1px solid #334155; }}
+.icon {{ font-size: 56px; margin-bottom: 16px; }}
+h1 {{ font-size: 24px; margin: 0 0 12px; color: #f59e0b; }}
+p {{ font-size: 15px; color: #94a3b8; line-height: 1.5; margin: 0 0 24px; }}
+.btn {{ display: inline-block; width: 100%; padding: 14px 20px; border-radius: 14px; background: #334155; color: #fff; text-decoration: none; font-weight: 700; font-size: 16px; box-sizing: border-box; }}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="icon">ℹ️</div>
+  <h1>Оплата отменена</h1>
+  <p>Оформление подписки не было завершено. Вы можете выбрать тариф позже в любой момент.</p>
+  <a class="btn" href="dome://payment/cancel?child_id={child_id}">Вернуться в DOME</a>
+</div>
+</body>
+</html>"""
+    return web.Response(text=html, content_type='text/html')
 
 # Payment webhooks are provider-neutral in payment_lifecycle.apply_normalized_event.
 # Plan updates only mark the provider schedule; business access switches in

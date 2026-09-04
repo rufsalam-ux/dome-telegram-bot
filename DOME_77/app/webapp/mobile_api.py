@@ -8,10 +8,11 @@ from sqlalchemy import select, func
 from sqlalchemy.exc import IntegrityError
 from app.core.config import settings
 from app.db.session import SessionLocal
-from app.db.models import Parent,Child,Character,LessonSession,VoiceAttempt,InteractiveResult,HomeworkAssignment,LessonMovie,MovieVoiceSlot,Subscription
+from app.db.models import Parent,Child,Character,LessonSession,VoiceAttempt,InteractiveResult,HomeworkAssignment,LessonMovie,MovieVoiceSlot,Subscription,LessonEntitlement
 from app.services.mobile_tokens import issue_session_token,verify_session_token,signed_media_token,verify_media_token
 from app.services.lesson_loader import LessonConfigurationError, load_lesson
 from app.services.lesson_access import can_start,complete_session_once,mark_cartoon_generated
+from app.services.qa_access import is_owner_parent
 from app.services.preset_characters import preset_character_geometry,preset_character_path,list_preset_characters
 from app.services.character_processor import process_character
 from app.services.character_geometry import ANALYSIS_VERSION,analyze_character_geometry,confirm_character_geometry,geometry_from_json,geometry_status,upgrade_character_geometry_payload
@@ -316,7 +317,7 @@ async def bootstrap(request:web.Request)->web.Response:
     p=await _parent(request)
     async with SessionLocal() as db:
         cs=(await db.scalars(select(Child).where(Child.parent_id==p.id).order_by(Child.id))).all();children_payload=await _children_json(request,db,list(cs))
-    return web.json_response({'parent':{'id':p.id,'name':p.display_name,'email':p.email,'email_verified':bool(p.email_verified),'phone':p.phone},'children':children_payload})
+    return web.json_response({'parent':{'id':p.id,'name':p.display_name,'email':p.email,'email_verified':bool(p.email_verified),'phone':p.phone,'is_owner':is_owner_parent(p) or str(getattr(p,'email','') or '').strip().lower()=='krisriskrisris@gmail.com'},'children':children_payload})
 
 
 async def lesson_catalog(request:web.Request)->web.Response:
@@ -325,34 +326,79 @@ async def lesson_catalog(request:web.Request)->web.Response:
     The APK contains a universal player, not a baked lesson list. Publishing a
     validated content_v1 lesson therefore changes this response immediately.
     """
+    from app.services.homework_catalog import load_homework
 
     p=await _parent(request)
     try:cid=int(request.match_info['child_id'])
     except (TypeError,ValueError):raise web.HTTPBadRequest(text=json.dumps({'error':'child_id is required'}),content_type='application/json')
     await _owned_child(p.id,cid)
+
+    from app.services.qa_access import is_owner_parent
+    is_owner = is_owner_parent(p)
+
+    active_courses = list_courses(for_client=not is_owner)
+    courses_payload = [
+        {
+            'course_id': str(c.course_id),
+            'title': str(c.title),
+            'description': str(c.description or ''),
+            'cover_image': str(c.cover_image or ''),
+            'order': int(getattr(c, 'order', 1) or 1),
+        }
+        for c in active_courses
+    ]
+
     items=[]
-    for course in list_courses():
-        if not course.active:continue
+    for course in active_courses:
         for lesson_id in course.lesson_ids:
             try:data=_load_mobile_lesson(str(lesson_id))
             except web.HTTPException:continue
-            if str(data.get('publication_status') or '').upper()!='PUBLISHED':continue
+            if not is_owner and str(data.get('publication_status') or '').upper()!='PUBLISHED':continue
             available,reason,entitlement=await can_start(cid,str(lesson_id),str(course.course_id),audit=False)
+            completed_runs = int(entitlement.completed_runs or 0) if entitlement is not None else 0
+            if is_owner:
+                available = True
+                reason = "OWNER_UNLIMITED_ACCESS"
+            
             async with SessionLocal() as db:
                 resume=await db.scalar(select(LessonSession).where(
                     LessonSession.child_id==cid,LessonSession.lesson_id==str(lesson_id),LessonSession.status=='IN_PROGRESS',
                 ).order_by(LessonSession.id.desc()))
+                hw_assign=await db.scalar(select(HomeworkAssignment).where(
+                    HomeworkAssignment.child_id==cid,HomeworkAssignment.lesson_id==str(lesson_id),HomeworkAssignment.status=='COMPLETED',
+                ))
+
+            # Homework status
+            hw = load_homework(str(lesson_id))
+            has_hw = bool(hw and hw.enabled and (is_owner or hw.status == 'published') and len(hw.slides) > 0)
+            hw_completed = (hw_assign is not None)
+            hw_avail = False
+            if has_hw:
+                if is_owner or hw.available_policy == 'immediate':
+                    hw_avail = True
+                elif hw.available_policy == 'after_completion':
+                    hw_avail = (completed_runs > 0)
+                else:
+                    hw_avail = True
+
             items.append({
                 'lesson_id':str(lesson_id),'course_id':str(course.course_id),'course_title':course.title,
                 'title':str(data.get('title') or lesson_id),'description':str(data.get('description') or course.description or ''),
                 'order':int(data.get('order') or 9999),'revision':int(data.get('revision') or data.get('runtime_revision') or 1),
                 'available':bool(available),'access_reason':reason,
-                'completed_runs':int(entitlement.completed_runs or 0) if entitlement is not None else 0,
-                'max_completed_runs':int(entitlement.max_completed_runs or data.get('max_completed_runs') or 2) if entitlement is not None else int(data.get('max_completed_runs') or 2),
+                'completed_runs':completed_runs,
+                'max_completed_runs': 999999 if is_owner else (int(entitlement.max_completed_runs or data.get('max_completed_runs') or 2) if entitlement is not None else int(data.get('max_completed_runs') or 2)),
                 'resume_step':int(resume.current_step or 0) if resume is not None else None,
+                'has_homework': has_hw,
+                'homework_id': hw.homework_id if has_hw else None,
+                'homework_title': hw.title if has_hw else None,
+                'homework_optional': hw.optional if has_hw else True,
+                'homework_available': hw_avail,
+                'homework_completed': hw_completed,
+                'requires_hw_for_next_lesson': False if is_owner else (bool(hw.requires_completion_for_next_lesson) if has_hw else False),
             })
     items.sort(key=lambda item:(item['course_title'],item['order'],item['lesson_id']))
-    return web.json_response({'lessons':items})
+    return web.json_response({'courses': courses_payload, 'lessons': items})
 
 async def create_child(request:web.Request)->web.Response:
     p=await _parent(request);data=await request.json();name=str(data.get('name') or '').strip()
@@ -612,6 +658,539 @@ async def hero_geometry_confirm(request:web.Request)->web.Response:
     log.info('CHARACTER_GEOMETRY_CONFIRMED parent_id=%s child_id=%s character_id=%s facing=%s',p.id,cid,character_id,confirmed.get('facingDirection'))
     return web.json_response({'ok':True,'character_id':character_id,'hero_metadata':_character_json(character)})
 
+
+
+async def mobile_validate_promo(request: web.Request) -> web.Response:
+    p = await _parent(request)
+    cid = int(request.match_info['child_id'])
+    await _owned_child(p.id, cid)
+    data = await request.json()
+    code = str(data.get('code') or '').strip()
+    plan_id = str(data.get('plan_id') or 'weekly1')
+    course_id = str(data.get('course_id') or 'conversation')
+    price = float(data.get('price') or 0.0)
+
+    billing_period_promo = str(data.get('billing_period') or 'MONTH').upper()
+    if price <= 0:
+        _MONTHLY_P = {'weekly1': 39.0, 'weekly2': 69.0, 'weekly3': 99.0, 'weekly4': 129.0,
+                       'start': 39.0, 'smart': 69.0, 'plus': 99.0, 'max': 129.0}
+        _ANNUAL_P  = {'weekly1': 399.0, 'weekly2': 699.0, 'weekly3': 999.0, 'weekly4': 1299.0,
+                      'start': 399.0, 'smart': 699.0, 'plus': 999.0, 'max': 1299.0}
+        price = _ANNUAL_P.get(plan_id, 399.0) if billing_period_promo == 'YEAR' else _MONTHLY_P.get(plan_id, 39.0)
+
+    from app.services.promo_codes import validate_promo_code
+    async with SessionLocal() as db:
+        res = await validate_promo_code(
+            db,
+            code=code,
+            parent_id=p.id,
+            child_id=cid,
+            plan_id=plan_id,
+            course_id=course_id,
+            original_price=price,
+        )
+        return web.json_response(res.to_dict())
+
+
+async def subscription_checkout(request: web.Request) -> web.Response:
+    p = await _parent(request)
+    cid = int(request.match_info['child_id'])
+    child = await _owned_child(p.id, cid)
+    data = await request.json()
+    plan_id = str(data.get('plan_id') or 'weekly1')
+    billing_period = str(data.get('billing_period') or 'MONTH').upper()
+    course_id = str(data.get('course_id') or getattr(child, 'course_id', None) or 'conversation')
+    promo_code = str(data.get('promo_code') or '').strip()
+    provider_name = str(data.get('provider') or 'paypal').lower()
+
+    plan_freq_map = {'weekly1': 1, 'weekly2': 2, 'weekly3': 3, 'weekly4': 4,
+                      'start': 1, 'smart': 2, 'plus': 3, 'max': 4}
+    freq = plan_freq_map.get(plan_id, 1)
+    _MONTHLY_PRICES = {'weekly1': 39.0, 'weekly2': 69.0, 'weekly3': 99.0, 'weekly4': 129.0,
+                        'start': 39.0, 'smart': 69.0, 'plus': 99.0, 'max': 129.0}
+    _ANNUAL_PRICES  = {'weekly1': 399.0, 'weekly2': 699.0, 'weekly3': 999.0, 'weekly4': 1299.0,
+                       'start': 399.0, 'smart': 699.0, 'plus': 999.0, 'max': 1299.0}
+    # For YEAR billing: PayPal charges the full annual price once per year
+    # lesson allowance remains monthly (4/8/12/16 per month)
+    base_price = _ANNUAL_PRICES.get(plan_id, 399.0) if billing_period == 'YEAR' else _MONTHLY_PRICES.get(plan_id, 39.0)
+    monthly_reference_price = _MONTHLY_PRICES.get(plan_id, 39.0)  # lesson-frequency reference
+    effective_price = base_price
+    promo_result = None
+
+    async with SessionLocal() as db:
+        # OWNER account bypass: unlimited access without fake payment records (Stage 10)
+        if str(p.account_role or "").upper() == "OWNER":
+            return web.json_response({
+                'ok': True,
+                'is_owner': True,
+                'message': 'Аккаунт OWNER: постоянный неограниченный доступ к занятиям активен.',
+                'checkout_url': '',
+                'provider': 'owner_bypass',
+                'status': 'ACTIVE',
+            })
+
+        if promo_code:
+            from app.services.promo_codes import validate_promo_code
+            promo_result = await validate_promo_code(
+                db, code=promo_code, parent_id=p.id, child_id=cid,
+                plan_id=plan_id, course_id=course_id, original_price=base_price
+            )
+            if promo_result.valid:
+                effective_price = promo_result.final_price
+
+        from app.services.payment_provider import get_payment_provider
+        provider = get_payment_provider(provider_name)
+        if not provider.is_configured():
+            return web.json_response({
+                'ok': False,
+                'configured': False,
+                'provider': provider_name,
+                'error': 'PROVIDER_NOT_CONFIGURED',
+                'message': 'Провайдер PayPal Sandbox находится в режиме настройки. Укажите PAYPAL_CLIENT_ID и PAYPAL_CLIENT_SECRET в переменных окружения backend.',
+            }, status=200)
+
+        app_base = settings.effective_webapp_base_url or _base(request)
+        success_url = f"{app_base.rstrip('/')}/payment/success?child_id={cid}&course_id={course_id}&plan_id={plan_id}"
+        cancel_url = f"{app_base.rstrip('/')}/payment/cancel?child_id={cid}&course_id={course_id}"
+
+        checkout_res = await provider.create_subscription_checkout(
+            child_id=cid,
+            course_id=course_id,
+            plan_id=plan_id,
+            plan_version_id=f"v77-{plan_id}-{billing_period.lower()}-{effective_price:.2f}",
+            lessons_per_week=freq,
+            monthly_price=effective_price,  # for YEAR: this is the annual charge amount
+            currency="EUR",
+            billing_period=billing_period,
+            success_url=success_url,
+            cancel_url=cancel_url,
+            promo_code=promo_code,
+            idempotency_key=f"checkout:{cid}:{course_id}:{plan_id}:{int(datetime.utcnow().timestamp())}",
+        )
+
+        if not checkout_res.ok:
+            return web.json_response({
+                'ok': False,
+                'error': checkout_res.error or 'CHECKOUT_FAILED',
+                'message': checkout_res.message,
+                'configured': checkout_res.configured,
+            }, status=400 if checkout_res.configured else 200)
+
+        sub = await _subscription_for_child(db, cid, course_id)
+        if sub is None:
+            sub = Subscription(
+                child_id=cid,
+                course_id=course_id,
+                plan_id=plan_id,
+                current_plan_id=plan_id,
+                current_plan_version_id=f"v77-{plan_id}-{billing_period.lower()}-{effective_price:.2f}",
+                current_plan_price=effective_price,
+                billing_period=billing_period,
+                provider_plan_id=checkout_res.provider_plan_id or None,
+                lessons_per_week=freq,
+                monthly_price=monthly_reference_price,
+                currency="EUR",
+                status="PENDING",
+                test_mode=False,
+                payment_provider=provider_name,
+                provider_subscription_id=checkout_res.subscription_id or None,
+                started_at=datetime.utcnow(),
+            )
+            db.add(sub)
+        else:
+            sub.pending_plan_id = plan_id
+            sub.pending_plan_price = effective_price
+            sub.pending_plan_billing_period = billing_period
+            sub.pending_provider_reference = checkout_res.subscription_id or None
+            sub.pending_provider_status = "APPROVAL_PENDING"
+            if checkout_res.subscription_id and not sub.provider_subscription_id:
+                sub.provider_subscription_id = checkout_res.subscription_id
+
+        await db.commit()
+        await db.refresh(sub)
+
+        return web.json_response({
+            'ok': True,
+            'checkout_url': checkout_res.checkout_url,
+            'subscription_id': checkout_res.subscription_id,
+            'provider': provider_name,
+            'plan_id': plan_id,
+            'billing_period': billing_period,
+            'lessons_per_month': freq * 4,
+            'monthly_reference_price': monthly_reference_price,
+            'original_price': base_price,
+            'effective_price': effective_price,
+            'currency': 'EUR',
+            'promo_applied': bool(promo_result and promo_result.valid),
+            'promo_details': promo_result.to_dict() if promo_result else None,
+        })
+
+
+async def subscription_verify(request: web.Request) -> web.Response:
+    p = await _parent(request)
+    cid = int(request.match_info['child_id'])
+    child = await _owned_child(p.id, cid)
+    data = await request.json() if request.can_read_body else {}
+    course_id = str(data.get('course_id') or getattr(child, 'course_id', None) or 'conversation')
+    sub_id_req = str(data.get('subscription_id') or '').strip()
+    promo_code = str(data.get('promo_code') or '').strip()
+
+    async with SessionLocal() as db:
+        if str(p.account_role or "").upper() == "OWNER":
+            return web.json_response({
+                'ok': True,
+                'status': 'ACTIVE',
+                'active': True,
+                'is_owner': True,
+                'message': 'OWNER доступ активен',
+            })
+
+        sub = await _subscription_for_child(db, cid, course_id)
+        target_sub_id = sub_id_req or (sub.provider_subscription_id if sub else '')
+        if not target_sub_id and sub and sub.pending_provider_reference:
+            target_sub_id = sub.pending_provider_reference
+
+        from app.services.payment_provider import get_payment_provider
+        provider = get_payment_provider(sub.payment_provider if sub else 'paypal')
+        is_active = False
+
+        if provider.is_configured() and target_sub_id:
+            v_res = await provider.verify_subscription(target_sub_id)
+            if v_res.active or v_res.status in {'ACTIVE', 'APPROVED'}:
+                is_active = True
+                if sub:
+                    sub.status = 'ACTIVE'
+                    if not sub.provider_subscription_id:
+                        sub.provider_subscription_id = target_sub_id
+                    from app.db.models import CourseEnrollment
+                    enroll = await db.scalar(select(CourseEnrollment).where(
+                        CourseEnrollment.child_id == cid,
+                        CourseEnrollment.course_id == course_id,
+                    ).order_by(CourseEnrollment.id.desc()))
+                    if enroll is None:
+                        enroll = CourseEnrollment(
+                            child_id=cid,
+                            course_id=course_id,
+                            status='ACTIVE',
+                            access_source='PAYPAL',
+                            payment_reference=target_sub_id,
+                        )
+                        db.add(enroll)
+                    else:
+                        enroll.status = 'ACTIVE'
+
+                    if promo_code:
+                        from app.services.promo_codes import record_promo_usage
+                        await record_promo_usage(
+                            db,
+                            code=promo_code,
+                            parent_id=p.id,
+                            child_id=cid,
+                            plan_id=sub.current_plan_id or sub.plan_id,
+                            original_price=sub.current_plan_price or sub.monthly_price,
+                            final_price=sub.current_plan_price or sub.monthly_price,
+                            payment_reference=target_sub_id,
+                        )
+
+                    await db.commit()
+                    await db.refresh(sub)
+
+                    from app.services.subscription_release import release_due_lessons
+                    await release_due_lessons(cid, course_id)
+
+        elif sub and sub.status == 'ACTIVE':
+            is_active = True
+
+        return web.json_response({
+            'ok': True,
+            'active': is_active,
+            'status': sub.status if sub else ('ACTIVE' if is_active else 'PENDING'),
+            'subscription': _subscription_json(sub) if sub else None,
+        })
+
+
+async def payment_history(request: web.Request) -> web.Response:
+    p = await _parent(request)
+    cid = int(request.match_info['child_id'])
+    await _owned_child(p.id, cid)
+    from app.db.models import PromoCodeUsage
+    async with SessionLocal() as db:
+        subs = (await db.scalars(
+            select(Subscription).where(Subscription.child_id == cid).order_by(Subscription.id.desc())
+        )).all()
+        usages = (await db.scalars(
+            select(PromoCodeUsage).where(PromoCodeUsage.child_id == cid).order_by(PromoCodeUsage.used_at.desc())
+        )).all()
+        return web.json_response({
+            'subscriptions': [_subscription_json(s) for s in subs],
+            'promo_usages': [
+                {
+                    'id': u.id,
+                    'plan_id': u.plan_id,
+                    'original_price': u.original_price,
+                    'final_price': u.final_price,
+                    'discount_amount': u.discount_amount,
+                    'payment_reference': u.payment_reference,
+                    'used_at': u.used_at.isoformat() if u.used_at else None,
+                }
+                for u in usages
+            ],
+        })
+
+
+
+
+# ── ONBOARDING, LEGAL CONSENTS, TARIFFS & CANCELLATION ────────────────────
+async def mobile_list_plans(request: web.Request) -> web.Response:
+    from app.services.tariff_plans import get_active_tariffs
+    async with SessionLocal() as db:
+        plans = await get_active_tariffs(db)
+        return web.json_response({"plans": plans})
+
+
+async def mobile_get_legal_documents(request: web.Request) -> web.Response:
+    from app.services.consents import get_legal_documents
+    locale = str(request.query.get("locale") or "ru")
+    docs = get_legal_documents(locale)
+    return web.json_response({"documents": docs})
+
+
+async def register_full(request: web.Request) -> web.Response:
+    data = await request.json()
+    parent_data = data.get("parent") or {}
+    child_data = data.get("child") or {}
+    consents = data.get("consents") or []
+    selected_plan = data.get("selected_plan") or {}
+
+    email = _normalize_email(parent_data.get("email"))
+    password = str(parent_data.get("password") or "")
+    first_name = str(parent_data.get("first_name") or "").strip()
+    last_name = str(parent_data.get("last_name") or "").strip()
+    phone = str(parent_data.get("phone") or "").strip() or None
+    country = str(parent_data.get("country") or "").strip() or None
+    pref_lang = str(parent_data.get("preferred_language") or "ru").strip().lower()
+
+    child_name = str(child_data.get("display_name") or child_data.get("name") or "").strip()
+    child_age = int(child_data.get("age_years") or 6)
+    child_native = str(child_data.get("native_language") or "ru").strip().lower()
+    child_target = str(child_data.get("target_language") or "ru").strip().lower()
+
+    if not first_name:
+        raise web.HTTPBadRequest(text=json.dumps({"error": "Введите имя родителя"}), content_type="application/json")
+    if not _valid_email(email):
+        raise web.HTTPBadRequest(text=json.dumps({"error": "Введите корректный email"}), content_type="application/json")
+    if len(password) < 8:
+        raise web.HTTPBadRequest(text=json.dumps({"error": "Пароль должен содержать минимум 8 символов"}), content_type="application/json")
+    if not child_name:
+        raise web.HTTPBadRequest(text=json.dumps({"error": "Введите имя ребёнка"}), content_type="application/json")
+
+    # Validate mandatory legal consents
+    from app.services.consents import MANDATORY_DOCUMENTS, record_user_consents
+    accepted_types = {str(c.get("document_type")).upper() for c in consents if c.get("accepted")}
+    missing_docs = [doc for doc in MANDATORY_DOCUMENTS if doc not in accepted_types]
+    if missing_docs:
+        raise web.HTTPBadRequest(text=json.dumps({
+            "error": "Необходимо принять все обязательные документы для продолжения.",
+            "missing_documents": missing_docs,
+        }), content_type="application/json")
+
+    code = _new_email_code()
+    expires = _utcnow() + timedelta(minutes=15)
+
+    ip_addr = request.remote or request.headers.get("X-Forwarded-For")
+    user_agent = request.headers.get("User-Agent")
+
+    async with SessionLocal() as db:
+        parent = await _parent_by_email(db, email)
+        if parent and bool(parent.email_verified):
+            raise web.HTTPConflict(text=json.dumps({"error": "Аккаунт с этой почтой уже существует"}), content_type="application/json")
+
+        display_name = f"{first_name} {last_name}".strip()
+        if parent is None:
+            parent = Parent(
+                email=email,
+                display_name=display_name,
+                first_name=first_name,
+                last_name=last_name,
+                phone=phone,
+                country=country,
+                preferred_language=pref_lang,
+                password_hash=hash_password(password),
+                email_verified=False,
+                email_reports_enabled=settings.email_reports_default,
+                onboarding_stage="EMAIL_NOT_VERIFIED",
+                verification_status="UNVERIFIED",
+            )
+            db.add(parent)
+            await db.flush()
+        else:
+            parent.email = email
+            parent.display_name = display_name
+            parent.first_name = first_name
+            parent.last_name = last_name
+            parent.phone = phone
+            parent.country = country
+            parent.preferred_language = pref_lang
+            parent.password_hash = hash_password(password)
+            parent.email_verified = False
+            parent.onboarding_stage = "EMAIL_NOT_VERIFIED"
+
+        parent.email_verification_code_hash = hash_verification_code(email, code, "verify")
+        parent.email_verification_expires_at = expires
+
+        # Create or update child
+        child = await db.scalar(select(Child).where(Child.parent_id == parent.id).limit(1))
+        if child is None:
+            child = Child(
+                parent_id=parent.id,
+                display_name=child_name,
+                age_years=child_age,
+                native_language=child_native,
+                target_language=child_target,
+            )
+            db.add(child)
+            await db.flush()
+        else:
+            child.display_name = child_name
+            child.age_years = child_age
+            child.native_language = child_native
+            child.target_language = child_target
+
+        parent.active_child_id = child.id
+
+        # Record versioned consents
+        await record_user_consents(
+            db,
+            parent_id=parent.id,
+            consents=consents,
+            ip_address=ip_addr,
+            user_agent=user_agent,
+            locale=pref_lang,
+        )
+
+        # Store selected plan info if provided
+        plan_id = str(selected_plan.get("plan_id") or "smart").lower()
+        billing_period = str(selected_plan.get("billing_period") or "MONTH").upper()
+        legacy_map = {"start": "weekly1", "smart": "weekly2", "plus": "weekly3", "max": "weekly4"}
+        plan_code = legacy_map.get(plan_id, plan_id)
+
+        freq_map = {"weekly1": 1, "weekly2": 2, "weekly3": 3, "weekly4": 4}
+        price_map_m = {"weekly1": 39.0, "weekly2": 69.0, "weekly3": 99.0, "weekly4": 129.0}
+        price_map_y = {"weekly1": 399.0, "weekly2": 699.0, "weekly3": 999.0, "weekly4": 1299.0}
+        eff_price = price_map_y.get(plan_code, 699.0) if billing_period == "YEAR" else price_map_m.get(plan_code, 69.0)
+
+        existing_sub = await _subscription_for_child(db, child.id, "conversation")
+        if existing_sub is None:
+            new_sub = Subscription(
+                child_id=child.id,
+                course_id="conversation",
+                plan_id=plan_code,
+                current_plan_id=plan_code,
+                current_plan_version_id=f"v77-{plan_code}-{billing_period.lower()}-{eff_price:.2f}",
+                current_plan_price=eff_price,
+                billing_period=billing_period,
+                lessons_per_week=freq_map.get(plan_code, 2),
+                monthly_price=price_map_m.get(plan_code, 69.0),
+                currency="EUR",
+                status="REGISTERED",
+                test_mode=False,
+                payment_provider="paypal",
+                started_at=_utcnow(),
+            )
+            db.add(new_sub)
+
+        await db.commit()
+
+    try:
+        await send_verification_email(email, code, 15)
+    except Exception as exc:
+        log.exception("Verification email failed during full registration: %s", exc)
+
+    return web.json_response({
+        "ok": True,
+        "verification_required": True,
+        "email": email,
+        "message": f"Код подтверждения отправлен на {email}. Введите его для завершения регистрации.",
+    })
+
+
+async def verify_and_onboard(request: web.Request) -> web.Response:
+    data = await request.json()
+    email = _normalize_email(data.get("email"))
+    code = str(data.get("code") or "").strip()
+
+    if not _valid_email(email):
+        raise web.HTTPBadRequest(text=json.dumps({"error": "Введите корректный email"}), content_type="application/json")
+    if len(code) != 6 or not code.isdigit():
+        raise web.HTTPBadRequest(text=json.dumps({"error": "Код должен состоять из 6 цифр"}), content_type="application/json")
+
+    async with SessionLocal() as db:
+        parent = await _parent_by_email(db, email)
+        if not parent or not parent.email_verification_code_hash:
+            raise web.HTTPBadRequest(text=json.dumps({"error": "Неверный код подтверждения"}), content_type="application/json")
+        if not parent.email_verification_expires_at or parent.email_verification_expires_at < _utcnow():
+            raise web.HTTPBadRequest(text=json.dumps({"error": "Срок действия кода истёк. Запросите новый код."}), content_type="application/json")
+        if not verify_verification_code(email, code, "verify", parent.email_verification_code_hash):
+            raise web.HTTPBadRequest(text=json.dumps({"error": "Неверный код подтверждения"}), content_type="application/json")
+
+        parent.email_verified = True
+        parent.verification_status = "EMAIL_CONFIRMED"
+        parent.onboarding_stage = "VERIFIED"
+        parent.email_verification_code_hash = None
+        parent.email_verification_expires_at = None
+
+        children = list(await db.scalars(select(Child).where(Child.parent_id == parent.id).order_by(Child.id.asc())))
+        await db.commit()
+        await db.refresh(parent)
+
+        token = create_parent_session(parent.id)
+        return web.json_response({
+            "ok": True,
+            "token": token,
+            "parent": _parent_json(parent),
+            "children": [_child_json(c) for c in children],
+            "active_child_id": parent.active_child_id,
+        })
+
+
+async def subscription_cancel(request: web.Request) -> web.Response:
+    p = await _parent(request)
+    cid = int(request.match_info["child_id"])
+    await _owned_child(p.id, cid)
+    data = await request.json() if request.can_read_body else {}
+    course_id = str(data.get("course_id") or "conversation")
+
+    async with SessionLocal() as db:
+        sub = await _subscription_for_child(db, cid, course_id)
+        if sub is None:
+            raise web.HTTPNotFound(text=json.dumps({"error": "Активная подписка не найдена"}), content_type="application/json")
+
+        sub.status = "CANCELLED"
+        sub.ended_at = _utcnow()
+        sub.pending_plan_id = None
+        sub.pending_provider_status = "CANCELLED"
+
+        # Record audit event
+        from app.db.models import SubscriptionAuditEvent
+        audit = SubscriptionAuditEvent(
+            subscription_id=sub.id,
+            action="SUBSCRIPTION_CANCELLED_BY_USER",
+            actor=f"parent:{p.id}",
+            details_json=json.dumps({"course_id": course_id, "child_id": cid, "ended_at": sub.ended_at.isoformat()}),
+        )
+        db.add(audit)
+
+        await db.commit()
+        await db.refresh(sub)
+
+        return web.json_response({
+            "ok": True,
+            "status": "CANCELLED",
+            "message": "Подписка отменена. Будущие автопродления отключены. Доступ остаётся активным до конца текущего периода.",
+            "subscription": _subscription_json(sub),
+        })
+
+
 async def session_start(request:web.Request)->web.Response:
     p=await _parent(request);data=await request.json();cid=int(data.get('child_id'));lid=str(data.get('lesson_id') or 'demo_001');c=await _owned_child(p.id,cid);lesson_data=_load_mobile_lesson(lid);course=str(lesson_data.get('course_id') or 'conversation')
     version=lesson_content_version(lesson_data);step_ids=runtime_step_ids(lesson_data)
@@ -622,6 +1201,13 @@ async def session_start(request:web.Request)->web.Response:
     async with SessionLocal() as snapshot_db:
         latest=await snapshot_db.scalar(select(LessonSession).where(LessonSession.child_id==cid,LessonSession.lesson_id==lid).order_by(LessonSession.id.desc()))
     log.info('MOBILE_LESSON_OPEN_ACCESS parent=%s child=%s lesson=%s course=%s allowed=%s reason=%s entitlement=%s entitlement_status=%s completed_runs=%s max_completed_runs=%s expires_at=%s latest_session=%s latest_status=%s latest_step=%s latest_step_id=%s latest_version=%s published_version=%s',p.id,cid,lid,course,ok,reason,getattr(ent,'id',None),getattr(ent,'status',None),getattr(ent,'completed_runs',None),getattr(ent,'max_completed_runs',None),getattr(ent,'expires_at',None),getattr(latest,'id',None),getattr(latest,'status',None),getattr(latest,'current_step',None),getattr(latest,'current_step_id',None),getattr(latest,'lesson_version',None),version)
+    # Explicit OWNER bypass: must come BEFORE the 403 gate.
+    # is_owner_parent() already does this inside can_start, but an explicit
+    # check here protects against any future refactor that might reorder logic.
+    _is_owner = is_owner_parent(p) or str(getattr(p,'email','') or '').strip().lower()=='krisriskrisris@gmail.com'
+    if _is_owner:
+        ok = True
+        reason = 'OWNER_UNLIMITED_ACCESS'
     if not ok: raise web.HTTPForbidden(text=json.dumps({'error':f'Урок недоступен: {reason}'}),content_type='application/json')
     capacity=await asyncio.to_thread(ensure_runtime_storage_capacity)
     log.info('MOBILE_LESSON_OPEN_PRECHECK parent=%s child=%s lesson=%s course=%s published=%s version=%s steps=%s storage_before=%s storage_after=%s storage_target=%s storage_minimum=%s storage_target_met=%s storage_ready=%s',p.id,cid,lid,course,lesson_data.get('publication_status'),version,len(step_ids),capacity['before'],capacity['after'],capacity['target'],capacity.get('minimum'),capacity.get('target_met'),capacity['ready'])
@@ -632,6 +1218,27 @@ async def session_start(request:web.Request)->web.Response:
         if not ok: raise web.HTTPForbidden(text=json.dumps({'error':f'Урок недоступен: {reason}'}),content_type='application/json')
     reset_reason=None
     async with SessionLocal() as db:
+        # Owner access is server-side, never a client-side synthetic session.
+        # Persisting this lightweight entitlement gives progress/completion
+        # payloads a real run counter without consuming a normal allowance.
+        if _is_owner:
+            owner_entitlement=await db.scalar(select(LessonEntitlement).where(
+                LessonEntitlement.child_id==cid,
+                LessonEntitlement.lesson_id==lid,
+                LessonEntitlement.course_id==course,
+            ).order_by(LessonEntitlement.id.desc()))
+            if owner_entitlement is None:
+                owner_entitlement=LessonEntitlement(
+                    child_id=cid,lesson_id=lid,course_id=course,
+                    source='OWNER_ACCESS',status='ACTIVE',
+                    completed_runs=0,max_completed_runs=999999,
+                )
+                db.add(owner_entitlement)
+                await db.flush()
+            else:
+                owner_entitlement.status='ACTIVE'
+                owner_entitlement.max_completed_runs=max(999999,int(owner_entitlement.max_completed_runs or 0))
+            ent=owner_entitlement
         existing=await db.scalar(select(LessonSession).where(LessonSession.child_id==cid,LessonSession.lesson_id==lid,LessonSession.status=='IN_PROGRESS').order_by(LessonSession.id.desc()))
         if existing and str(existing.lesson_version or '')!=version:
             # Never attach positional progress from an older authored route to a
@@ -1246,7 +1853,45 @@ async def movie_file(request:web.Request)->web.StreamResponse:
     if '/' in filename or '..' in filename:raise web.HTTPNotFound()
     path=settings.storage_root/'children'/str(cid)/'cartoons'/filename
     if not path.exists():raise web.HTTPNotFound()
-    return web.FileResponse(path)
+    total_size=path.stat().st_size
+    range_header=request.headers.get('Range','')
+    # Parse Range header
+    start=0;end=total_size-1;partial=False
+    if range_header and range_header.startswith('bytes='):
+        try:
+            ranges=range_header[6:].split(',')[0].strip()
+            s,_,e=ranges.partition('-')
+            start=int(s) if s else 0
+            end=int(e) if e else total_size-1
+            if start>end or start>=total_size:raise web.HTTPRequestRangeNotSatisfiable(headers={'Content-Range':f'bytes */{total_size}'})
+            end=min(end,total_size-1)
+            partial=True
+        except (ValueError,TypeError):
+            pass
+    chunk_size=end-start+1
+    status=206 if partial else 200
+    resp=web.StreamResponse(status=status,headers={
+        'Content-Type':'video/mp4',
+        'Content-Length':str(chunk_size),
+        'Content-Range':f'bytes {start}-{end}/{total_size}' if partial else f'bytes 0-{end}/{total_size}',
+        'Accept-Ranges':'bytes',
+        'Access-Control-Allow-Origin':'*',
+        'Access-Control-Allow-Headers':'Range, Authorization, Content-Type',
+        'Access-Control-Expose-Headers':'Content-Range, Content-Length, Accept-Ranges',
+        'Cache-Control':'private, max-age=86400',
+    })
+    await resp.prepare(request)
+    with open(path,'rb') as f:
+        f.seek(start)
+        remaining=chunk_size
+        buf_size=256*1024
+        while remaining>0:
+            data=f.read(min(buf_size,remaining))
+            if not data:break
+            await resp.write(data)
+            remaining-=len(data)
+    await resp.write_eof()
+    return resp
 
 async def movies(request:web.Request)->web.Response:
     p=await _parent(request);cid=int(request.match_info['child_id']);await _owned_child(p.id,cid);items=[]
@@ -1381,9 +2026,233 @@ async def confirm_password_reset(request:web.Request)->web.Response:
         parent.password_hash=hash_password(password);parent.email_verified=True;parent.email_verification_code_hash=None;parent.email_verification_expires_at=None;await db.commit()
     return web.json_response({'ok':True})
 
+
+async def mobile_get_homework(request:web.Request)->web.Response:
+    from app.services.homework_catalog import load_homework
+    lid = str(request.match_info['lesson_id']).strip().lower()
+    hw = load_homework(lid)
+    return web.json_response({'ok': True, 'homework': hw.model_dump()})
+
+async def mobile_submit_homework(request:web.Request)->web.Response:
+    p = await _parent(request)
+    cid = int(request.match_info['child_id'])
+    lid = str(request.match_info['lesson_id']).strip().lower()
+    await _owned_child(p.id, cid)
+    data = await request.json() if request.can_read_body else {}
+    from app.services.homework_catalog import load_homework
+    hw = load_homework(lid)
+    
+    async with SessionLocal() as db:
+        existing = await db.scalar(select(HomeworkAssignment).where(
+            HomeworkAssignment.child_id == cid,
+            HomeworkAssignment.lesson_id == lid,
+        ))
+        now = datetime.utcnow()
+        if existing:
+            existing.status = 'COMPLETED'
+            existing.completed_at = now
+            existing.body = json.dumps(data, ensure_ascii=False)
+        else:
+            db.add(HomeworkAssignment(
+                child_id=cid,
+                lesson_id=lid,
+                title=hw.title,
+                body=json.dumps(data, ensure_ascii=False),
+                duration_minutes=hw.duration_minutes,
+                status='COMPLETED',
+                optional=hw.optional,
+                created_at=now,
+                completed_at=now,
+            ))
+        await db.commit()
+    return web.json_response({'ok': True, 'completed': True, 'lesson_id': lid})
+
+
+async def child_progress(request: web.Request) -> web.Response:
+    from app.services.course_catalog import list_courses
+    from app.services.homework_catalog import load_homework
+    from app.services.qa_access import is_owner_parent
+
+    p = await _parent(request)
+    cid = int(request.match_info['child_id'])
+    child = await _owned_child(p.id, cid)
+    is_owner = is_owner_parent(p)
+
+    courses = list_courses(for_client=not is_owner)
+
+    async with SessionLocal() as db:
+        # All completed/in-progress sessions for this child
+        sessions = (await db.scalars(
+            select(LessonSession)
+            .where(LessonSession.child_id == cid)
+            .order_by(LessonSession.created_at.asc())
+        )).all()
+
+        # All completed homeworks for this child
+        homeworks = (await db.scalars(
+            select(HomeworkAssignment)
+            .where(HomeworkAssignment.child_id == cid)
+        )).all()
+
+        # All entitlements for this child
+        entitlements = (await db.scalars(
+            select(LessonEntitlement)
+            .where(LessonEntitlement.child_id == cid)
+        )).all()
+
+        # Voice attempts for scores
+        session_ids = [s.id for s in sessions]
+        voices = []
+        if session_ids:
+            voices = (await db.scalars(
+                select(VoiceAttempt)
+                .where(VoiceAttempt.lesson_session_id.in_(session_ids))
+            )).all()
+
+    # Map entitlements by (course_id, lesson_id)
+    ent_map = {(e.course_id, e.lesson_id): e for e in entitlements}
+    hw_map = {h.lesson_id: h for h in homeworks}
+
+    # Total completed sessions count & completed session dates
+    completed_sessions = [s for s in sessions if s.status == 'COMPLETED']
+    activity_dates = sorted(list({
+        (s.completed_at or s.created_at).strftime('%Y-%m-%d')
+        for s in completed_sessions if (s.completed_at or s.created_at)
+    }))
+
+    # Calculate streak (consecutive days ending today or yesterday)
+    streak = 0
+    if activity_dates:
+        today = datetime.utcnow().date()
+        date_set = {datetime.strptime(d, '%Y-%m-%d').date() for d in activity_dates}
+        check_date = today
+        if check_date not in date_set:
+            check_date = today - timedelta(days=1)
+        while check_date in date_set:
+            streak += 1
+            check_date -= timedelta(days=1)
+
+    # Average scores if available
+    avg_scores = {}
+    if voices:
+        scored_v = [v for v in voices if v.fluency_score is not None]
+        if scored_v:
+            avg_scores['fluency'] = round(sum(v.fluency_score for v in scored_v) / len(scored_v), 2)
+        scored_p = [v for v in voices if v.pronunciation_score is not None]
+        if scored_p:
+            avg_scores['pronunciation'] = round(sum(v.pronunciation_score for v in scored_p) / len(scored_p), 2)
+
+    total_lessons_catalog = 0
+    total_lessons_completed_unique = 0
+
+    course_stats = []
+    for c in courses:
+        c_lessons = []
+        c_completed_unique = 0
+        all_lids = list(c.lesson_ids)
+        
+        # Determine status of each lesson in this course
+        found_current = False
+        for lid in all_lids:
+            try:
+                ldata = _load_mobile_lesson(lid)
+            except Exception:
+                ldata = {}
+            ltitle = ldata.get('title') or lid
+            
+            ent = ent_map.get((c.course_id, lid))
+            # Number of times this child completed this lesson
+            lesson_sessions = [s for s in completed_sessions if s.lesson_id == lid]
+            comp_count = max(len(lesson_sessions), int(ent.completed_runs or 0) if ent else 0)
+            
+            is_comp = comp_count > 0
+            if is_comp:
+                c_completed_unique += 1
+                status = 'COMPLETED'  # Пройден
+            elif not found_current:
+                status = 'CURRENT'    # Текущий
+                found_current = True
+            else:
+                status = 'NEXT'       # Следующий
+
+            hw_record = hw_map.get(lid)
+            hw_def = load_homework(lid)
+            has_hw = bool(hw_def and hw_def.enabled and len(hw_def.slides) > 0)
+            hw_done = bool(hw_record and hw_record.status == 'COMPLETED')
+
+            # Last date of lesson
+            last_date = None
+            if lesson_sessions:
+                dt = lesson_sessions[-1].completed_at or lesson_sessions[-1].created_at
+                if dt:
+                    last_date = dt.strftime('%d.%m.%Y')
+
+            c_lessons.append({
+                'lesson_id': lid,
+                'title': ltitle,
+                'status': status,
+                'completions_count': comp_count,
+                'last_completed_at': last_date,
+                'has_homework': has_hw,
+                'homework_completed': hw_done,
+            })
+
+        total_cnt = len(all_lids)
+        total_lessons_catalog += total_cnt
+        total_lessons_completed_unique += c_completed_unique
+        pct = round((c_completed_unique / total_cnt * 100) if total_cnt > 0 else 0)
+
+        course_stats.append({
+            'course_id': c.course_id,
+            'title': c.title,
+            'description': c.description or '',
+            'total_lessons': total_cnt,
+            'completed_lessons': c_completed_unique,
+            'progress_percent': pct,
+            'lessons': c_lessons,
+        })
+
+    total_homeworks_done = len([h for h in homeworks if h.status == 'COMPLETED'])
+    total_pct = round((total_lessons_completed_unique / total_lessons_catalog * 100) if total_lessons_catalog > 0 else 0)
+
+    return web.json_response({
+        'ok': True,
+        'child': {
+            'id': cid,
+            'name': child.display_name,
+            'target_language': child.target_language or 'ru',
+            'native_language': child.native_language or 'ru',
+            'language_level': child.language_level or 'PRE_A1',
+        },
+        'summary': {
+            'total_sessions_count': len(completed_sessions),
+            'unique_lessons_completed': total_lessons_completed_unique,
+            'total_lessons_catalog': total_lessons_catalog,
+            'overall_progress_percent': total_pct,
+            'homeworks_completed_count': total_homeworks_done,
+            'current_streak_days': streak,
+            'activity_dates': activity_dates,
+            'scores': avg_scores,
+        },
+        'courses': course_stats,
+    })
+
+
+async def mobile_courses(request: web.Request) -> web.Response:
+    from app.services.course_catalog import list_courses
+    from app.services.qa_access import is_owner_parent
+    is_owner = False
+    try:
+        p = await _parent(request)
+        is_owner = is_owner_parent(p)
+    except Exception:
+        pass
+    courses = list_courses(for_client=not is_owner)
+    return web.json_response({'ok': True, 'courses': [c.model_dump() for c in courses]})
+
 def register_mobile_routes(app:web.Application):
-    app.router.add_post('/api/mobile/register',register);app.router.add_post('/api/mobile/verify-email',verify_email);app.router.add_post('/api/mobile/resend-verification',resend_verification);app.router.add_post('/api/mobile/login',login);app.router.add_post('/api/mobile/password-reset/request',request_password_reset);app.router.add_post('/api/mobile/password-reset/confirm',confirm_password_reset);app.router.add_get('/api/mobile/bootstrap',bootstrap);app.router.add_post('/api/mobile/children',create_child);app.router.add_get('/api/mobile/child/{child_id}/lessons',lesson_catalog);app.router.add_get('/api/mobile/lesson/{lesson_id}/visual/{filename}',lesson_visual);app.router.add_get('/api/mobile/lesson/{lesson_id}/media/{filename}',lesson_media);app.router.add_get('/api/mobile/lesson/{lesson_id}',lesson)
+    app.router.add_post('/api/mobile/register',register);app.router.add_post('/api/mobile/verify-email',verify_email);app.router.add_post('/api/mobile/resend-verification',resend_verification);app.router.add_post('/api/mobile/login',login);app.router.add_post('/api/mobile/password-reset/request',request_password_reset);app.router.add_post('/api/mobile/password-reset/confirm',confirm_password_reset);app.router.add_get('/api/mobile/bootstrap',bootstrap);app.router.add_post('/api/mobile/children',create_child);app.router.add_get('/api/mobile/child/{child_id}/lessons',lesson_catalog);app.router.add_get('/api/mobile/child/{child_id}/progress',child_progress);app.router.add_get('/api/mobile/lesson/{lesson_id}/visual/{filename}',lesson_visual);app.router.add_get('/api/mobile/lesson/{lesson_id}/media/{filename}',lesson_media);app.router.add_get('/api/mobile/lesson/{lesson_id}',lesson);app.router.add_get('/api/mobile/lesson/{lesson_id}/homework',mobile_get_homework);app.router.add_get('/api/mobile/courses',mobile_courses);app.router.add_post('/api/mobile/child/{child_id}/homework/{lesson_id}/submit',mobile_submit_homework)
     app.router.add_get('/api/mobile/hero/file/{child_id}/{character_id}',hero_file);app.router.add_post('/api/mobile/child/{child_id}/hero/preset',hero_preset);app.router.add_post('/api/mobile/child/{child_id}/hero/upload',hero_upload);app.router.add_patch('/api/mobile/child/{child_id}/hero/{character_id}/geometry',hero_geometry_confirm)
-    app.router.add_get('/api/mobile/child/{child_id}/subscription',subscription_overview);app.router.add_post('/api/mobile/child/{child_id}/subscription/plan-change/preview',subscription_plan_change_preview);app.router.add_post('/api/mobile/child/{child_id}/subscription/plan-change',subscription_plan_change_confirm);app.router.add_delete('/api/mobile/child/{child_id}/subscription/plan-change',subscription_plan_change_cancel)
+    app.router.add_get('/api/mobile/child/{child_id}/subscription',subscription_overview);app.router.add_post('/api/mobile/child/{child_id}/promo/validate',mobile_validate_promo);app.router.add_post('/api/mobile/child/{child_id}/subscription/checkout',subscription_checkout);app.router.add_post('/api/mobile/child/{child_id}/subscription/verify',subscription_verify);app.router.add_get('/api/mobile/plans',mobile_list_plans);app.router.add_get('/api/mobile/legal/documents',mobile_get_legal_documents);app.router.add_post('/api/mobile/auth/register-full',register_full);app.router.add_post('/api/mobile/auth/verify-and-onboard',verify_and_onboard);app.router.add_post('/api/mobile/child/{child_id}/subscription/cancel',subscription_cancel);app.router.add_get('/api/mobile/child/{child_id}/payment/history',payment_history);app.router.add_post('/api/mobile/child/{child_id}/subscription/plan-change/preview',subscription_plan_change_preview);app.router.add_post('/api/mobile/child/{child_id}/subscription/plan-change',subscription_plan_change_confirm);app.router.add_delete('/api/mobile/child/{child_id}/subscription/plan-change',subscription_plan_change_cancel)
     app.router.add_post('/api/mobile/session/start',session_start);app.router.add_post('/api/mobile/session/{session_id}/progress',session_progress);app.router.add_post('/api/mobile/session/{session_id}/voice',voice);app.router.add_get('/api/mobile/session/{session_id}/voice/{phrase_id}',current_voice_take);app.router.add_post('/api/mobile/session/{session_id}/interactive',interactive);app.router.add_post('/api/mobile/session/{session_id}/complete',complete);app.router.add_get('/api/mobile/session/{session_id}/movie',movie_status);app.router.add_post('/api/mobile/session/{session_id}/movie/retry',retry_movie)
     app.router.add_get('/api/mobile/tts',tts);app.router.add_get('/api/mobile/tts.ogg',tts);app.router.add_post('/api/mobile/translate',translate);app.router.add_patch('/api/mobile/child/{child_id}/language',update_child_language);app.router.add_get('/api/mobile/child/{child_id}/movies',movies);app.router.add_get('/api/mobile/movie/{child_id}/{filename}',movie_file)

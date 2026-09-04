@@ -263,7 +263,14 @@ async def studio_page(_: web.Request) -> web.FileResponse:
 async def studio_static(request: web.Request) -> web.FileResponse:
     _require_enabled()
     filename = request.match_info["filename"]
-    if filename not in {"content_studio.css", "content_studio_extensions.css", "content_studio.js"}:
+    _ALLOWED_STATIC = {
+        "content_studio.css",
+        "content_studio_extensions.css",
+        "content_studio.js",
+        "admin_panel.js",
+        "admin_panel.css",
+    }
+    if filename not in _ALLOWED_STATIC:
         raise web.HTTPNotFound()
     response = web.FileResponse(Path(__file__).parent / "static" / filename)
     response.headers["Cache-Control"] = "no-store"
@@ -316,6 +323,12 @@ async def create_lesson(request: web.Request) -> web.Response:
         "revision": 1,
     }
     _atomic_json(_draft_path(lesson_id), lesson)
+    # Register lesson into course catalog (keeps lesson_ids in sync)
+    try:
+        from app.services.course_catalog import catalog_add_lesson
+        catalog_add_lesson(lesson["course_id"], lesson_id)
+    except Exception:
+        pass  # Non-fatal; lesson is still discoverable via filesystem scan
     _audit("LESSON_CREATED", lesson_id)
     return web.json_response({"lesson": lesson, "summary": _summary(lesson_id)}, status=201)
 
@@ -351,6 +364,7 @@ async def save_lesson(request: web.Request) -> web.Response:
     lesson["active"] = False
     lesson["status"] = "draft"
     lesson["import_status"] = "DRAFT"
+    # Set before _validation_errors so the DRAFT 0-slide exemption works
     lesson["max_completed_runs"] = 2
     lesson["expires_after_months"] = 10
     lesson["revision"] = max(1, int(lesson.get("revision") or 1))
@@ -707,10 +721,410 @@ async def lesson_asset(request: web.Request) -> web.StreamResponse:
     return response
 
 
+
+
+# ── PROMO CODES MANAGEMENT (Stage 7 & 8) ──────────────────────────────────
+async def studio_list_promos(request: web.Request) -> web.Response:
+    _authorized(request)
+    from app.services.promo_codes import list_promo_codes
+    async with _SessionLocal() as db:
+        promos = await list_promo_codes(db, include_archived=False)
+        return web.json_response({"promos": promos})
+
+
+async def studio_create_promo(request: web.Request) -> web.Response:
+    _authorized(request)
+    data = await request.json()
+    from app.services.promo_codes import create_promo_code
+    async with _SessionLocal() as db:
+        try:
+            promo = await create_promo_code(db, data)
+            return web.json_response({"ok": True, "id": promo.id, "code": promo.code}, status=201)
+        except ValueError as exc:
+            return web.json_response({"ok": False, "error": str(exc)}, status=400)
+
+
+async def studio_update_promo(request: web.Request) -> web.Response:
+    _authorized(request)
+    promo_id = int(request.match_info["promo_id"])
+    data = await request.json()
+    from app.services.promo_codes import update_promo_code
+    async with _SessionLocal() as db:
+        try:
+            promo = await update_promo_code(db, promo_id, data)
+            return web.json_response({"ok": True, "id": promo.id, "code": promo.code})
+        except ValueError as exc:
+            return web.json_response({"ok": False, "error": str(exc)}, status=400)
+
+
+async def studio_toggle_promo(request: web.Request) -> web.Response:
+    _authorized(request)
+    promo_id = int(request.match_info["promo_id"])
+    from app.services.promo_codes import toggle_promo_code
+    async with _SessionLocal() as db:
+        try:
+            active = await toggle_promo_code(db, promo_id)
+            return web.json_response({"ok": True, "active": active})
+        except ValueError as exc:
+            return web.json_response({"ok": False, "error": str(exc)}, status=400)
+
+
+async def studio_delete_promo(request: web.Request) -> web.Response:
+    _authorized(request)
+    promo_id = int(request.match_info["promo_id"])
+    from app.services.promo_codes import delete_promo_code
+    async with _SessionLocal() as db:
+        deleted = await delete_promo_code(db, promo_id, hard=False)
+        return web.json_response({"ok": deleted})
+
+
+
+
+# ── CLIENTS / CUSTOMERS CRM & TARIFF CMS (Stage 8, 9, 10) ─────────────────
+async def admin_list_clients(request: web.Request) -> web.Response:
+    _authorized(request)
+    from app.db.models import Parent as _Parent, Child as _Child, Subscription as _Subscription, PromoCodeUsage as _PromoUsage
+    from app.db.models import LessonSession as _LessonSession
+    import io, csv
+
+    q = str(request.query.get("q", "")).strip().lower()
+    plan_filter = str(request.query.get("plan", "")).strip().lower()
+    period_filter = str(request.query.get("period", "")).strip().upper()
+    status_filter = str(request.query.get("status", "")).strip().upper()
+    country_filter = str(request.query.get("country", "")).strip().lower()
+    provider_filter = str(request.query.get("provider", "")).strip().lower()
+    promo_filter = str(request.query.get("promo", "")).strip().upper()
+    export_csv = request.query.get("export") == "csv"
+
+    async with _SessionLocal() as db:
+        parents = list((await db.scalars(_select(_Parent).order_by(_Parent.id.desc()))).all())
+        clients = []
+
+        for p in parents:
+            full_name = f"{p.first_name or ''} {p.last_name or ''} {p.display_name or ''}".strip().lower()
+            email = str(p.email or "").lower()
+            phone = str(p.phone or "").lower()
+            if q and (q not in full_name and q not in email and q not in phone):
+                continue
+
+            if country_filter and country_filter != str(p.country or "").lower():
+                continue
+
+            children = list((await db.scalars(_select(_Child).where(_Child.parent_id == p.id).order_by(_Child.id.asc()))).all())
+            child_ids = [c.id for c in children]
+
+            sub = None
+            if child_ids:
+                sub = await db.scalar(
+                    _select(_Subscription).where(_Subscription.child_id.in_(child_ids)).order_by(_Subscription.id.desc()).limit(1)
+                )
+
+            promo_usages = list((await db.scalars(_select(_PromoUsage).where(_PromoUsage.parent_id == p.id))).all())
+            latest_promo = promo_usages[0] if promo_usages else None
+
+            is_owner = str(p.account_role or "").upper() == "OWNER"
+            if is_owner:
+                status = "OWNER"
+            elif sub and sub.status in {"ACTIVE", "PAST_DUE", "CANCELLED", "TRIAL", "EXPIRED", "PAYMENT_FAILED"}:
+                status = sub.status
+            elif not p.email_verified:
+                status = "EMAIL_NOT_VERIFIED"
+            elif p.email_verified and not sub:
+                status = "VERIFIED"
+            else:
+                status = str(sub.status if sub else p.onboarding_stage or "REGISTERED").upper()
+
+            if status_filter and status != status_filter:
+                continue
+
+            current_plan = (sub.current_plan_id or sub.plan_id or "") if sub else ""
+            if plan_filter and plan_filter not in current_plan.lower():
+                continue
+
+            billing_period = (sub.billing_period or "MONTH").upper() if sub else "MONTH"
+            if period_filter and period_filter != billing_period:
+                continue
+
+            provider = (sub.payment_provider or "paypal").lower() if sub else ""
+            if provider_filter and provider_filter != provider:
+                continue
+
+            if promo_filter:
+                has_promo = any(promo_filter in str(u.payment_reference or "") for u in promo_usages)
+                if not has_promo:
+                    continue
+
+            lessons_alloc = int(sub.lessons_allocated or 0) if sub else 0
+            lessons_used = int(sub.lessons_used or 0) if sub else 0
+            lessons_rem = max(0, lessons_alloc - lessons_used)
+
+            plan_name_map = {
+                "weekly1": "DOME Start", "weekly2": "DOME Smart", "weekly3": "DOME Plus", "weekly4": "DOME Max",
+                "start": "DOME Start", "smart": "DOME Smart", "plus": "DOME Plus", "max": "DOME Max"
+            }
+            plan_title = plan_name_map.get(current_plan, current_plan or "Не выбран")
+
+            client_record = {
+                "id": p.id,
+                "first_name": p.first_name or "",
+                "last_name": p.last_name or "",
+                "display_name": p.display_name or f"{p.first_name or ''} {p.last_name or ''}".strip() or p.email,
+                "email": p.email,
+                "email_verified": bool(p.email_verified),
+                "phone": p.phone or "",
+                "country": p.country or "",
+                "preferred_language": p.preferred_language or "ru",
+                "account_role": p.account_role or "STANDARD",
+                "is_owner": is_owner,
+                "status": status,
+                "registered_at": p.created_at.isoformat() if p.created_at else None,
+                "children": [
+                    {
+                        "id": c.id,
+                        "name": c.display_name,
+                        "age": c.age_years,
+                        "native_language": c.native_language or "ru",
+                        "target_language": c.target_language or "ru",
+                    }
+                    for c in children
+                ],
+                "subscription": {
+                    "id": sub.id if sub else None,
+                    "plan_id": current_plan,
+                    "plan_title": plan_title,
+                    "lessons_per_week": sub.lessons_per_week if sub else 0,
+                    "lessons_per_month": (sub.lessons_per_week * 4) if sub else 0,
+                    "billing_period": billing_period,
+                    "price": sub.current_plan_price if sub and sub.current_plan_price else (sub.monthly_price if sub else 0.0),
+                    "currency": sub.currency if sub else "EUR",
+                    "status": sub.status if sub else "NO_SUBSCRIPTION",
+                    "start_date": sub.started_at.isoformat() if sub and sub.started_at else None,
+                    "next_billing_date": (sub.next_charge_at or sub.current_period_end).isoformat() if sub and (sub.next_charge_at or sub.current_period_end) else None,
+                    "cancellation_date": sub.ended_at.isoformat() if sub and sub.ended_at else None,
+                    "lessons_used": lessons_used,
+                    "lessons_remaining": lessons_rem,
+                    "payment_provider": sub.payment_provider if sub else "",
+                    "promo_code": latest_promo.payment_reference if latest_promo else "",
+                    "discount": latest_promo.discount_amount if latest_promo else 0.0,
+                    "grandfathered_price": bool(sub.current_plan_price and sub.current_plan_price < (sub.monthly_price or 999)) if sub else False,
+                } if sub else None,
+            }
+            clients.append(client_record)
+
+        if export_csv:
+            output = io.StringIO()
+            writer = csv.writer(output)
+            writer.writerow([
+                "ID", "Имя", "Фамилия", "Email", "Email Verified", "Телефон", "Страна",
+                "Статус", "Роль", "Дата регистрации", "Дети", "Тариф", "Период", "Цена",
+                "Уроков использовано", "Уроков осталось", "Провайдер", "Дата следующего списания"
+            ])
+            for c in clients:
+                sub_info = c["subscription"] or {}
+                kids = "; ".join([f"{k['name']} ({k['age']} лет)" for k in c["children"]])
+                writer.writerow([
+                    c["id"], c["first_name"], c["last_name"], c["email"], "Да" if c["email_verified"] else "Нет",
+                    c["phone"], c["country"], c["status"], c["account_role"], c["registered_at"], kids,
+                    sub_info.get("plan_title", "—"), sub_info.get("billing_period", "—"), sub_info.get("price", "—"),
+                    sub_info.get("lessons_used", "—"), sub_info.get("lessons_remaining", "—"),
+                    sub_info.get("payment_provider", "—"), sub_info.get("next_billing_date", "—")
+                ])
+            csv_content = output.getvalue()
+            return web.Response(
+                body=csv_content.encode("utf-8-sig"),
+                content_type="text/csv",
+                headers={"Content-Disposition": "attachment; filename=dome_clients.csv"}
+            )
+
+        return web.json_response({"clients": clients, "count": len(clients)})
+
+
+async def admin_get_client_card(request: web.Request) -> web.Response:
+    _authorized(request)
+    from app.db.models import (
+        Parent as _Parent, Child as _Child, Subscription as _Subscription,
+        PromoCodeUsage as _PromoUsage, LessonSession as _LessonSession,
+        PaymentWebhookEvent as _PaymentEvent, UserConsent as _UserConsent,
+        SubscriptionAuditEvent as _SubAudit
+    )
+    parent_id = int(request.match_info["parent_id"])
+
+    async with _SessionLocal() as db:
+        parent = await db.get(_Parent, parent_id)
+        if not parent:
+            raise web.HTTPNotFound(text=json.dumps({"error": "Клиент не найден"}), content_type="application/json")
+
+        children = list((await db.scalars(_select(_Child).where(_Child.parent_id == parent.id).order_by(_Child.id.asc()))).all())
+        child_ids = [c.id for c in children]
+
+        # All subscriptions history
+        subs = []
+        sessions = []
+        if child_ids:
+            subs = list((await db.scalars(_select(_Subscription).where(_Subscription.child_id.in_(child_ids)).order_by(_Subscription.id.desc()))).all())
+            sessions = list((await db.scalars(_select(_LessonSession).where(_LessonSession.child_id.in_(child_ids)).order_by(_LessonSession.id.desc()).limit(100))).all())
+
+        # Payments / webhooks
+        payments = list((await db.scalars(_select(_PaymentEvent).order_by(_PaymentEvent.id.desc()).limit(50))).all())
+
+        # Promos
+        promos = list((await db.scalars(_select(_PromoUsage).where(_PromoUsage.parent_id == parent.id).order_by(_PromoUsage.used_at.desc()))).all())
+
+        # Consents
+        consents = list((await db.scalars(_select(_UserConsent).where(_UserConsent.parent_id == parent.id).order_by(_UserConsent.accepted_at.desc()))).all())
+
+        # Audit
+        sub_ids = [s.id for s in subs]
+        audits = []
+        if sub_ids:
+            audits = list((await db.scalars(_select(_SubAudit).where(_SubAudit.subscription_id.in_(sub_ids)).order_by(_SubAudit.id.desc()))).all())
+
+        from app.services.consents import DOCUMENT_METADATA
+        return web.json_response({
+            "parent": {
+                "id": parent.id,
+                "first_name": parent.first_name or "",
+                "last_name": parent.last_name or "",
+                "display_name": parent.display_name or f"{parent.first_name or ''} {parent.last_name or ''}".strip() or parent.email,
+                "email": parent.email,
+                "email_verified": bool(parent.email_verified),
+                "phone": parent.phone or "",
+                "country": parent.country or "",
+                "preferred_language": parent.preferred_language or "ru",
+                "account_role": parent.account_role or "STANDARD",
+                "is_owner": str(parent.account_role or "").upper() == "OWNER",
+                "onboarding_stage": parent.onboarding_stage or "REGISTERED",
+                "verification_status": parent.verification_status or "UNVERIFIED",
+                "marketing_opt_in": bool(parent.marketing_opt_in),
+                "registered_at": parent.created_at.isoformat() if parent.created_at else None,
+            },
+            "children": [
+                {
+                    "id": c.id,
+                    "name": c.display_name,
+                    "age": c.age_years,
+                    "native_language": c.native_language or "ru",
+                    "target_language": c.target_language or "ru",
+                    "level": c.language_level or "PRE_A1",
+                    "active_hero_id": c.active_character_id,
+                    "created_at": c.created_at.isoformat() if c.created_at else None,
+                }
+                for c in children
+            ],
+            "subscriptions": [
+                {
+                    "id": s.id,
+                    "plan_id": s.current_plan_id or s.plan_id,
+                    "billing_period": s.billing_period,
+                    "monthly_price": s.monthly_price,
+                    "current_plan_price": s.current_plan_price,
+                    "currency": s.currency,
+                    "status": s.status,
+                    "started_at": s.started_at.isoformat() if s.started_at else None,
+                    "ended_at": s.ended_at.isoformat() if s.ended_at else None,
+                    "next_charge_at": s.next_charge_at.isoformat() if s.next_charge_at else None,
+                    "lessons_allocated": s.lessons_allocated,
+                    "lessons_used": s.lessons_used,
+                    "payment_provider": s.payment_provider,
+                    "provider_subscription_id": s.provider_subscription_id,
+                }
+                for s in subs
+            ],
+            "lessons": [
+                {
+                    "id": sess.id,
+                    "child_id": sess.child_id,
+                    "lesson_id": sess.lesson_id,
+                    "status": sess.status,
+                    "current_step": sess.current_step,
+                    "started_at": sess.started_at.isoformat() if sess.started_at else None,
+                    "completed_at": sess.completed_at.isoformat() if sess.completed_at else None,
+                }
+                for sess in sessions
+            ],
+            "payments": [
+                {
+                    "id": p.id,
+                    "provider": p.provider,
+                    "event_id": p.event_id,
+                    "event_type": p.event_type,
+                    "processed_at": p.processed_at.isoformat() if p.processed_at else None,
+                }
+                for p in payments
+            ],
+            "promos": [
+                {
+                    "id": pr.id,
+                    "plan_id": pr.plan_id,
+                    "discount_amount": pr.discount_amount,
+                    "original_price": pr.original_price,
+                    "final_price": pr.final_price,
+                    "payment_reference": pr.payment_reference,
+                    "used_at": pr.used_at.isoformat() if pr.used_at else None,
+                }
+                for pr in promos
+            ],
+            "consents": [
+                {
+                    "id": con.id,
+                    "document_type": con.document_type,
+                    "title": DOCUMENT_METADATA.get(con.document_type, {}).get("title", con.document_type),
+                    "document_version": con.document_version,
+                    "accepted": con.accepted,
+                    "accepted_at": con.accepted_at.isoformat() if con.accepted_at else None,
+                    "locale": con.locale,
+                    "ip_address": con.ip_address,
+                }
+                for con in consents
+            ],
+            "audit": [
+                {
+                    "id": a.id,
+                    "action": a.action,
+                    "actor": a.actor,
+                    "created_at": a.created_at.isoformat() if a.created_at else None,
+                    "details": json.loads(a.details_json or "{}"),
+                }
+                for a in audits
+            ],
+        })
+
+
+async def admin_list_tariffs(request: web.Request) -> web.Response:
+    _authorized(request)
+    from app.services.tariff_plans import list_all_tariffs
+    async with _SessionLocal() as db:
+        tariffs = await list_all_tariffs(db)
+        return web.json_response({"tariffs": tariffs})
+
+
+async def admin_update_tariff(request: web.Request) -> web.Response:
+    _authorized(request)
+    plan_id = str(request.match_info["plan_id"]).strip()
+    data = await request.json()
+    from app.services.tariff_plans import update_tariff
+    async with _SessionLocal() as db:
+        try:
+            tariff = await update_tariff(db, plan_id, data)
+            from app.services.tariff_plans import _tariff_dict
+            return web.json_response({"ok": True, "tariff": _tariff_dict(tariff)})
+        except ValueError as exc:
+            return web.json_response({"ok": False, "error": str(exc)}, status=400)
+
+
 def register_content_studio_routes(app: web.Application) -> None:
     app.router.add_get("/content-studio", studio_page)
     app.router.add_get("/content-studio/{filename}", studio_static)
     app.router.add_get("/api/studio/status", studio_status)
+    app.router.add_get("/api/studio/promos", studio_list_promos)
+    app.router.add_post("/api/studio/promos", studio_create_promo)
+    app.router.add_put("/api/studio/promos/{promo_id}", studio_update_promo)
+    app.router.add_post("/api/studio/promos/{promo_id}/toggle", studio_toggle_promo)
+    app.router.add_delete("/api/studio/promos/{promo_id}", studio_delete_promo)
+    app.router.add_get("/api/studio/admin/clients", admin_list_clients)
+    app.router.add_get("/api/studio/admin/clients/{parent_id}", admin_get_client_card)
+    app.router.add_get("/api/studio/admin/tariffs", admin_list_tariffs)
+    app.router.add_put("/api/studio/admin/tariffs/{plan_id}", admin_update_tariff)
     app.router.add_get("/api/studio/lessons", list_lessons)
     app.router.add_post("/api/studio/lessons", create_lesson)
     app.router.add_post("/api/studio/lessons/reorder", reorder_lessons)
@@ -730,3 +1144,436 @@ def register_content_studio_routes(app: web.Application) -> None:
     app.router.add_post("/api/studio/lessons/{lesson_id}/media/{filename}/replace", replace_media)
     app.router.add_delete("/api/studio/lessons/{lesson_id}/media/{filename}", delete_unused_media)
     app.router.add_get("/api/studio/lessons/{lesson_id}/media/{filename}", studio_media)
+    # Admin / user management
+    app.router.add_get("/api/studio/admin/users", admin_list_users)
+    app.router.add_get("/api/studio/admin/users/{parent_id}", admin_get_user)
+    app.router.add_post("/api/studio/admin/users/{parent_id}/role", admin_set_role)
+    app.router.add_post("/api/studio/admin/owner-apply", admin_apply_owner_emails)
+    # Course CMS
+    app.router.add_get("/api/studio/courses", studio_list_courses)
+    app.router.add_post("/api/studio/courses", studio_create_course)
+    app.router.add_post("/api/studio/courses/reorder", studio_reorder_courses)
+    app.router.add_get("/api/studio/courses/{course_id}", studio_get_course)
+    app.router.add_put("/api/studio/courses/{course_id}", studio_update_course)
+    app.router.add_post("/api/studio/courses/{course_id}/duplicate", studio_duplicate_course)
+    app.router.add_post("/api/studio/courses/{course_id}/publish", studio_publish_course)
+    app.router.add_post("/api/studio/courses/{course_id}/archive", studio_archive_course)
+    app.router.add_delete("/api/studio/courses/{course_id}", studio_delete_course)
+    app.router.add_post("/api/studio/courses/{course_id}/cover", studio_upload_course_cover)
+
+    # Lesson CMS movement
+    app.router.add_post("/api/studio/lessons/{lesson_id}/move", studio_move_lesson)
+
+    # Homework CMS
+    app.router.add_get("/api/studio/lessons/{lesson_id}/homework", studio_get_homework)
+    app.router.add_put("/api/studio/lessons/{lesson_id}/homework", studio_save_homework)
+    app.router.add_post("/api/studio/lessons/{lesson_id}/homework/publish", studio_publish_homework)
+    app.router.add_post("/api/studio/lessons/{lesson_id}/homework/duplicate", studio_duplicate_homework)
+    app.router.add_post("/api/studio/lessons/{lesson_id}/homework/move", studio_move_homework)
+    app.router.add_delete("/api/studio/lessons/{lesson_id}/homework", studio_delete_homework)
+
+
+
+# ---------------------------------------------------------------------------
+# Admin / user-management endpoints (all require Content Studio token)
+# ---------------------------------------------------------------------------
+
+from app.db.models import Child as _Child, LessonEntitlement as _LessonEntitlement  # noqa: E402
+from app.db.session import SessionLocal as _SessionLocal  # noqa: E402
+from app.services.qa_access import (  # noqa: E402
+    OWNER_ROLE as _OWNER_ROLE,
+    QA_TEST_ROLE as _QA_TEST_ROLE,
+    ADMIN_ROLE as _ADMIN_ROLE,
+    STANDARD_ROLE as _STANDARD_ROLE,
+)
+from sqlalchemy import select as _select  # noqa: E402
+
+_ALLOWED_ROLES = {_STANDARD_ROLE, _QA_TEST_ROLE, _ADMIN_ROLE, _OWNER_ROLE}
+
+# Owner emails that always receive OWNER role — single source of truth.
+# Edit this list and POST /api/studio/admin/owner-apply to apply changes live.
+OWNER_EMAIL_ALLOWLIST: list[str] = [
+    "krisriskrisris@gmail.com",
+]
+
+
+def _parent_payload(parent, children) -> dict:
+    return {
+        "id": parent.id,
+        "email": parent.email,
+        "display_name": parent.display_name,
+        "account_role": str(parent.account_role or _STANDARD_ROLE),
+        "email_verified": bool(parent.email_verified),
+        "created_at": parent.created_at.isoformat() if parent.created_at else None,
+        "children": [
+            {
+                "id": c.id,
+                "display_name": c.display_name,
+                "age_years": c.age_years,
+                "language_level": c.language_level,
+                "target_language": c.target_language,
+                "native_language": c.native_language,
+            }
+            for c in children
+        ],
+    }
+
+
+async def admin_list_users(request: web.Request) -> web.Response:
+    """GET /api/studio/admin/users?email=...&role=...&limit=50"""
+    _authorized(request)
+    from app.db.models import Parent as _Parent
+    email_q = str(request.query.get("email", "")).strip().lower()
+    role_q = str(request.query.get("role", "")).strip().upper() or None
+    limit = min(int(request.query.get("limit", 50)), 200)
+    async with _SessionLocal() as db:
+        stmt = _select(_Parent).order_by(_Parent.id.desc()).limit(limit)
+        parents = list(await db.scalars(stmt))
+        results = []
+        for p in parents:
+            if email_q and email_q not in str(p.email or "").lower():
+                continue
+            if role_q and str(p.account_role or _STANDARD_ROLE).upper() != role_q:
+                continue
+            children = list(await db.scalars(_select(_Child).where(_Child.parent_id == p.id)))
+            results.append(_parent_payload(p, children))
+    return web.json_response({"users": results, "count": len(results)})
+
+
+async def admin_get_user(request: web.Request) -> web.Response:
+    """GET /api/studio/admin/users/{parent_id}"""
+    _authorized(request)
+    from app.db.models import Parent as _Parent
+    pid = int(request.match_info["parent_id"])
+    async with _SessionLocal() as db:
+        p = await db.get(_Parent, pid)
+        if p is None:
+            raise web.HTTPNotFound(text=json.dumps({"error": "User not found"}), content_type="application/json")
+        children = list(await db.scalars(_select(_Child).where(_Child.parent_id == p.id)))
+        # Entitlement summary per child
+        ents = []
+        for c in children:
+            rows = list(await db.scalars(_select(_LessonEntitlement).where(_LessonEntitlement.child_id == c.id)))
+            for e in rows:
+                ents.append({
+                    "child_id": c.id,
+                    "lesson_id": e.lesson_id,
+                    "course_id": e.course_id,
+                    "completed_runs": e.completed_runs,
+                    "max_completed_runs": e.max_completed_runs,
+                    "status": e.status,
+                })
+        payload = _parent_payload(p, children)
+        payload["entitlements"] = ents
+    return web.json_response(payload)
+
+
+async def admin_set_role(request: web.Request) -> web.Response:
+    """POST /api/studio/admin/users/{parent_id}/role  body: {"role": "OWNER"|"ADMIN"|"QA_TEST"|"STANDARD"}"""
+    _authorized(request)
+    from app.db.models import Parent as _Parent
+    pid = int(request.match_info["parent_id"])
+    data = await request.json()
+    new_role = str(data.get("role", "")).strip().upper()
+    if new_role not in _ALLOWED_ROLES:
+        raise web.HTTPBadRequest(
+            text=json.dumps({"error": f"role must be one of {sorted(_ALLOWED_ROLES)}"}),
+            content_type="application/json",
+        )
+    async with _SessionLocal() as db:
+        p = await db.get(_Parent, pid)
+        if p is None:
+            raise web.HTTPNotFound(text=json.dumps({"error": "User not found"}), content_type="application/json")
+        old_role = str(p.account_role or _STANDARD_ROLE)
+        p.account_role = new_role
+        await db.commit()
+        log.info("ADMIN_SET_ROLE parent_id=%s email=%s old=%s new=%s", pid, p.email, old_role, new_role)
+    return web.json_response({"ok": True, "parent_id": pid, "old_role": old_role, "new_role": new_role})
+
+
+async def admin_apply_owner_emails(request: web.Request) -> web.Response:
+    """POST /api/studio/admin/owner-apply — apply OWNER_EMAIL_ALLOWLIST to the live DB.
+
+    Safe to call repeatedly (idempotent).  Returns a summary of changes.
+    """
+    _authorized(request)
+    from app.db.models import Parent as _Parent
+    applied = []
+    skipped = []
+    async with _SessionLocal() as db:
+        for raw in OWNER_EMAIL_ALLOWLIST:
+            email = raw.strip().lower()
+            p = await db.scalar(_select(_Parent).where(_Parent.email == email))
+            if p is None:
+                skipped.append({"email": email, "reason": "not_found"})
+                continue
+            old = str(p.account_role or _STANDARD_ROLE)
+            if old == _OWNER_ROLE:
+                skipped.append({"email": email, "reason": "already_owner", "parent_id": p.id})
+                continue
+            p.account_role = _OWNER_ROLE
+            applied.append({"email": email, "parent_id": p.id, "old_role": old})
+            log.info("OWNER_APPLY email=%s parent_id=%s old_role=%s", email, p.id, old)
+        await db.commit()
+    return web.json_response({"ok": True, "applied": applied, "skipped": skipped})
+
+
+# ---------------------------------------------------------------------------
+# Course and Homework CMS Endpoints
+# ---------------------------------------------------------------------------
+
+from app.services.course_catalog import (
+    list_courses as _catalog_list_courses,
+    load_course as _catalog_load_course,
+    save_course as _catalog_save_course,
+    create_course as _catalog_create_course,
+    update_course as _catalog_update_course,
+    duplicate_course as _catalog_duplicate_course,
+    archive_course as _catalog_archive_course,
+    delete_course as _catalog_delete_course,
+    reorder_courses as _catalog_reorder_courses,
+    add_lesson_to_course as _catalog_add_lesson,
+    remove_lesson_from_course as _catalog_remove_lesson,
+)
+from app.services.homework_catalog import (
+    load_homework as _catalog_load_homework,
+    save_homework as _catalog_save_homework,
+    duplicate_homework as _catalog_duplicate_homework,
+    move_homework as _catalog_move_homework,
+    archive_homework as _catalog_archive_homework,
+)
+
+
+async def studio_list_courses(request: web.Request) -> web.Response:
+    _authorized(request)
+    courses = _catalog_list_courses(for_client=False)
+    payload = []
+    for c in courses:
+        data = c.model_dump()
+        data["lesson_count"] = len(c.lesson_ids)
+        payload.append(data)
+    return web.json_response({"courses": payload})
+
+
+async def studio_create_course(request: web.Request) -> web.Response:
+    _authorized(request)
+    data = await request.json()
+    cid = str(data.get("course_id") or data.get("id") or "").strip().lower()
+    title = str(data.get("title") or "").strip()
+    if not cid or not title:
+        raise web.HTTPBadRequest(text=json.dumps({"error": "course_id and title are required"}), content_type="application/json")
+    try:
+        manifest = _catalog_create_course(
+            course_id=cid,
+            title=title,
+            description=str(data.get("description") or ""),
+            cover_image=str(data.get("cover_image") or ""),
+            order=int(data.get("order") or 1),
+            active=bool(data.get("active", True)),
+            status=str(data.get("status") or "draft"),
+        )
+        return web.json_response({"ok": True, "course": manifest.model_dump()})
+    except ValueError as e:
+        raise web.HTTPBadRequest(text=json.dumps({"error": str(e)}), content_type="application/json")
+
+
+async def studio_get_course(request: web.Request) -> web.Response:
+    _authorized(request)
+    cid = request.match_info["course_id"].strip().lower()
+    try:
+        manifest = _catalog_load_course(cid)
+        return web.json_response({"ok": True, "course": manifest.model_dump()})
+    except FileNotFoundError:
+        raise web.HTTPNotFound(text=json.dumps({"error": f"Course not found: {cid}"}), content_type="application/json")
+
+
+async def studio_update_course(request: web.Request) -> web.Response:
+    _authorized(request)
+    cid = request.match_info["course_id"].strip().lower()
+    data = await request.json()
+    try:
+        manifest = _catalog_update_course(cid, data)
+        return web.json_response({"ok": True, "course": manifest.model_dump()})
+    except FileNotFoundError:
+        raise web.HTTPNotFound(text=json.dumps({"error": f"Course not found: {cid}"}), content_type="application/json")
+
+
+async def studio_duplicate_course(request: web.Request) -> web.Response:
+    _authorized(request)
+    cid = request.match_info["course_id"].strip().lower()
+    data = await request.json()
+    new_id = str(data.get("new_course_id") or f"{cid}_copy").strip().lower()
+    new_title = str(data.get("new_title") or "").strip()
+    try:
+        manifest = _catalog_duplicate_course(cid, new_id, new_title)
+        return web.json_response({"ok": True, "course": manifest.model_dump()})
+    except Exception as e:
+        raise web.HTTPBadRequest(text=json.dumps({"error": str(e)}), content_type="application/json")
+
+
+async def studio_publish_course(request: web.Request) -> web.Response:
+    _authorized(request)
+    cid = request.match_info["course_id"].strip().lower()
+    manifest = _catalog_update_course(cid, {"status": "published", "active": True, "locked": False})
+    return web.json_response({"ok": True, "course": manifest.model_dump()})
+
+
+async def studio_archive_course(request: web.Request) -> web.Response:
+    _authorized(request)
+    cid = request.match_info["course_id"].strip().lower()
+    manifest = _catalog_archive_course(cid)
+    return web.json_response({"ok": True, "course": manifest.model_dump()})
+
+
+async def studio_delete_course(request: web.Request) -> web.Response:
+    _authorized(request)
+    cid = request.match_info["course_id"].strip().lower()
+    result = _catalog_delete_course(cid)
+    return web.json_response({"ok": True, **result})
+
+
+async def studio_reorder_courses(request: web.Request) -> web.Response:
+    _authorized(request)
+    data = await request.json()
+    ordered_ids = data.get("order") or []
+    updated = _catalog_reorder_courses(ordered_ids)
+    return web.json_response({"ok": True, "courses": [c.model_dump() for c in updated]})
+
+
+async def studio_upload_course_cover(request: web.Request) -> web.Response:
+    _authorized(request)
+    cid = request.match_info["course_id"].strip().lower()
+    reader = await request.multipart()
+    field = await reader.next()
+    if field is None or not field.filename:
+        raise web.HTTPBadRequest(text=json.dumps({"error": "No file uploaded"}), content_type="application/json")
+    ext = Path(field.filename).suffix.lower()
+    if ext not in {".png", ".jpg", ".jpeg", ".webp"}:
+        raise web.HTTPBadRequest(text=json.dumps({"error": "Invalid image format"}), content_type="application/json")
+
+    safe_name = f"cover{ext}"
+    target_dir = settings.storage_root / "courses" / cid
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target_path = target_dir / safe_name
+    with open(target_path, "wb") as f:
+        while True:
+            chunk = await field.read_chunk()
+            if not chunk:
+                break
+            f.write(chunk)
+
+    rel_url = f"/api/studio/courses/{cid}/cover/{safe_name}"
+    _catalog_update_course(cid, {"cover_image": rel_url})
+    return web.json_response({"ok": True, "cover_image": rel_url})
+
+
+async def studio_move_lesson(request: web.Request) -> web.Response:
+    _authorized(request)
+    lid = request.match_info["lesson_id"].strip().lower()
+    data = await request.json()
+    target_course_id = str(data.get("target_course_id") or "").strip().lower()
+    if not target_course_id:
+        raise web.HTTPBadRequest(text=json.dumps({"error": "target_course_id is required"}), content_type="application/json")
+
+    # 1. Update lesson data
+    lesson_data = load_authored_lesson(lid)
+    old_course_id = str(lesson_data.get("course_id") or "conversation").strip().lower()
+    lesson_data["course_id"] = target_course_id
+
+    # Save lesson
+    from app.services.authored_content import ensure_persistent_lesson
+    p_path = ensure_persistent_lesson(lid)
+    p_path.write_text(json.dumps(lesson_data, ensure_ascii=False, indent=2) + "\n", "utf-8")
+
+    # 2. Update courses
+    try:
+        _catalog_remove_lesson(old_course_id, lid)
+    except Exception:
+        pass
+    try:
+        _catalog_add_lesson(target_course_id, lid)
+    except Exception:
+        pass
+
+    return web.json_response({"ok": True, "lesson_id": lid, "old_course_id": old_course_id, "new_course_id": target_course_id})
+
+
+# Homework Endpoints
+
+async def studio_get_homework(request: web.Request) -> web.Response:
+    _authorized(request)
+    lid = request.match_info["lesson_id"].strip().lower()
+    hw = _catalog_load_homework(lid)
+    return web.json_response({"ok": True, "homework": hw.model_dump()})
+
+
+async def studio_save_homework(request: web.Request) -> web.Response:
+    _authorized(request)
+    lid = request.match_info["lesson_id"].strip().lower()
+    data = await request.json()
+    hw_data = data.get("homework") or data
+    hw_data["lesson_id"] = lid
+
+    saved_path = _catalog_save_homework(hw_data)
+    loaded = _catalog_load_homework(lid)
+
+    # Sync back to lesson manifest for backward compatibility
+    try:
+        from app.services.authored_content import load_authored_lesson, ensure_persistent_lesson
+        ld = load_authored_lesson(lid)
+        ld["homework"] = {
+            "enabled": loaded.enabled,
+            "optional": loaded.optional,
+            "available_policy": loaded.available_policy,
+            "requires_completion_for_next_lesson": loaded.requires_completion_for_next_lesson,
+            "title": loaded.title,
+            "description": loaded.description,
+            "duration_minutes": loaded.duration_minutes,
+            "slides": loaded.slides,
+        }
+        p_path = ensure_persistent_lesson(lid)
+        p_path.write_text(json.dumps(ld, ensure_ascii=False, indent=2) + "\n", "utf-8")
+    except Exception as e:
+        import logging
+        logging.getLogger("dome.content_studio").warning("Could not sync homework back to lesson: %s", e)
+
+    return web.json_response({"ok": True, "homework": loaded.model_dump()})
+
+
+async def studio_publish_homework(request: web.Request) -> web.Response:
+    _authorized(request)
+    lid = request.match_info["lesson_id"].strip().lower()
+    hw = _catalog_load_homework(lid)
+    hw.status = "published"
+    hw.enabled = True
+    _catalog_save_homework(hw)
+    return web.json_response({"ok": True, "homework": hw.model_dump()})
+
+
+async def studio_duplicate_homework(request: web.Request) -> web.Response:
+    _authorized(request)
+    lid = request.match_info["lesson_id"].strip().lower()
+    data = await request.json()
+    target_lid = str(data.get("target_lesson_id") or "").strip().lower()
+    if not target_lid:
+        raise web.HTTPBadRequest(text=json.dumps({"error": "target_lesson_id is required"}), content_type="application/json")
+    duplicated = _catalog_duplicate_homework(lid, target_lid)
+    return web.json_response({"ok": True, "homework": duplicated.model_dump()})
+
+
+async def studio_move_homework(request: web.Request) -> web.Response:
+    _authorized(request)
+    lid = request.match_info["lesson_id"].strip().lower()
+    data = await request.json()
+    target_lid = str(data.get("target_lesson_id") or "").strip().lower()
+    if not target_lid:
+        raise web.HTTPBadRequest(text=json.dumps({"error": "target_lesson_id is required"}), content_type="application/json")
+    moved = _catalog_move_homework(lid, target_lid)
+    return web.json_response({"ok": True, "homework": moved.model_dump()})
+
+
+async def studio_delete_homework(request: web.Request) -> web.Response:
+    _authorized(request)
+    lid = request.match_info["lesson_id"].strip().lower()
+    hw = _catalog_archive_homework(lid)
+    return web.json_response({"ok": True, "homework": hw.model_dump()})

@@ -19,12 +19,20 @@ class Parent(Base):
     email_verification_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     email_reports_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     phone: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    first_name: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    last_name: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    country: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    preferred_language: Mapped[str | None] = mapped_column(String(10), default="ru")
+    marketing_opt_in: Mapped[bool] = mapped_column(Boolean, default=False)
+    onboarding_stage: Mapped[str] = mapped_column(String(40), default="REGISTERED")
+    verification_status: Mapped[str] = mapped_column(String(40), default="UNVERIFIED")
     active_child_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     # Explicit server-side account classification. Standalone lesson access
     # never infers QA privileges from a Telegram id, email, or display name.
     account_role: Mapped[str] = mapped_column(String(30), default="STANDARD", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     children: Mapped[list["Child"]] = relationship(back_populates="parent")
+
 
 
 class Child(Base):
@@ -401,3 +409,73 @@ class PaymentWebhookEvent(Base):
     event_type: Mapped[str] = mapped_column(String(120), index=True)
     processed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     payload_json: Mapped[str] = mapped_column(Text, default="{}")
+
+
+class PromoCode(Base):
+    __tablename__ = "promo_codes"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    code: Mapped[str] = mapped_column(String(50), unique=True, index=True)
+    benefit_type: Mapped[str] = mapped_column(String(40), default="PERCENTAGE")
+    benefit_value: Mapped[float] = mapped_column(Float, default=0.0)
+    currency: Mapped[str] = mapped_column(String(10), default="EUR")
+    duration_periods: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    valid_from: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    valid_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    max_uses: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_uses_per_user: Mapped[int] = mapped_column(Integer, default=1)
+    allowed_plan_ids: Mapped[str | None] = mapped_column(Text, nullable=True)
+    allowed_course_ids: Mapped[str | None] = mapped_column(Text, nullable=True)
+    new_users_only: Mapped[bool] = mapped_column(Boolean, default=False)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    archived: Mapped[bool] = mapped_column(Boolean, default=False)
+    description: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class PromoCodeUsage(Base):
+    __tablename__ = "promo_code_usages"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    promo_code_id: Mapped[int] = mapped_column(ForeignKey("promo_codes.id"), index=True)
+    parent_id: Mapped[int] = mapped_column(ForeignKey("parents.id"), index=True)
+    child_id: Mapped[int | None] = mapped_column(ForeignKey("children.id"), nullable=True, index=True)
+    plan_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    discount_amount: Mapped[float] = mapped_column(Float, default=0.0)
+    original_price: Mapped[float] = mapped_column(Float, default=0.0)
+    final_price: Mapped[float] = mapped_column(Float, default=0.0)
+    payment_reference: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    used_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class UserConsent(Base):
+    __tablename__ = "user_consents"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    parent_id: Mapped[int] = mapped_column(ForeignKey("parents.id"), index=True)
+    document_type: Mapped[str] = mapped_column(String(64), index=True)
+    document_version: Mapped[str] = mapped_column(String(32), index=True)
+    accepted: Mapped[bool] = mapped_column(Boolean, default=True)
+    accepted_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    locale: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    ip_address: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    metadata_json: Mapped[str] = mapped_column(Text, default="{}")
+
+
+class TariffPlan(Base):
+    __tablename__ = "tariff_plans"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    plan_id: Mapped[str] = mapped_column(String(40), unique=True, index=True)
+    legacy_code: Mapped[str] = mapped_column(String(40), index=True)
+    name: Mapped[str] = mapped_column(String(100))
+    description: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    lessons_per_week: Mapped[int] = mapped_column(Integer, default=1)
+    lessons_per_month: Mapped[int] = mapped_column(Integer, default=4)
+    lessons_per_year: Mapped[int] = mapped_column(Integer, default=48)
+    monthly_price: Mapped[float] = mapped_column(Float, default=39.0)
+    annual_price: Mapped[float] = mapped_column(Float, default=399.0)
+    currency: Mapped[str] = mapped_column(String(10), default="EUR")
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    visible: Mapped[bool] = mapped_column(Boolean, default=True)
+    display_order: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

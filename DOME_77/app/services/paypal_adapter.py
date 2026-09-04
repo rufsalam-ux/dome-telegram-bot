@@ -96,13 +96,28 @@ def _meta_from_provider_plan(provider_plan_id:str)->dict:
             except Exception:return {}
     return {}
 
-async def create_paypal_subscription_checkout(*,child_id:int,course_id:str,plan_id:str,plan_version_id:str='',lessons_per_week:int,monthly_price:float,currency:str,billing_period:str='MONTH',success_url:str,cancel_url:str,idempotency_key:str='')->str:
+async def create_paypal_subscription_checkout_detail(*,child_id:int,course_id:str,plan_id:str,plan_version_id:str='',lessons_per_week:int,monthly_price:float,currency:str,billing_period:str='MONTH',success_url:str,cancel_url:str,idempotency_key:str='')->dict:
     pp=await ensure_paypal_plan(plan_id=plan_id,plan_version_id=plan_version_id,lessons_per_week=lessons_per_week,monthly_price=monthly_price,currency=currency,billing_period=billing_period)
     body={'plan_id':pp,'custom_id':_custom_id(child_id,course_id,plan_id,plan_version_id,lessons_per_week,monthly_price,billing_period),'application_context':{'brand_name':'DOME / BilingvaDom','user_action':'SUBSCRIBE_NOW','return_url':success_url,'cancel_url':cancel_url}}
     data=await _request('POST','/v1/billing/subscriptions',body=body,request_id=idempotency_key)
+    approval_url=''
     for link in data.get('links') or []:
-        if str(link.get('rel'))=='approve' and link.get('href'): return str(link['href'])
-    raise PayPalError('PayPal не вернул approve URL')
+        if str(link.get('rel'))=='approve' and link.get('href'):
+            approval_url=str(link['href'])
+            break
+    if not approval_url:
+        raise PayPalError('PayPal не вернул approve URL')
+    return {
+        'approval_url': approval_url,
+        'subscription_id': str(data.get('id') or ''),
+        'provider_plan_id': pp,
+        'status': str(data.get('status') or 'APPROVAL_PENDING'),
+        'raw': data,
+    }
+
+async def create_paypal_subscription_checkout(*,child_id:int,course_id:str,plan_id:str,plan_version_id:str='',lessons_per_week:int,monthly_price:float,currency:str,billing_period:str='MONTH',success_url:str,cancel_url:str,idempotency_key:str='')->str:
+    detail=await create_paypal_subscription_checkout_detail(child_id=child_id,course_id=course_id,plan_id=plan_id,plan_version_id=plan_version_id,lessons_per_week=lessons_per_week,monthly_price=monthly_price,currency=currency,billing_period=billing_period,success_url=success_url,cancel_url=cancel_url,idempotency_key=idempotency_key)
+    return str(detail['approval_url'])
 
 async def change_paypal_subscription_plan(*,subscription_id:str,child_id:int,course_id:str,plan_id:str,plan_version_id:str='',provider_plan_id:str='',lessons_per_week:int,monthly_price:float,currency:str,billing_period:str='MONTH',success_url:str,cancel_url:str,idempotency_key:str='')->dict:
     pp=str(provider_plan_id or '') or await ensure_paypal_plan(plan_id=plan_id,plan_version_id=plan_version_id,lessons_per_week=lessons_per_week,monthly_price=monthly_price,currency=currency,billing_period=billing_period)

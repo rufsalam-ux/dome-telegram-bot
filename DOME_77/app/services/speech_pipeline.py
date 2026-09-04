@@ -218,7 +218,13 @@ async def _evaluate_with_chat(prompt: dict) -> dict | None:
         "When selection_policy is child_choice, the child's selected_items are valid by definition: there is no hidden correct set. "
         "If the child answers in native_language, preserve the child's exact idea and selected nouns when helping express it in target_language. "
         "response_native/native_hint are brief and only needed for wrong-language, off-topic, confused, or explicitly requested progressive help. "
-        "emotion must be one of warm, happy, curious, surprised, encouraging, gentle_correction."
+        "emotion must be one of warm, happy, curious, surprised, encouraging, gentle_correction. "
+        "When runtime_context.visual_metadata is present it describes the REAL visible object in the image. "
+        "If the child states a clearly wrong factual attribute about that object (e.g. wrong colour, wrong animal species, wrong quantity) "
+        "set decision=RETRY, include a gentle correction in reaction_target (e.g. 'The lion is beautiful, but it isn't red — it's yellow/brown. Try again!'), "
+        "and set corrected_target to the factually correct version of their sentence. "
+        "Only apply this rule when the child's claim directly contradicts a fact stated in visual_metadata. "
+        "Do not invent visual_metadata facts or apply corrections when no contradiction is present."
     )
     headers = {"Authorization": f"Bearer {settings.openai_api_key}", "Content-Type": "application/json"}
     models = [settings.openai_text_model or "gpt-4o-mini"]

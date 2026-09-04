@@ -3,166 +3,571 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>DOME Lesson Editor</title>
-  <link rel="stylesheet" href="/content-studio/content_studio.css">
-  <link rel="stylesheet" href="/content-studio/content_studio_extensions.css">
+  <title>DOME Admin Panel & CMS</title>
+  <link rel="stylesheet" href="/content-studio/admin_panel.css">
 </head>
 <body>
-  <header class="topbar">
-    <div><div class="brand">DOME <span>Lesson Editor</span></div><div class="sub">Уроки без ручного редактирования JSON</div></div>
-    <div id="connectionBadge" class="badge muted">Не подключено</div>
-  </header>
 
   <section id="loginView" class="login card">
-    <h1>Вход владельца</h1>
-    <p>Введите токен Content Studio. Он хранится только в этой вкладке браузера.</p>
+    <h1>DOME Admin Panel & CMS</h1>
+    <p>Введите токен Content Studio для доступа.</p>
     <label>Токен владельца<input id="tokenInput" type="password" autocomplete="off"></label>
-    <button id="loginButton" class="primary">Открыть редактор</button>
+    <button id="loginButton" class="primary">Войти</button>
     <div id="loginError" class="error" role="alert"></div>
   </section>
 
-  <main id="studioView" class="workspace hidden">
-    <aside class="sidebar">
-      <div class="sidebar-head"><h2>Уроки</h2><button id="refreshLessons" class="icon" title="Обновить">↻</button></div>
-      <button id="newLessonButton" class="primary full-width">+ Новый урок</button>
-      <input id="lessonSearch" type="search" placeholder="Найти урок">
-      <div id="lessonList" class="lesson-list"></div>
-    </aside>
+  <div id="appView" class="app-layout hidden">
+    <header class="admin-topbar">
+      <div class="admin-brand">DOME <span>CMS</span></div>
+      <nav class="admin-nav">
+        <button class="nav-btn active" data-section="lessons">📚 Обучение (Курсы и Уроки)</button>
+        <button class="nav-btn" data-section="promos">🎟️ Промокоды</button>
+        <button class="nav-btn" data-section="clients" style="background:linear-gradient(135deg,#7df3e1,#4fd1b5);color:#0f0f1e;font-weight:700">👥 Клиенты</button>
+        <button class="nav-btn" data-section="tariffs">💰 Тарифы</button>
+        <button class="nav-btn" data-section="users">👥 Польз.</button>
+        <button class="nav-btn" data-section="dashboard">📊 Сводка</button>
+      </nav>
+      <div id="connectionBadge" class="badge connected">Подключено</div>
+    </header>
 
-    <section class="editor">
-      <div id="emptyState" class="empty card"><h2>Выберите урок</h2><p>Слева показаны все доступные уроки и черновики.</p></div>
-      <div id="editorBody" class="hidden">
-        <div class="editor-head card">
-          <div class="grow">
-            <div class="eyebrow" id="lessonIdLabel"></div>
-            <input id="lessonTitle" class="title-input" aria-label="Название урока">
-            <div id="lessonMeta" class="muted"></div>
+    <div id="sectionLessons" class="app-section">
+      <!-- SIDEBAR: HIERARCHY TREE -->
+      <aside class="sidebar">
+        <div class="sidebar-head">
+          <h2>Программа</h2>
+          <button id="refreshHierarchy" class="icon" title="Обновить список">&#x21BB;</button>
+        </div>
+        <div class="sidebar-actions">
+          <button id="newCourseBtn" class="success small-btn">+ Курс/Блок</button>
+          <button id="newLessonButton" class="primary small-btn">+ Урок</button>
+        </div>
+        <input id="hierarchySearch" type="search" placeholder="Поиск по курсам и урокам...">
+        
+        <div id="hierarchyTree" class="tree-root"></div>
+      </aside>
+
+      <!-- MAIN EDITOR SECTION -->
+      <section class="editor">
+        <div id="emptyState" class="empty card">
+          <h2>Выберите курс, урок или домашнее задание</h2>
+          <p>В дереве слева отображается вся структура: Курсы ➔ Уроки ➔ Шаги и Домашние задания.</p>
+        </div>
+
+        <!-- LESSON & HOMEWORK EDITOR VIEW -->
+        <div id="editorBody" class="hidden">
+          
+          <!-- TABS: LESSON vs HOMEWORK -->
+          <div class="editor-tabs card">
+            <button class="tab-btn active" id="tabLessonBtn">🎯 Урок: <span id="tabLessonTitle">Мадагаскар</span></button>
+            <button class="tab-btn" id="tabHomeworkBtn">📝 Домашнее задание <span id="tabHwStatusBadge" class="badge-status"></span></button>
           </div>
+
+          <div id="notice" class="notice hidden" role="status"></div>
+          <div id="errorPanel" class="error-panel hidden" role="alert"></div>
+
+          <!-- PANE 1: LESSON EDITOR -->
+          <div id="paneLesson">
+            <div class="editor-head card">
+              <div class="grow">
+                <div class="eyebrow" id="lessonIdLabel"></div>
+                <input id="lessonTitle" class="title-input" aria-label="Название урока">
+                <div id="lessonMeta" class="muted"></div>
+              </div>
+              <div class="toolbar">
+                <button id="previewButton">&#x25B6; Preview</button>
+                <button id="restoreButton">&#x21B6; Версии</button>
+                <button id="moveLessonBtn">Перенести в курс...</button>
+                <button id="duplicateLessonButton">Дублировать</button>
+                <button id="toggleLessonButton">Отключить</button>
+                <button id="deleteLessonButton" class="danger">Удалить</button>
+                <button id="saveButton" class="primary">Сохранить урок</button>
+                <button id="publishButton" class="success">Опубликовать</button>
+              </div>
+            </div>
+
+            <div class="lesson-settings card">
+              <div class="settings-grid">
+                <label>Изучаемый язык<input id="lessonTargetLanguage" value="en" placeholder="en"></label>
+                <label>Язык объяснения<input id="lessonExplanationLanguage" value="ru" placeholder="ru"></label>
+                <label>Уровень<select id="lessonDifficulty"><option>PRE_A1</option><option>A1</option><option>A2</option><option>B1</option></select></label>
+                <label>Макс. прохождений<input id="lessonMaxRuns" type="number" min="1" max="99" value="2"></label>
+                <label>Доступ<select id="lessonAccessMode"><option value="free">Бесплатный</option><option value="paid">Платный</option><option value="subscription">По подписке</option></select></label>
+                <label>Возраст (от)<input id="lessonMinAge" type="number" min="2" max="18" placeholder="3"></label>
+                <label>Привязка к курсу<select id="lessonCourseSelect"></select></label>
+              </div>
+              <div id="lessonDescArea">
+                <label>Описание урока<textarea id="lessonDescription" rows="2" placeholder="Краткое описание для каталога"></textarea></label>
+              </div>
+            </div>
+
+            <div class="sequence-head">
+              <div><h2>Шаги урока</h2><p class="muted">Перетаскивайте шаги для изменения порядка воспроизведения.</p></div>
+              <div class="toolbar">
+                <button id="addSlideButton" class="primary">+ Слайд</button>
+                <button id="addExerciseButton">+ Задание</button>
+                <button id="addVideoButton">+ Видео</button>
+              </div>
+            </div>
+            <div id="steps" class="steps"></div>
+          </div>
+
+          <!-- PANE 2: HOMEWORK BUILDER -->
+          <div id="paneHomework" class="hidden">
+            <div class="editor-head card">
+              <div class="grow">
+                <div class="eyebrow" id="hwIdLabel">HOMEWORK</div>
+                <input id="hwTitle" class="title-input" aria-label="Название домашнего задания">
+                <div id="hwMeta" class="muted">Привязано к уроку</div>
+              </div>
+              <div class="toolbar">
+                <button id="moveHwBtn">Перенести к уроку...</button>
+                <button id="duplicateHwBtn">Дублировать ДЗ</button>
+                <button id="deleteHwBtn" class="danger">Архивировать ДЗ</button>
+                <button id="saveHwBtn" class="primary">Сохранить ДЗ</button>
+                <button id="publishHwBtn" class="success">Опубликовать ДЗ</button>
+              </div>
+            </div>
+
+            <div class="lesson-settings card">
+              <div class="settings-grid">
+                <label class="check" style="margin-top:20px"><input id="hwEnabled" type="checkbox" checked> <strong>Домашнее задание активно</strong></label>
+                <label>Доступность<select id="hwAvailablePolicy">
+                  <option value="immediate">Сразу после урока (рекомендуется)</option>
+                  <option value="after_completion">Только после полного прохождения урока</option>
+                  <option value="delayed">С задержкой</option>
+                </select></label>
+                <label>Обязательность<select id="hwOptional">
+                  <option value="optional">Необязательное (ребёнок может пропустить)</option>
+                  <option value="mandatory">Обязательное</option>
+                </select></label>
+                <label class="check" style="margin-top:20px"><input id="hwBlocksNextLesson" type="checkbox"> Блокировать следующий урок до сдачи ДЗ</label>
+                <label>Длительность (мин)<input id="hwDuration" type="number" min="1" max="60" value="5"></label>
+              </div>
+              <div style="margin-top:10px">
+                <label>Инструкция/Описание для родителей и ребёнка<textarea id="hwDescription" rows="2" placeholder="Объяснение цели и содержания домашней работы"></textarea></label>
+              </div>
+            </div>
+
+            <div class="sequence-head">
+              <div><h2>Шаги домашнего задания (Homework Builder)</h2><p class="muted">Собирайте интерактивное задание из любых поддерживаемых элементов.</p></div>
+              <div class="toolbar">
+                <button id="addHwDrawBtn" class="primary">+ Рисование</button>
+                <button id="addHwVoiceBtn">+ Голосовой ответ</button>
+                <button id="addHwChoiceBtn">+ Выбор ответа</button>
+                <button id="addHwVideoBtn">+ Видео</button>
+                <button id="addHwInfoBtn">+ Слайд/Инфо</button>
+              </div>
+            </div>
+            <div id="hwSteps" class="steps"></div>
+          </div>
+
+        </div>
+      </section>
+    </div>
+
+    <!-- PROMO CODES MANAGEMENT (Stage 7 & 8) -->
+    <div id="sectionPromos" class="app-section hidden">
+      <div class="card" style="padding: 24px; margin: 20px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+          <div>
+            <h2 style="margin: 0; font-size: 22px;">🎟️ Управление промокодами</h2>
+            <p style="color: #94a3b8; margin: 4px 0 0 0; font-size: 14px;">Создание и управление скидками, спецценами, триалами и бонусами.</p>
+          </div>
+          <button id="newPromoBtn" class="success" style="padding: 10px 18px; font-weight: 600;">+ Новый промокод</button>
+        </div>
+        <div style="overflow-x: auto;">
+          <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 14px;">
+            <thead>
+              <tr style="border-bottom: 2px solid #334155; color: #94a3b8;">
+                <th style="padding: 12px 8px;">Код</th>
+                <th style="padding: 12px 8px;">Тип выгоды</th>
+                <th style="padding: 12px 8px;">Значение</th>
+                <th style="padding: 12px 8px;">Описание</th>
+                <th style="padding: 12px 8px;">Период действия</th>
+                <th style="padding: 12px 8px;">Использовано</th>
+                <th style="padding: 12px 8px;">Статус</th>
+                <th style="padding: 12px 8px; text-align: right;">Действия</th>
+              </tr>
+            </thead>
+            <tbody id="promoTableBody">
+              <tr><td colspan="8" style="padding: 24px; text-align: center; color: #94a3b8;">Загрузка промокодов...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- CLIENTS MANAGEMENT (CRM) -->
+    <div id="sectionClients" class="app-section hidden">
+      <div class="users-panel">
+        <div class="users-toolbar" style="flex-wrap:wrap;gap:8px">
+          <h2 style="margin:0">&#x1F465; Клиенты</h2>
+          <div class="toolbar" style="flex-wrap:wrap;gap:6px">
+            <input id="clientSearch" type="search" placeholder="Имя, email, телефон..." style="min-width:200px">
+            <select id="clientPlanFilter">
+              <option value="">Все тарифы</option>
+              <option value="weekly1">DOME Start</option>
+              <option value="weekly2">DOME Smart</option>
+              <option value="weekly3">DOME Plus</option>
+              <option value="weekly4">DOME Max</option>
+            </select>
+            <select id="clientPeriodFilter">
+              <option value="">Месяц/Год</option>
+              <option value="MONTH">Ежемесячно</option>
+              <option value="YEAR">Ежегодно</option>
+            </select>
+            <select id="clientStatusFilter">
+              <option value="">Все статусы</option>
+              <option value="ACTIVE">ACTIVE</option>
+              <option value="TRIAL">TRIAL</option>
+              <option value="REGISTERED">REGISTERED</option>
+              <option value="EMAIL_NOT_VERIFIED">EMAIL_NOT_VERIFIED</option>
+              <option value="VERIFIED">VERIFIED</option>
+              <option value="PAST_DUE">PAST_DUE</option>
+              <option value="PAYMENT_FAILED">PAYMENT_FAILED</option>
+              <option value="CANCELLED">CANCELLED</option>
+              <option value="EXPIRED">EXPIRED</option>
+              <option value="OWNER">OWNER</option>
+            </select>
+            <select id="clientCountryFilter">
+              <option value="">Все страны</option>
+            </select>
+            <button id="clientSearchBtn" class="primary">&#x1F50D; Поиск</button>
+            <button id="clientExportCsvBtn">&#x2B07; CSV</button>
+          </div>
+        </div>
+
+        <div id="clientTableWrap" style="overflow-x:auto;margin-top:12px">
+          <table id="clientTable" style="width:100%;border-collapse:collapse;font-size:13px">
+            <thead>
+              <tr style="background:#1a1a2e;color:#7df3e1;text-align:left">
+                <th style="padding:8px">ID</th>
+                <th style="padding:8px">Родитель</th>
+                <th style="padding:8px">Email</th>
+                <th style="padding:8px">✓</th>
+                <th style="padding:8px">Страна</th>
+                <th style="padding:8px">Дата рег.</th>
+                <th style="padding:8px">Дети</th>
+                <th style="padding:8px">Тариф</th>
+                <th style="padding:8px">Период</th>
+                <th style="padding:8px">Цена</th>
+                <th style="padding:8px">Статус</th>
+                <th style="padding:8px">Уроков</th>
+                <th style="padding:8px">Действия</th>
+              </tr>
+            </thead>
+            <tbody id="clientTableBody">
+              <tr><td colspan="13" style="padding:20px;text-align:center;color:#666">Загрузка...</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div id="clientCount" style="margin-top:8px;color:#888;font-size:13px"></div>
+      </div>
+    </div>
+
+    <!-- CLIENT CARD MODAL -->
+    <div id="clientCardModal" class="modal-overlay hidden" style="z-index:999">
+      <div class="modal-box" style="max-width:860px;max-height:90vh;overflow-y:auto">
+        <div class="modal-header">
+          <h3 id="clientCardTitle">&#x1F464; Карточка клиента</h3>
+          <button class="modal-close" id="clientCardClose">&times;</button>
+        </div>
+        <div style="border-bottom:1px solid #333;display:flex;gap:4px;flex-wrap:wrap;padding:8px 0">
+          <button class="client-tab-btn active" data-tab="profile">Профиль</button>
+          <button class="client-tab-btn" data-tab="children">Дети</button>
+          <button class="client-tab-btn" data-tab="subscription">Подписка</button>
+          <button class="client-tab-btn" data-tab="lessons">Уроки</button>
+          <button class="client-tab-btn" data-tab="payments">Платежи</button>
+          <button class="client-tab-btn" data-tab="promos">Промокоды</button>
+          <button class="client-tab-btn" data-tab="consents">Документы</button>
+          <button class="client-tab-btn" data-tab="audit">История</button>
+        </div>
+        <div id="clientCardContent" style="padding:16px 0;min-height:300px">
+          <div id="clientTabProfile" class="client-tab-panel"></div>
+          <div id="clientTabChildren" class="client-tab-panel hidden"></div>
+          <div id="clientTabSubscription" class="client-tab-panel hidden"></div>
+          <div id="clientTabLessons" class="client-tab-panel hidden"></div>
+          <div id="clientTabPayments" class="client-tab-panel hidden"></div>
+          <div id="clientTabPromos" class="client-tab-panel hidden"></div>
+          <div id="clientTabConsents" class="client-tab-panel hidden"></div>
+          <div id="clientTabAudit" class="client-tab-panel hidden"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TARIFF MANAGEMENT MODAL -->
+    <div id="tariffMgmtModal" class="modal-overlay hidden" style="z-index:999">
+      <div class="modal-box" style="max-width:700px">
+        <div class="modal-header">
+          <h3>&#x1F4B0; Управление тарифами</h3>
+          <button class="modal-close" id="tariffMgmtClose">&times;</button>
+        </div>
+        <div id="tariffMgmtContent" style="padding:12px 0"></div>
+      </div>
+    </div>
+
+    <!-- OLD USERS MANAGEMENT (kept for compatibility, hidden) -->
+    <div id="sectionUsers" class="app-section hidden" style="display:none">
+      <div class="users-panel">
+        <div class="users-toolbar">
+          <h2>Управление пользователями</h2>
           <div class="toolbar">
-            <button id="previewButton">▶ Предпросмотр</button>
-            <button id="restoreButton">↶ Версия</button>
-            <button id="duplicateLessonButton">Дублировать</button>
-            <button id="toggleLessonButton">Отключить</button>
-            <button id="deleteLessonButton" class="danger">Удалить</button>
-            <button id="saveButton" class="primary">Сохранить</button>
-            <button id="publishButton" class="success">Опубликовать</button>
+            <input id="userSearch" type="search" placeholder="Поиск по email...">
+            <button id="userSearchBtn" class="primary">Найти</button>
+            <button id="applyOwnerBtn" class="success">&#x26A1; Apply Owner Allowlist</button>
           </div>
         </div>
-
-        <div class="lesson-settings card">
-          <label>Изучаемый язык<input id="lessonTargetLanguage" value="en" placeholder="en"></label>
-          <label>Язык объяснения<input id="lessonExplanationLanguage" value="ru" placeholder="ru"></label>
-          <label>Уровень<select id="lessonDifficulty"><option>PRE_A1</option><option>A1</option><option>A2</option><option>B1</option></select></label>
-        </div>
-
-        <div id="notice" class="notice hidden" role="status"></div>
-        <div id="errorPanel" class="error-panel hidden" role="alert"></div>
-
-        <div class="sequence-head">
-          <div><h2>Шаги урока</h2><p class="muted">Идут в приложении именно в этом порядке.</p></div>
-          <div class="toolbar"><button id="addSlideButton" class="primary">+ Добавить слайд</button><button id="addExerciseButton">+ Задание</button><button id="addVideoButton">+ Добавить видео</button></div>
-        </div>
-        <div id="steps" class="steps"></div>
+        <div id="userSearchResults" class="user-results"></div>
+        <div id="userDetail" class="user-detail hidden"></div>
       </div>
-    </section>
-  </main>
+    </div>
 
-  <dialog id="lessonDialog">
+    <!-- TARIFF MANAGEMENT SECTION -->
+    <div id="sectionTariffs" class="app-section hidden">
+      <div class="users-panel">
+        <div class="users-toolbar" style="justify-content:space-between">
+          <h2>💰 Управление тарифами</h2>
+          <button id="tariffRefreshBtn" class="primary">&#x21BB; Обновить</button>
+        </div>
+        <div id="tariffGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px;margin-top:16px"></div>
+      </div>
+    </div>
+
+    <!-- DASHBOARD -->
+    <div id="sectionDashboard" class="app-section hidden">
+      <div class="dashboard-panel"><h2>Сводка платформы</h2><div id="dashboardContent" class="dashboard-grid"></div></div>
+    </div>
+  </div>
+
+  <!-- DIALOG: COURSE (CREATE / EDIT) -->
+  <dialog id="courseDialog">
     <form method="dialog" class="dialog-card">
-      <header><h2 id="lessonDialogTitle">Новый урок</h2><button value="cancel" class="icon" aria-label="Закрыть">×</button></header>
+      <header><h2 id="courseDialogTitle">Новый курс/блок</h2><button type="button" class="cancel-btn icon">&times;</button></header>
       <div>
-        <label>ID урока (латиница, цифры, _ и -)<input id="newLessonId" required placeholder="my_lesson_001"></label>
-        <label>Название урока<input id="newLessonTitle" required placeholder="Мой новый урок"></label>
-        <div class="two"><label>Изучаемый язык<input id="newLessonTargetLanguage" value="en"></label><label>Язык объяснения<input id="newLessonExplanationLanguage" value="ru"></label></div>
+        <label>Название курса<input id="courseTitleInput" required placeholder="Читайка"></label>
+        <label>Описание курса<textarea id="courseDescInput" rows="2" placeholder="Обучение чтению и буквам"></textarea></label>
+        <details style="margin: 8px 0; font-size: 13px;">
+          <summary style="cursor: pointer; color: #246BFD;">Дополнительно (ID курса)</summary>
+          <div style="margin-top: 6px;">
+            <label>ID курса (генерируется автоматически из названия)<input id="courseIdInput" placeholder="reading"></label>
+          </div>
+        </details>
+        <div class="two">
+          <label>Порядок отображения<input id="courseOrderInput" type="number" value="1"></label>
+          <label>Статус<select id="courseStatusInput"><option value="published">Опубликован</option><option value="draft">Черновик</option><option value="archived">Архив</option></select></label>
+        </div>
+        <div class="two" style="margin-top:8px">
+          <label class="check"><input id="courseActiveInput" type="checkbox" checked> Активен для учеников</label>
+          <label class="check"><input id="courseLockedInput" type="checkbox"> Временно заблокирован</label>
+        </div>
       </div>
-      <footer><button value="cancel">Отмена</button><button id="confirmLessonAction" value="default" class="primary">Создать урок</button></footer>
+      <footer>
+        <button type="button" class="cancel-btn">Отмена</button>
+        <button id="confirmCourseAction" value="default" class="primary">Сохранить курс</button>
+      </footer>
     </form>
   </dialog>
 
-  <dialog id="stepDialog">
+  <!-- DIALOG: MOVE LESSON TO COURSE -->
+  <dialog id="moveLessonDialog">
     <form method="dialog" class="dialog-card">
-      <header><h2 id="stepDialogTitle">Добавить слайд</h2><button value="cancel" class="icon" aria-label="Закрыть">×</button></header>
+      <header><h2>Перенести урок в другой курс</h2><button type="button" class="cancel-btn icon">&times;</button></header>
+      <div>
+        <p id="moveLessonNotice" style="font-weight:600;margin-bottom:8px"></p>
+        <label>Выберите курс<select id="targetCourseSelect"></select></label>
+      </div>
+      <footer><button type="button" class="cancel-btn">Отмена</button><button id="confirmMoveLesson" value="default" class="primary">Перенести</button></footer>
+    </form>
+  </dialog>
+
+  <!-- DIALOG: MOVE HOMEWORK TO LESSON -->
+  <dialog id="moveHomeworkDialog">
+    <form method="dialog" class="dialog-card">
+      <header><h2>Перенести домашнее задание к другому уроку</h2><button type="button" class="cancel-btn icon">&times;</button></header>
+      <div>
+        <p id="moveHwNotice" style="font-weight:600;margin-bottom:8px"></p>
+        <label>Выберите целевой урок<select id="targetLessonSelect"></select></label>
+      </div>
+      <footer><button type="button" class="cancel-btn">Отмена</button><button id="confirmMoveHomework" value="default" class="primary">Перенести ДЗ</button></footer>
+    </form>
+  </dialog>
+
+  <!-- DIALOG: LESSON CREATE / DUPLICATE -->
+  <dialog id="lessonDialog">
+    <form method="dialog" class="dialog-card">
+      <header><h2 id="lessonDialogTitle">Новый урок</h2><button type="button" class="cancel-btn icon">&times;</button></header>
+      <div>
+        <label>Название урока<input id="newLessonTitle" required placeholder="Мой новый урок"></label>
+        <label>Курс / Блок<select id="newLessonCourseSelect"></select></label>
+        <details style="margin: 8px 0; font-size: 13px;">
+          <summary style="cursor: pointer; color: #246BFD;">Дополнительно (ID урока)</summary>
+          <div style="margin-top: 6px;">
+            <label>ID урока (генерируется автоматически)<input id="newLessonId" placeholder="lesson_001"></label>
+          </div>
+        </details>
+        <div class="two">
+          <label>Изучаемый язык<input id="newLessonTargetLanguage" value="en"></label>
+          <label>Язык объяснения<input id="newLessonExplanationLanguage" value="ru"></label>
+        </div>
+      </div>
+      <footer><button type="button" class="cancel-btn">Отмена</button><button id="confirmLessonAction" value="default" class="primary">Создать урок</button></footer>
+    </form>
+  </dialog>
+
+  <!-- DIALOG: STEP ADD -->
+  <dialog id="stepDialog">
+    <form method="dialog" class="dialog-card step-dialog-card">
+      <header><h2 id="stepDialogTitle">Добавить слайд</h2><button type="button" class="cancel-btn icon">&times;</button></header>
       <div id="slideFields">
-        <label>Позиция<select id="slidePosition"></select></label>
-        <label>Тип задания<select id="newSlideType"></select></label>
-        <label>Фраза на изучаемом языке<input id="newTargetPhrase"></label>
-        <label>Объяснение на родном языке<textarea id="newNativeExplanation" rows="2"></textarea></label>
-        <label>Инструкция для AI<textarea id="newAiInstruction" rows="2"></textarea></label>
+        <div class="two">
+          <label>Позиция<select id="slidePosition"></select></label>
+          <label>Тип задания<select id="newSlideType"></select></label>
+        </div>
+        <label>Фраза на изучаемом языке<input id="newTargetPhrase" placeholder="What animal is this?"></label>
+        <label>Объяснение на родном языке<textarea id="newNativeExplanation" rows="2" placeholder="Какое это животное?"></textarea></label>
+        <label>Инструкция для AI<textarea id="newAiInstruction" rows="2" placeholder="Спроси ребёнка назвать животное по-английски"></textarea></label>
         <label>Изображение (необязательно)<input id="newSlideFile" type="file" accept="image/*"></label>
       </div>
       <div id="videoFields" class="hidden">
-        <label>MP4 / MOV / WebM<input id="newVideoFile" type="file" accept="video/mp4,video/quicktime,video/webm"></label>
+        <label>Видеофайл (MP4 / MOV / WebM)<input id="newVideoFile" type="file" accept="video/mp4,video/quicktime,video/webm"></label>
         <label>Позиция<select id="videoPosition"></select></label>
         <label class="check"><input id="videoAutoplay" type="checkbox" checked> Запускать автоматически</label>
         <label class="check"><input id="videoSkippable" type="checkbox" checked> Можно пропустить</label>
         <label class="check"><input id="videoReplay" type="checkbox" checked> Показывать кнопку повтора</label>
         <label class="check"><input id="videoAutoContinue" type="checkbox" checked> Автоматически продолжить после видео</label>
       </div>
-      <footer><button value="cancel">Отмена</button><button id="confirmAddStep" value="default" class="primary">Добавить</button></footer>
+      <footer><button type="button" class="cancel-btn">Отмена</button><button id="confirmAddStep" value="default" class="primary">Добавить</button></footer>
     </form>
   </dialog>
 
+  <!-- DIALOG: PREVIEW -->
   <dialog id="previewDialog" class="wide-dialog">
     <form method="dialog" class="dialog-card preview-card">
-      <header><div><h2>Предпросмотр урока</h2><p class="muted">Реальный порядок слайдов и видео</p></div><button value="cancel" class="icon" aria-label="Закрыть">×</button></header>
-      <div id="previewContent" class="preview-content"></div>
-      <details><summary>Технические данные</summary><pre id="previewTechnical"></pre></details>
-      <footer><button value="cancel" class="primary">Закрыть</button></footer>
+      <header><div><h2>Предпросмотр урока</h2><p class="muted">Сканируйте QR в Expo Go для теста Draft на телефоне</p></div><button type="button" class="cancel-btn icon">&times;</button></header>
+      <div class="preview-two">
+        <div id="previewQR" class="qr-panel"><p class="muted">QR генерируется...</p></div>
+        <div id="previewContent" class="preview-content"></div>
+      </div>
+      <details><summary>Технические данные (JSON)</summary><pre id="previewTechnical"></pre></details>
+      <footer><button type="button" class="cancel-btn primary">Закрыть</button></footer>
     </form>
   </dialog>
 
+  <!-- DIALOG: VERSIONS -->
   <dialog id="versionDialog">
     <form method="dialog" class="dialog-card">
-      <header><h2>Резервные версии</h2><button value="cancel" class="icon">×</button></header>
-      <p>Восстановление создаёт новый черновик. Опубликованный урок не меняется до нажатия «Опубликовать».</p>
-      <div id="versionList" class="version-list"></div>
-      <footer><button value="cancel">Закрыть</button></footer>
+      <header><h2>Резервные версии урока</h2><button type="button" class="cancel-btn icon">&times;</button></header>
+      <div><p>Восстановление создаёт черновик. Опубликованный урок не меняется до нажатия «Опубликовать».</p>
+      <div id="versionList" class="version-list"></div></div>
+      <footer><button type="button" class="cancel-btn">Закрыть</button></footer>
     </form>
   </dialog>
 
-  <template id="stepTemplate">
-    <article class="step-card" draggable="true" data-step-handle>
-      <div class="step-summary">
-        <span class="drag-handle" title="Перетащить">⋮⋮</span><span class="step-number"></span><span class="step-kind"></span>
-        <strong class="step-name grow"></strong>
-        <button class="move-up icon" title="Выше">↑</button><button class="move-down icon" title="Ниже">↓</button>
-        <button class="duplicate-step" title="Дублировать">Копия</button><button class="delete-step danger" title="Удалить">Удалить</button>
+  <!-- DIALOG: ROLE -->
+  <dialog id="roleDialog">
+    <form method="dialog" class="dialog-card">
+      <header><h2>Установить роль пользователя</h2><button type="button" class="cancel-btn icon">&times;</button></header>
+      <div>
+        <p id="roleDialogEmail" style="font-weight:700;margin-bottom:8px"></p>
+        <label>Роль<select id="roleSelect">
+          <option value="STANDARD">STANDARD — обычный пользователь</option>
+          <option value="QA_TEST">QA_TEST — тест конкретного урока</option>
+          <option value="ADMIN">ADMIN — расширенный QA</option>
+          <option value="OWNER">OWNER — постоянный полный доступ ко всем урокам</option>
+        </select></label>
       </div>
-      <div class="step-grid">
-        <div class="media-column">
-          <div class="media-preview"></div>
-          <label class="file-button">Загрузить / заменить<input class="replace-media" type="file"></label>
-          <div class="media-path muted"></div>
-        </div>
-        <div class="fields-column">
-          <div class="two"><label>ID шага<input data-field="slide_id"></label><label>Тип задания<select data-field="type"></select></label></div>
-          <label>Цель задания<textarea data-field="pedagogical_goal" rows="2" placeholder="Какое умение ребёнок должен показать"></textarea></label>
-          <label>Ребёнок в этом задании<select data-field="interaction_type"><option value="answer_question">Отвечает на вопрос</option><option value="ask_question">Задаёт вопрос</option><option value="describe">Описывает</option><option value="free_response">Говорит свободно</option><option value="choose">Выбирает</option><option value="explain_choice">Объясняет выбор</option><option value="repeat">Повторяет</option><option value="conversation">Ведёт диалог</option></select></label>
-          <label>Инструкция для AI<textarea data-field="ai_instruction" rows="2"></textarea></label>
-          <label>Фраза на изучаемом языке<input data-field="target_phrase"></label>
-          <label>Объяснение на родном языке<textarea data-field="native_explanation" rows="2"></textarea></label>
-          <label>Пример для подсказки на изучаемом языке<input data-field="hint_example_target" placeholder="Короткая фраза, которую можно сказать"></label>
-          <label>Допустимые примеры — по одному на строке<textarea data-list="model_examples" rows="3"></textarea></label>
-          <div class="controls-row">
-            <label>Ответ<select data-control="answer"><option value="none">Не нужен</option><option value="optional">Можно ответить</option><option value="required">Обязательный</option></select></label>
-            <label>Продолжить<select data-control="continue"><option value="always">Сразу доступно</option><option value="after_action">После действия</option><option value="after_answer">После ответа</option></select></label>
-            <label class="check"><input type="checkbox" data-control="hint"> Подсказка</label>
-            <label class="check"><input type="checkbox" data-control="follow"> Диалог</label>
+      <footer><button type="button" class="cancel-btn">Отмена</button><button id="confirmSetRole" value="default" class="primary">Применить</button></footer>
+    </form>
+  </dialog>
+
+  <!-- STEP TEMPLATE -->
+  <template id="stepTemplate">
+    <article class="step-card" draggable="true">
+      <div class="step-summary">
+        <span class="drag-handle" title="Перетащить">&#x22EE;&#x22EE;</span>
+        <span class="step-number"></span>
+        <span class="step-badge"></span>
+        <strong class="step-name grow"></strong>
+        <label class="check step-enabled" title="Включить/выключить шаг"><input type="checkbox" data-bool="disabled" style="display:none"> <span class="enabled-dot">&#x25CF;</span></label>
+        <button class="move-up icon" title="Выше">&#x2191;</button>
+        <button class="move-down icon" title="Ниже">&#x2193;</button>
+        <button class="duplicate-step" title="Дублировать">Копия</button>
+        <button class="delete-step danger" title="Удалить">Удалить</button>
+        <button class="toggle-expand icon" title="Развернуть/свернуть">&#x25BC;</button>
+      </div>
+      <div class="step-body">
+        <div class="step-grid">
+          <div class="media-column">
+            <div class="media-preview"></div>
+            <label class="file-button">Загрузить / заменить<input class="replace-media" type="file"></label>
+            <div class="media-path muted"></div>
           </div>
-          <div class="pedagogy-row">
-            <label class="check"><input type="checkbox" data-config="open_question_first"> Сначала открытый вопрос</label>
-            <label class="check"><input type="checkbox" data-config="examples_allowed"> Можно давать примеры</label>
-            <label class="check"><input type="checkbox" data-config="adaptive_scaffolding"> Адаптация уровня</label>
+          <div class="fields-column">
+            <div class="two">
+              <label>ID шага<input data-field="slide_id"></label>
+              <label>Тип<select data-field="type"></select></label>
+            </div>
+
+            <label>Фраза AI — изучаемый язык (bot_says_target / question)<input data-field="bot_says_target" placeholder="What animal is this?"></label>
+            <label>Объяснение — родной язык (bot_says_native)<textarea data-field="bot_says_native" rows="2" placeholder="Какое животное ты видишь?"></textarea></label>
+            <label>Инструкция для AI (ai_instruction)<textarea data-field="ai_instruction" rows="2" placeholder="Спроси ребёнка назвать животное по-английски"></textarea></label>
+            <label>Цель задания (pedagogical_goal / task_goal)<textarea data-field="pedagogical_goal" rows="2" placeholder="Ребёнок называет животное по-английски"></textarea></label>
+
+            <details class="meta-section">
+              <summary>AI Factual Check — visual_metadata</summary>
+              <div class="visual-meta-fields two">
+                <label>label (что изображено)<input data-vm="label" placeholder="lion"></label>
+                <label>color_hint<input data-vm="color_hint" placeholder="yellow/brown mane"></label>
+                <label>fact_hint<input data-vm="fact_hint" placeholder="lion is a big cat"></label>
+                <label>image_key<input data-vm="image_key" placeholder="lion"></label>
+              </div>
+            </details>
+
+            <label class="model-examples-row">Примеры правильных ответов (по одному в строке)<textarea data-list="model_examples" rows="3" placeholder="It is a lion&#10;This is a lion&#10;Lion"></textarea></label>
+            <label class="task-options hidden">Варианты выбора (по одному в строке)<textarea data-list="options" rows="3"></textarea></label>
+            <div class="drag-items hidden">
+              <label>Объекты для перетаскивания<textarea data-list="drag_items" rows="3"></textarea></label>
+              <label>Цели (drag targets)<textarea data-list="drag_targets" rows="3"></textarea></label>
+            </div>
+            <div class="riddle-fields hidden">
+              <label>Варианты загадки (каждая строка: id=Текст)<textarea data-field="riddle_options_raw" rows="4" placeholder="lion=Lion&#10;bear=Bear&#10;wolf=Wolf"></textarea></label>
+              <label>Правильный ответ (ID)<input data-field="correct_choice_id" placeholder="lion"></label>
+            </div>
+
+            <div class="controls-row">
+              <label>Ответ<select data-control="answer"><option value="none">Не нужен</option><option value="optional">Можно ответить</option><option value="required">Обязательный</option></select></label>
+              <label>Продолжить<select data-control="continue"><option value="always">Сразу</option><option value="after_action">После действия</option><option value="after_answer">После ответа</option></select></label>
+              <label>Попыток<input type="number" data-direct="max_attempts" min="1" max="10" value="3" style="width:58px"></label>
+              <label class="check"><input type="checkbox" data-control="hint"> Подсказка</label>
+              <label class="check"><input type="checkbox" data-control="follow"> Диалог</label>
+              <label class="check"><input type="checkbox" data-direct_bool="allow_skip"> Пропустить</label>
+            </div>
+
+            <div class="pedagogy-row">
+              <label class="check"><input type="checkbox" data-config="open_question_first"> Сначала открытый вопрос</label>
+              <label class="check"><input type="checkbox" data-config="examples_allowed"> Давать примеры</label>
+              <label class="check"><input type="checkbox" data-config="adaptive_scaffolding"> Адаптация уровня</label>
+              <label class="check"><input type="checkbox" data-config="requiredForMovie"> Нужно для мультфильма</label>
+            </div>
+
+            <div class="video-options hidden">
+              <label class="check"><input type="checkbox" data-video="autoplay"> Автозапуск</label>
+              <label class="check"><input type="checkbox" data-video="skippable"> Пропустить</label>
+              <label class="check"><input type="checkbox" data-video="replay"> Повтор</label>
+              <label class="check"><input type="checkbox" data-video="auto_continue"> Автопродолжение</label>
+            </div>
+
+            <details class="advanced-json">
+              <summary>Advanced JSON (редкие поля)</summary>
+              <textarea data-adv rows="6" spellcheck="false" placeholder="{}">{}</textarea>
+              <button type="button" class="apply-advanced-btn">Применить JSON</button>
+            </details>
           </div>
-          <label class="task-options">Варианты ответа — по одному в строке<textarea data-list="options" rows="3"></textarea></label>
-          <label class="drag-items">Перетаскиваемые предметы — по одному в строке<textarea data-list="drag_items" rows="3"></textarea></label>
-          <label class="drag-items">Цели — по одной в строке<textarea data-list="drag_targets" rows="3"></textarea></label>
-          <div class="video-options hidden"><label class="check"><input type="checkbox" data-video="autoplay"> Автозапуск</label><label class="check"><input type="checkbox" data-video="skippable"> Можно пропустить</label><label class="check"><input type="checkbox" data-video="replay"> Повтор</label><label class="check"><input type="checkbox" data-video="auto_continue"> Автопродолжение</label></div>
         </div>
       </div>
     </article>
   </template>
 
-  <script src="/content-studio/content_studio.js" defer></script>
+  <script src="/content-studio/admin_panel.js?v=4" defer></script>
 </body>
 </html>

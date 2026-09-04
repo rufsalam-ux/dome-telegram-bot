@@ -15,26 +15,26 @@
       {
         "id": "weekly1",
         "lessons_per_week": 1,
-        "monthly_price": 39,
-        "annual_price": 429
+        "monthly_price": 39.0,
+        "annual_price": 399.0
       },
       {
         "id": "weekly2",
         "lessons_per_week": 2,
-        "monthly_price": 69,
-        "annual_price": 759
+        "monthly_price": 69.0,
+        "annual_price": 699.0
       },
       {
         "id": "weekly3",
         "lessons_per_week": 3,
-        "monthly_price": 99,
-        "annual_price": 1089
+        "monthly_price": 99.0,
+        "annual_price": 999.0
       },
       {
         "id": "weekly4",
         "lessons_per_week": 4,
-        "monthly_price": 139,
-        "annual_price": 1536
+        "monthly_price": 129.0,
+        "annual_price": 1299.0
       }
     ],
     "profitability": {

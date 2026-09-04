@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-# Temporary production safety mode requested by owner:
-# only the original conversation course is exposed to clients.
-CONVERSATION_ONLY = True
+# Set to False so courses managed via Admin Panel appear dynamically in mobile client
+CONVERSATION_ONLY = False
 ALLOWED_CLIENT_COURSES = {"conversation"}
 
 

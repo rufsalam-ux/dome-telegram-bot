@@ -11,21 +11,59 @@
   "default_hero_placement": "right",
   "hero_layout": {
     "anchors": {
-      "left_of_lyosha": [0.02, 0.38, 0.39, 0.44],
-      "left_of_mila": [0.07, 0.49, 0.50, 0.46],
-      "left": [0.02, 0.30, 0.44, 0.66],
-      "right": [0.54, 0.30, 0.44, 0.66],
-      "bottom_left": [0.02, 0.46, 0.44, 0.50],
-      "bottom_right": [0.54, 0.46, 0.44, 0.50]
+      "left_of_lyosha": [
+        0.02,
+        0.38,
+        0.39,
+        0.44
+      ],
+      "left_of_mila": [
+        0.07,
+        0.49,
+        0.5,
+        0.46
+      ],
+      "left": [
+        0.02,
+        0.3,
+        0.44,
+        0.66
+      ],
+      "right": [
+        0.54,
+        0.3,
+        0.44,
+        0.66
+      ],
+      "bottom_left": [
+        0.02,
+        0.46,
+        0.44,
+        0.5
+      ],
+      "bottom_right": [
+        0.54,
+        0.46,
+        0.44,
+        0.5
+      ]
     },
-    "fallback_order": ["left", "right", "bottom_left", "bottom_right"],
+    "fallback_order": [
+      "left",
+      "right",
+      "bottom_left",
+      "bottom_right"
+    ],
     "target_visual_height_ratio": 0.64,
     "min_visual_height_ratio": 0.32
   },
   "cartoon_base": "M1-canonical-20260810.mov",
   "cartoon_base_manifest": "movie_manifest.json",
   "movie_audio_policy": {
-    "allowed_track_roles": ["canonical_base_audio", "child_recording"],
+    "allowed_track_roles": [
+      "canonical_base_audio",
+      "child_recording"
+    ],
     "require_exact_child_recording": true,
     "optional_phrase_ids": [],
     "allow_compatible_recording": false,
@@ -144,11 +182,18 @@
       "end": 31.0,
       "height_norm": 0.46,
       "floor_y_norm": 0.82,
-      "max_width_norm": 0.50,
+      "max_width_norm": 0.5,
       "animation": "walk_from_left",
       "x_start_norm": -0.24,
       "x_end_norm": 0.38,
-      "protected_boxes_norm": [[0.42, 0.28, 0.24, 0.56]],
+      "protected_boxes_norm": [
+        [
+          0.42,
+          0.28,
+          0.24,
+          0.56
+        ]
+      ],
       "placement_side": "left",
       "layer": 3,
       "disappear": "fade_out",
@@ -179,8 +224,15 @@
       "floor_y_norm": 0.94,
       "animation": "stand_front_talk",
       "x_norm": 0.24,
-      "max_width_norm": 0.50,
-      "protected_boxes_norm": [[0.38, 0.17, 0.28, 0.78]],
+      "max_width_norm": 0.5,
+      "protected_boxes_norm": [
+        [
+          0.38,
+          0.17,
+          0.28,
+          0.78
+        ]
+      ],
       "placement_side": "left",
       "layer": 3,
       "disappear": "fade_out",
@@ -216,7 +268,7 @@
       "partner_side": "RIGHT",
       "talk_start": 64.0,
       "end": 69.0,
-      "height_norm": 0.40,
+      "height_norm": 0.4,
       "floor_y_norm": 0.93,
       "animation": "stand_front_talk",
       "x_norm": 0.01,
@@ -293,11 +345,18 @@
       "partner_side": "RIGHT",
       "talk_start": 85.0,
       "end": 90.0,
-      "height_norm": 0.40,
+      "height_norm": 0.4,
       "floor_y_norm": 0.9,
       "animation": "stand_front_talk",
       "x_norm": 0.07,
-      "protected_boxes_norm": [[0.76, 0.81, 0.23, 0.19]],
+      "protected_boxes_norm": [
+        [
+          0.76,
+          0.81,
+          0.23,
+          0.19
+        ]
+      ],
       "placement_side": "left",
       "layer": 3,
       "disappear": "fade_out",
@@ -314,11 +373,18 @@
       "partner_side": "RIGHT",
       "talk_start": 90.0,
       "end": 95.0,
-      "height_norm": 0.40,
+      "height_norm": 0.4,
       "floor_y_norm": 0.94,
       "animation": "stand_front_talk",
       "x_norm": 0.07,
-      "protected_boxes_norm": [[0.76, 0.81, 0.23, 0.19]],
+      "protected_boxes_norm": [
+        [
+          0.76,
+          0.81,
+          0.23,
+          0.19
+        ]
+      ],
       "placement_side": "left",
       "layer": 3,
       "disappear": "fade_out",
@@ -382,12 +448,26 @@
       "image": "lesson-images/slide-01.png",
       "hero_placement": "bottom_right",
       "hero_anchor": "bottom_right",
-      "hero_fallback_anchors": ["bottom_left"],
-      "hero_box": [0.70, 0.44, 0.28, 0.54],
+      "hero_fallback_anchors": [
+        "bottom_left"
+      ],
+      "hero_box": [
+        0.7,
+        0.44,
+        0.28,
+        0.54
+      ],
       "hero_facing": "left",
       "hero_target_visual_height_ratio": 0.54,
       "hero_min_visual_height_ratio": 0.5,
-      "content_boxes": [[0.18, 0.04, 0.64, 0.38]],
+      "content_boxes": [
+        [
+          0.18,
+          0.04,
+          0.64,
+          0.38
+        ]
+      ],
       "bot_says_target": "Привет! Я рада тебя видеть. Как ты сегодня себя чувствуешь?",
       "bot_explains_native": "Поздоровайся и коротко скажи, как у тебя дела. По твоим ответам я буду подбирать сложность урока.",
       "question": "Поздоровайся и скажи, как ты себя чувствуешь.",
@@ -452,43 +532,154 @@
       ],
       "interaction_kind": "card_question_sequence",
       "selection_options": [
-        {"id":"A","label":"Kite","rect":[0.115,0.18,0.24,0.31]},
-        {"id":"Б","label":"Friends","rect":[0.38,0.18,0.24,0.31]},
-        {"id":"В","label":"Lake","rect":[0.645,0.18,0.24,0.31]},
-        {"id":"Г","label":"Dog","rect":[0.115,0.58,0.24,0.31]},
-        {"id":"Д","label":"Rabbits","rect":[0.38,0.58,0.24,0.31]},
-        {"id":"Е","label":"Lion","rect":[0.645,0.58,0.24,0.31]}
+        {
+          "id": "A",
+          "label": "Kite",
+          "rect": [
+            0.115,
+            0.18,
+            0.24,
+            0.31
+          ]
+        },
+        {
+          "id": "Б",
+          "label": "Friends",
+          "rect": [
+            0.38,
+            0.18,
+            0.24,
+            0.31
+          ]
+        },
+        {
+          "id": "В",
+          "label": "Lake",
+          "rect": [
+            0.645,
+            0.18,
+            0.24,
+            0.31
+          ]
+        },
+        {
+          "id": "Г",
+          "label": "Dog",
+          "rect": [
+            0.115,
+            0.58,
+            0.24,
+            0.31
+          ]
+        },
+        {
+          "id": "Д",
+          "label": "Rabbits",
+          "rect": [
+            0.38,
+            0.58,
+            0.24,
+            0.31
+          ]
+        },
+        {
+          "id": "Е",
+          "label": "Lion",
+          "rect": [
+            0.645,
+            0.58,
+            0.24,
+            0.31
+          ]
+        }
       ],
       "card_question_sets": {
         "A": [
-          {"id": "A1", "text": "На завтрак я люблю..."},
-          {"id": "A2", "text": "Не люблю, когда на улице..."},
-          {"id": "A3", "text": "Что бы ты больше хотел уметь: летать, как птица, или плавать, как рыба?"}
+          {
+            "id": "A1",
+            "text": "На завтрак я люблю..."
+          },
+          {
+            "id": "A2",
+            "text": "Не люблю, когда на улице..."
+          },
+          {
+            "id": "A3",
+            "text": "Что бы ты больше хотел уметь: летать, как птица, или плавать, как рыба?"
+          }
         ],
         "Б": [
-          {"id": "Б1", "text": "Если бы ты был супергероем, то твоя суперспособность была бы...", "pre_a1_text": "Ты хочешь летать или быть очень сильным? Можно ответить одним словом."},
-          {"id": "Б2", "text": "Иногда я боюсь..."},
-          {"id": "Б3", "text": "Животное, которое мне очень нравится..."}
+          {
+            "id": "Б1",
+            "text": "Если бы ты был супергероем, то твоя суперспособность была бы...",
+            "pre_a1_text": "Ты хочешь летать или быть очень сильным? Можно ответить одним словом."
+          },
+          {
+            "id": "Б2",
+            "text": "Иногда я боюсь..."
+          },
+          {
+            "id": "Б3",
+            "text": "Животное, которое мне очень нравится..."
+          }
         ],
         "В": [
-          {"id": "В1", "text": "Самая любимая игрушка..."},
-          {"id": "В2", "text": "Мне не нравится, когда..."},
-          {"id": "В3", "text": "Если бы с неба шёл дождь из еды, то что бы ты хотел, чтобы это было?"}
+          {
+            "id": "В1",
+            "text": "Самая любимая игрушка..."
+          },
+          {
+            "id": "В2",
+            "text": "Мне не нравится, когда..."
+          },
+          {
+            "id": "В3",
+            "text": "Если бы с неба шёл дождь из еды, то что бы ты хотел, чтобы это было?"
+          }
         ],
         "Г": [
-          {"id": "Г1", "text": "Каким должен быть твой настоящий друг?"},
-          {"id": "Г2", "text": "Что может заставить тебя грустить?"},
-          {"id": "Г3", "text": "Три слова, которые лучше всего тебя описывают...", "pre_a1_text": "Ты добрый или весёлый? Можно ответить одним словом."}
+          {
+            "id": "Г1",
+            "text": "Каким должен быть твой настоящий друг?"
+          },
+          {
+            "id": "Г2",
+            "text": "Что может заставить тебя грустить?"
+          },
+          {
+            "id": "Г3",
+            "text": "Три слова, которые лучше всего тебя описывают...",
+            "pre_a1_text": "Ты добрый или весёлый? Можно ответить одним словом."
+          }
         ],
         "Д": [
-          {"id": "Д1", "text": "Если бы ты открыл собственный магазин, что бы там продавалось?"},
-          {"id": "Д2", "text": "Самая вкусная еда для тебя..."},
-          {"id": "Д3", "text": "Представь, что твой домашний питомец может ответить на 1 вопрос. Что бы ты спросил?"}
+          {
+            "id": "Д1",
+            "text": "Если бы ты открыл собственный магазин, что бы там продавалось?"
+          },
+          {
+            "id": "Д2",
+            "text": "Самая вкусная еда для тебя..."
+          },
+          {
+            "id": "Д3",
+            "text": "Представь, что твой домашний питомец может ответить на 1 вопрос. Что бы ты спросил?"
+          }
         ],
         "Е": [
-          {"id": "Е1", "text": "Если бы у тебя была волшебная палочка, какие три желания ты бы загадал?", "pre_a1_text": "Ты хочешь новую игрушку или путешествие? Можно ответить одним словом."},
-          {"id": "Е2", "text": "На чём необычном бы ты хотел отправиться в путешествие?"},
-          {"id": "Е3", "text": "А куда бы ты хотел отправиться?"}
+          {
+            "id": "Е1",
+            "text": "Если бы у тебя была волшебная палочка, какие три желания ты бы загадал?",
+            "pre_a1_text": "Ты хочешь новую игрушку или путешествие? Можно ответить одним словом."
+          },
+          {
+            "id": "Е2",
+            "text": "На чём необычном бы ты хотел отправиться в путешествие?"
+          },
+          {
+            "id": "Е3",
+            "text": "А куда бы ты хотел отправиться?"
+          }
         ]
       },
       "card_question_source": "lesson-images/slide-10.png..slide-15.png",
@@ -753,7 +944,14 @@
       "allow_help": false,
       "allow_skip": true,
       "allow_ai_followup": false,
-      "suppress_ai_followup": true
+      "suppress_ai_followup": true,
+      "pre_slide_video": {
+        "uri": "video_01_madagascar.mov",
+        "enabled": true,
+        "skippable": true,
+        "showPolicy": "once_per_attempt",
+        "autoplay": true
+      }
     },
     {
       "slide_id": "slide_19",
@@ -799,7 +997,12 @@
       "hero_anchor": "left_of_lyosha",
       "hero_placement": "left_of_lyosha",
       "hero_fallback_anchors": [],
-      "hero_box": [0.02, 0.4, 0.386, 0.44],
+      "hero_box": [
+        0.02,
+        0.4,
+        0.386,
+        0.44
+      ],
       "hero_facing": "right",
       "hero_target_visual_height_ratio": 0.44,
       "hero_min_visual_height_ratio": 0.36,
@@ -808,7 +1011,14 @@
       "simplified_text": "Почему ты тепло одет?",
       "must_wait_for_answer": true,
       "allow_ai_followup": false,
-      "suppress_ai_followup": true
+      "suppress_ai_followup": true,
+      "pre_slide_video": {
+        "uri": "video_02_lesha.mov",
+        "enabled": true,
+        "skippable": true,
+        "showPolicy": "once_per_attempt",
+        "autoplay": true
+      }
     },
     {
       "slide_id": "slide_20",
@@ -821,10 +1031,50 @@
       "answer_mode": "required_voice",
       "interaction_kind": "gift_selector",
       "selection_options": [
-        {"id":"teddy","label":"Teddy bear","answer_value_ru":"мишку","rect":[0.19,0.045,0.14,0.23]},
-        {"id":"book","label":"Book","answer_value_ru":"книгу","rect":[0.35,0.045,0.14,0.23]},
-        {"id":"flowers","label":"Flowers","answer_value_ru":"букет","rect":[0.51,0.045,0.14,0.23]},
-        {"id":"backpack","label":"Backpack","answer_value_ru":"рюкзак","rect":[0.67,0.045,0.14,0.23]}
+        {
+          "id": "teddy",
+          "label": "Teddy bear",
+          "answer_value_ru": "мишку",
+          "rect": [
+            0.19,
+            0.045,
+            0.14,
+            0.23
+          ]
+        },
+        {
+          "id": "book",
+          "label": "Book",
+          "answer_value_ru": "книгу",
+          "rect": [
+            0.35,
+            0.045,
+            0.14,
+            0.23
+          ]
+        },
+        {
+          "id": "flowers",
+          "label": "Flowers",
+          "answer_value_ru": "букет",
+          "rect": [
+            0.51,
+            0.045,
+            0.14,
+            0.23
+          ]
+        },
+        {
+          "id": "backpack",
+          "label": "Backpack",
+          "answer_value_ru": "рюкзак",
+          "rect": [
+            0.67,
+            0.045,
+            0.14,
+            0.23
+          ]
+        }
       ],
       "required_phrase_id": "mila_gift",
       "max_attempts": 3,
@@ -842,7 +1092,12 @@
       "hero_placement": "left_of_mila",
       "hero_anchor": "left_of_mila",
       "hero_fallback_anchors": [],
-      "hero_box": [0.07, 0.49, 0.50, 0.46],
+      "hero_box": [
+        0.07,
+        0.49,
+        0.5,
+        0.46
+      ],
       "hero_facing": "right",
       "hero_target_visual_height_ratio": 0.44,
       "hero_min_visual_height_ratio": 0.36,
@@ -851,7 +1106,14 @@
       "expects_answer": true,
       "suppress_ai_followup": true,
       "simplified_text": "Мила привезла мне книгу.",
-      "allow_ai_followup": false
+      "allow_ai_followup": false,
+      "pre_slide_video": {
+        "uri": "video_03_mila.mov",
+        "enabled": true,
+        "skippable": true,
+        "showPolicy": "once_per_attempt",
+        "autoplay": true
+      }
     },
     {
       "slide_id": "slide_21",
@@ -956,21 +1218,78 @@
       "drag_source_asset": "lesson-images/slide-24.png",
       "drag_target_asset": "suitcase-authored/suitcase-target.png",
       "drag_items": [
-        {"id": "jacket", "label_en": "Jacket", "label_ru": "куртка", "asset": "jacket.png"},
-        {"id": "binoculars", "label_en": "Binoculars", "label_ru": "бинокль", "asset": "binoculars.png"},
-        {"id": "water", "label_en": "Water bottle", "label_ru": "бутылка воды", "asset": "water.png"},
-        {"id": "compass", "label_en": "Compass", "label_ru": "компас", "asset": "compass.png"},
-        {"id": "teddy", "label_en": "Teddy bear", "label_ru": "мишка", "asset": "teddy.png"},
-        {"id": "camera", "label_en": "Camera", "label_ru": "фотоаппарат", "asset": "camera.png"},
-        {"id": "telescope", "label_en": "Telescope", "label_ru": "телескоп", "asset": "telescope.png"},
-        {"id": "fish", "label_en": "Fish", "label_ru": "рыба", "asset": "fish.png"},
-        {"id": "notebook", "label_en": "Notebook", "label_ru": "блокнот", "asset": "notebook.png"},
-        {"id": "sunglasses", "label_en": "Sunglasses", "label_ru": "солнцезащитные очки", "asset": "sunglasses.png"}
+        {
+          "id": "jacket",
+          "label_en": "Jacket",
+          "label_ru": "куртка",
+          "asset": "jacket.png"
+        },
+        {
+          "id": "binoculars",
+          "label_en": "Binoculars",
+          "label_ru": "бинокль",
+          "asset": "binoculars.png"
+        },
+        {
+          "id": "water",
+          "label_en": "Water bottle",
+          "label_ru": "бутылка воды",
+          "asset": "water.png"
+        },
+        {
+          "id": "compass",
+          "label_en": "Compass",
+          "label_ru": "компас",
+          "asset": "compass.png"
+        },
+        {
+          "id": "teddy",
+          "label_en": "Teddy bear",
+          "label_ru": "мишка",
+          "asset": "teddy.png"
+        },
+        {
+          "id": "camera",
+          "label_en": "Camera",
+          "label_ru": "фотоаппарат",
+          "asset": "camera.png"
+        },
+        {
+          "id": "telescope",
+          "label_en": "Telescope",
+          "label_ru": "телескоп",
+          "asset": "telescope.png"
+        },
+        {
+          "id": "fish",
+          "label_en": "Fish",
+          "label_ru": "рыба",
+          "asset": "fish.png"
+        },
+        {
+          "id": "notebook",
+          "label_en": "Notebook",
+          "label_ru": "блокнот",
+          "asset": "notebook.png"
+        },
+        {
+          "id": "sunglasses",
+          "label_en": "Sunglasses",
+          "label_ru": "солнцезащитные очки",
+          "asset": "sunglasses.png"
+        }
       ],
       "allow_ai_followup": true,
       "suppress_ai_followup": false,
       "max_ai_followups": 1,
-      "conversation_goal": "Discuss only the visible suitcase items the child actually selected and optionally ask why one selected item is useful."
+      "conversation_goal": "Discuss only the visible suitcase items the child actually selected and optionally ask why one selected item is useful.",
+      "pre_slide_video": {
+        "uri": "video_04_suitcase.mov",
+        "enabled": true,
+        "skippable": true,
+        "showPolicy": "once_per_attempt",
+        "autoplay": true
+      }
     },
     {
       "slide_id": "slide_40",
@@ -1030,7 +1349,14 @@
       "allow_skip": false,
       "expects_answer": true,
       "allow_ai_followup": false,
-      "suppress_ai_followup": true
+      "suppress_ai_followup": true,
+      "pre_slide_video": {
+        "uri": "video_10_zebra.mov",
+        "enabled": true,
+        "skippable": true,
+        "showPolicy": "once_per_attempt",
+        "autoplay": true
+      }
     },
     {
       "slide_id": "slide_50",
@@ -1086,9 +1412,34 @@
       "advance_after_required_phrase": true,
       "pair_question_count": 2,
       "animal_questions": [
-        {"id": "penguin", "correct_id": "penguin", "phrase_id": "penguin", "label_ru": "пингвина", "label_en": "penguin", "prompt_ru": "Сначала выбери пингвина. Скажи про него одну короткую фразу.", "idea_prompt_ru": "Что ты хочешь сказать про пингвина?", "example_ru": "Пингвин любит холод."},
-        {"id": "parrot", "correct_id": "parrot", "phrase_id": "parrot", "label_ru": "попугая", "label_en": "parrot", "prompt_ru": "Теперь выбери попугая. Скажи про него одну короткую фразу.", "idea_prompt_ru": "Что ты хочешь сказать про попугая?", "example_ru": "Попугай красный и красивый."}
-      ]
+        {
+          "id": "penguin",
+          "correct_id": "penguin",
+          "phrase_id": "penguin",
+          "label_ru": "пингвина",
+          "label_en": "penguin",
+          "prompt_ru": "Сначала выбери пингвина. Скажи про него одну короткую фразу.",
+          "idea_prompt_ru": "Что ты хочешь сказать про пингвина?",
+          "example_ru": "Пингвин любит холод."
+        },
+        {
+          "id": "parrot",
+          "correct_id": "parrot",
+          "phrase_id": "parrot",
+          "label_ru": "попугая",
+          "label_en": "parrot",
+          "prompt_ru": "Теперь выбери попугая. Скажи про него одну короткую фразу.",
+          "idea_prompt_ru": "Что ты хочешь сказать про попугая?",
+          "example_ru": "Попугай красный и красивый."
+        }
+      ],
+      "pre_slide_video": {
+        "uri": "video_09_penguin.mov",
+        "enabled": true,
+        "skippable": true,
+        "showPolicy": "once_per_attempt",
+        "autoplay": true
+      }
     },
     {
       "slide_id": "slide_43",
@@ -1109,7 +1460,14 @@
       "expects_answer": true,
       "allow_ai_followup": false,
       "suppress_ai_followup": true,
-      "skip_in_runtime": true
+      "skip_in_runtime": true,
+      "pre_slide_video": {
+        "uri": "video_06_lion.mov",
+        "enabled": true,
+        "skippable": true,
+        "showPolicy": "once_per_attempt",
+        "autoplay": true
+      }
     },
     {
       "slide_id": "slide_51",
@@ -1144,17 +1502,45 @@
       "advance_after_required_phrase": true,
       "pair_question_count": 1,
       "animal_questions": [
-        {"id": "lion", "correct_id": "lion", "phrase_id": "lion", "label_ru": "льва", "label_en": "lion", "prompt_ru": "Выбери льва. Скажи про него одну короткую фразу.", "idea_prompt_ru": "Что ты хочешь сказать про льва?", "example_ru": "Лев сильный."}
-      ]
+        {
+          "id": "lion",
+          "correct_id": "lion",
+          "phrase_id": "lion",
+          "label_ru": "льва",
+          "label_en": "lion",
+          "prompt_ru": "Выбери льва. Скажи про него одну короткую фразу.",
+          "idea_prompt_ru": "Что ты хочешь сказать про льва?",
+          "example_ru": "Лев сильный."
+        }
+      ],
+      "pre_slide_video": {
+        "uri": "video_06_lion.mov",
+        "enabled": true,
+        "skippable": true,
+        "showPolicy": "once_per_attempt",
+        "autoplay": true
+      }
     },
     {
       "slide_id": "slide_45",
       "order": 45,
       "type": "animal_riddle",
       "riddle_options": [
-        {"id": "elephant", "label": "Elephant", "emoji": "🐘"},
-        {"id": "giraffe", "label": "Giraffe", "emoji": "🦒"},
-        {"id": "polar_bear", "label": "Polar bear", "emoji": "🐻‍❄️"}
+        {
+          "id": "elephant",
+          "label": "Elephant",
+          "emoji": "🐘"
+        },
+        {
+          "id": "giraffe",
+          "label": "Giraffe",
+          "emoji": "🦒"
+        },
+        {
+          "id": "polar_bear",
+          "label": "Polar bear",
+          "emoji": "🐻‍❄️"
+        }
       ],
       "correct_choice_id": "giraffe",
       "image": "lesson-images/slide-45-clean.png",
@@ -1172,7 +1558,14 @@
       "expects_answer": true,
       "simplified_text": "Это жираф.",
       "allow_ai_followup": false,
-      "suppress_ai_followup": true
+      "suppress_ai_followup": true,
+      "pre_slide_video": {
+        "uri": "video_08_giraffe.mov",
+        "enabled": true,
+        "skippable": true,
+        "showPolicy": "once_per_attempt",
+        "autoplay": true
+      }
     },
     {
       "slide_id": "slide_42",
@@ -1193,7 +1586,14 @@
       "expects_answer": true,
       "simplified_text": "Это белый медведь.",
       "allow_ai_followup": false,
-      "suppress_ai_followup": true
+      "suppress_ai_followup": true,
+      "pre_slide_video": {
+        "uri": "video_06_bear.mov",
+        "enabled": true,
+        "skippable": true,
+        "showPolicy": "once_per_attempt",
+        "autoplay": true
+      }
     },
     {
       "slide_id": "slide_44",
@@ -1220,7 +1620,14 @@
       "must_wait_for_every_answer": true,
       "expects_answer": true,
       "suppress_ai_followup": false,
-      "skip_in_runtime": true
+      "skip_in_runtime": true,
+      "pre_slide_video": {
+        "uri": "video_07_parrot.mov",
+        "enabled": true,
+        "skippable": true,
+        "showPolicy": "once_per_attempt",
+        "autoplay": true
+      }
     },
     {
       "slide_id": "slide_48",
@@ -1254,9 +1661,13 @@
       "bot_explains_native": "Например: «Приезжайте ко мне!» Ответ — до 5 секунд.",
       "question": "Как ты коротко пригласишь друзей приехать к тебе?",
       "task_goal": "Пригласи друзей приехать к тебе одной короткой фразой.",
-      "accepted_intents": ["invite friends to come to the child"],
+      "accepted_intents": [
+        "invite friends to come to the child"
+      ],
       "target_meaning": "invite friends to come to the child, not to take a trip elsewhere",
-      "model_examples": ["Приезжайте ко мне!"],
+      "model_examples": [
+        "Приезжайте ко мне!"
+      ],
       "answer_mode": "required_voice",
       "required_phrase_id": "invite",
       "max_attempts": 3,
@@ -1271,7 +1682,14 @@
       "simplified_text": "Приезжайте ко мне!",
       "preserve_required_movie_line": true,
       "allow_ai_followup": false,
-      "suppress_ai_followup": true
+      "suppress_ai_followup": true,
+      "pre_slide_video": {
+        "uri": "video_11_plane.mov",
+        "enabled": true,
+        "skippable": true,
+        "showPolicy": "once_per_attempt",
+        "autoplay": true
+      }
     },
     {
       "slide_id": "slide_49",
@@ -1286,7 +1704,7 @@
       "max_attempts": 3,
       "simplified_after_attempts": 3,
       "next_slide": null,
-      "allow_skip": false,
+      "allow_skip": true,
       "requires_interactive_completion": true,
       "continue_policy": "after_action",
       "adaptive": true,
@@ -1300,7 +1718,6 @@
       ],
       "max_voice_seconds": 60,
       "allow_help": false,
-      "allow_skip": true,
       "allow_ai_followup": false,
       "suppress_ai_followup": true
     }

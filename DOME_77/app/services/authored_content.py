@@ -554,7 +554,10 @@ def validate_content_lesson(data: dict[str, Any]) -> list[str]:
             errors.append(f"slide {index}: step must be an object")
     slides = authored_steps(data)
     if not slides:
-        errors.append("lesson needs at least one slide")
+        # Allow empty slide list for draft lessons; only block published ones
+        _status = str(data.get("import_status") or data.get("status") or "").upper()
+        if _status not in ("DRAFT", "draft"):
+            errors.append("lesson needs at least one slide")
         return errors
     seen_ids: set[str] = set()
     seen_orders: set[int] = set()

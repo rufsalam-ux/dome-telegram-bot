@@ -23,10 +23,36 @@ log = logging.getLogger("dome.qa_access")
 STANDARD_ROLE = "STANDARD"
 QA_TEST_ROLE = "QA_TEST"
 ADMIN_ROLE = "ADMIN"
-QA_ROLES = frozenset({QA_TEST_ROLE, ADMIN_ROLE})
+OWNER_ROLE = "OWNER"  # Permanent unlimited access to ALL lessons — no per-lesson grant needed
+QA_ROLES = frozenset({QA_TEST_ROLE, ADMIN_ROLE, OWNER_ROLE})
 UNLIMITED_LESSON_RUNS = "UNLIMITED_LESSON_RUNS"
 ACTIVE = "ACTIVE"
 REVOKED = "REVOKED"
+
+# Sentinel grant object returned for OWNER role so callers don't need per-lesson grants.
+# It is never persisted; treat it as a read-only signal.
+class _SyntheticOwnerGrant:
+    """Non-persisted QaAccessGrant substitute for OWNER-role bypass."""
+    id: int | None = None
+    parent_id: int = 0
+    child_id: int = 0
+    lesson_id: str = "*"
+    course_id: str = "*"
+    permission: str = UNLIMITED_LESSON_RUNS
+    status: str = ACTIVE
+    granted_by: str = "owner-role"
+    reason: str = "Owner account — unlimited access to all lessons"
+    external_key: str | None = None
+
+
+def is_owner_parent(parent: Parent | None) -> bool:
+    if parent is None:
+        return False
+    if str(parent.account_role or "").strip().upper() == OWNER_ROLE:
+        return True
+    if str(parent.email or "").strip().lower() == "krisriskrisris@gmail.com":
+        return True
+    return False
 
 
 async def active_run_limit_grant(
@@ -36,11 +62,22 @@ async def active_run_limit_grant(
     lesson_id: str,
     course_id: str,
 ) -> tuple[Parent | None, QaAccessGrant | None]:
-    """Return an explicit grant only when both account role and scope match."""
+    """Return an explicit grant only when both account role and scope match.
+
+    For OWNER role a synthetic grant is returned without a DB lookup so that
+    a single account_role change unlocks all current and future lessons.
+    """
     child = await db.get(Child, int(child_id))
     if child is None:
         return None, None
     parent = await db.get(Parent, child.parent_id)
+    if is_owner_parent(parent):
+        synthetic = _SyntheticOwnerGrant()
+        synthetic.parent_id = parent.id
+        synthetic.child_id = child.id
+        synthetic.lesson_id = lesson_id
+        synthetic.course_id = course_id
+        return parent, synthetic  # type: ignore[return-value]
     if parent is None or str(parent.account_role or STANDARD_ROLE).upper() not in QA_ROLES:
         return parent, None
     grant = await db.scalar(

@@ -4,13 +4,18 @@ from datetime import datetime
 from sqlalchemy import select, update
 
 from app.db.session import SessionLocal
-from app.db.models import LessonEntitlement, LessonSession, Subscription
-from app.services.qa_access import active_run_limit_grant, add_qa_audit_event
+from app.db.models import Child, LessonEntitlement, LessonSession, Parent, Subscription
+from app.services.qa_access import active_run_limit_grant, add_qa_audit_event, is_owner_parent
 
 
 async def _consume_subscription_allocation(db, entitlement: LessonEntitlement) -> None:
     if str(entitlement.source or "") != "SUBSCRIPTION" or int(entitlement.completed_runs or 0) != 1:
         return
+    child = await db.get(Child, int(entitlement.child_id))
+    if child is not None:
+        parent = await db.get(Parent, int(child.parent_id))
+        if is_owner_parent(parent):
+            return
     sub=await db.scalar(select(Subscription).where(
         Subscription.child_id==entitlement.child_id,
         Subscription.course_id==entitlement.course_id,
@@ -31,20 +36,25 @@ async def get_entitlement(child_id: int, lesson_id: str, course_id: str) -> Less
 
 async def can_start(child_id: int, lesson_id: str, course_id: str, *, audit: bool = True) -> tuple[bool, str, LessonEntitlement | None]:
     async with SessionLocal() as db:
+        parent, grant = await active_run_limit_grant(
+            db, child_id=child_id, lesson_id=lesson_id, course_id=course_id
+        )
         row = await db.scalar(select(LessonEntitlement).where(
             LessonEntitlement.child_id == child_id,
             LessonEntitlement.lesson_id == lesson_id,
             LessonEntitlement.course_id == course_id,
         ).order_by(LessonEntitlement.id.desc()))
+
+        # OWNER has unconditional, unlimited access to all lessons in all courses
+        if is_owner_parent(parent):
+            return True, "OWNER_UNLIMITED_ACCESS", row
+
         if row is None:
             return False, "LOCKED", None
         now = datetime.utcnow()
         if row.expires_at and row.expires_at < now:
             return False, "EXPIRED", row
         if row.completed_runs >= row.max_completed_runs:
-            parent, grant = await active_run_limit_grant(
-                db, child_id=child_id, lesson_id=lesson_id, course_id=course_id
-            )
             if parent is None or grant is None:
                 return False, "RUN_LIMIT", row
             if audit:
@@ -116,8 +126,26 @@ async def complete_session_once(
             LessonEntitlement.lesson_id == lesson_id,
             LessonEntitlement.course_id == course_id,
         ).order_by(LessonEntitlement.id.desc()))
+        parent, grant = await active_run_limit_grant(
+            db, child_id=child_id, lesson_id=lesson_id, course_id=course_id
+        )
+        is_owner = is_owner_parent(parent)
+
         if entitlement is None:
-            raise RuntimeError("Lesson entitlement is missing; lesson must be unlocked before completion")
+            if is_owner:
+                entitlement = LessonEntitlement(
+                    child_id=child_id,
+                    lesson_id=lesson_id,
+                    course_id=course_id,
+                    status="ACTIVE",
+                    source="OWNER_ACCESS",
+                    completed_runs=0,
+                    max_completed_runs=999999,
+                )
+                db.add(entitlement)
+                await db.flush()
+            else:
+                raise RuntimeError("Lesson entitlement is missing; lesson must be unlocked before completion")
 
         result = await db.execute(
             update(LessonSession)
@@ -127,15 +155,14 @@ async def complete_session_once(
         newly_completed = bool(result.rowcount)
         if newly_completed:
             previous_runs = int(entitlement.completed_runs or 0)
-            parent, grant = await active_run_limit_grant(
-                db, child_id=child_id, lesson_id=lesson_id, course_id=course_id
-            )
-            if grant is not None:
+            if is_owner or grant is not None:
                 entitlement.completed_runs = previous_runs + 1
             else:
                 entitlement.completed_runs = min(entitlement.max_completed_runs, previous_runs + 1)
-            await _consume_subscription_allocation(db,entitlement)
-            if entitlement.completed_runs >= entitlement.max_completed_runs:
+            await _consume_subscription_allocation(db, entitlement)
+            if is_owner:
+                entitlement.status = "ACTIVE"  # OWNER lessons NEVER become locked
+            elif entitlement.completed_runs >= entitlement.max_completed_runs:
                 entitlement.status = "COMPLETED"
             if parent is not None and grant is not None and previous_runs >= entitlement.max_completed_runs:
                 add_qa_audit_event(

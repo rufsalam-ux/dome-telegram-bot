@@ -58,8 +58,13 @@ class CourseManifest(BaseModel):
     course_id: str
     title: str
     description: str = ""
+    cover_image: str = ""
+    order: int = 1
+    active: bool = True
+    locked: bool = False
+    status: str = "published"
     price: float | None = None
     currency: str = "EUR"
-    active: bool = True
     lesson_ids: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
