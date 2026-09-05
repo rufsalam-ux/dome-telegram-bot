@@ -1,6 +1,6 @@
 export type UiLanguage='ru'|'en'|'de';
-export type Screen='auth'|'children'|'add_child'|'hero'|'hero_confirm'|'home'|'lesson'|'lessons'|'movies'|'plans'|'purchase'|'consents'|'admin'|'language'|'experience_settings'|'parent_verify';
-export interface ParentProfile{id:string;name:string;phone?:string;email?:string;country?:string;phoneVerified?:boolean;emailVerified?:boolean;uiLanguage?:UiLanguage;adultAuthorityConfirmed?:boolean}
+export type Screen='auth'|'children'|'add_child'|'hero'|'hero_confirm'|'home'|'lesson'|'lessons'|'movies'|'plans'|'purchase'|'consents'|'admin'|'language'|'experience_settings'|'parent_verify'|'homework'|'progress'|'about';
+export interface ParentProfile{id:string;name:string;phone?:string;email?:string;country?:string;phoneVerified?:boolean;emailVerified?:boolean;uiLanguage?:UiLanguage;adultAuthorityConfirmed?:boolean;isOwner?:boolean;accountStatus?:'ACTIVE'|'BLOCKED'|'PENDING_APPROVAL'}
 export type HeroPoint=[number,number];
 export type HeroBox=[number,number,number,number];
 export interface HeroRigMetadata{version:string;mode:'cutout_2d';trusted:boolean;canonicalFacing:'LEFT'|'RIGHT'|'FRONT'|'UNKNOWN';joints:Record<string,HeroPoint>;regions?:Record<string,HeroBox|HeroBox[]|null>;capabilities:{cutout:boolean;blink:boolean;talk:boolean;limbGestures:boolean;tailMotion:boolean;safeWholeBodyFallback:boolean}}

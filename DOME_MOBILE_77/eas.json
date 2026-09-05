@@ -5,13 +5,17 @@
     "preview": {
       "distribution": "internal",
       "android": {"buildType": "apk"},
-      "env": {"EXPO_PUBLIC_DOME_API_BASE_URL": "https://dome-telegram-bot-production.up.railway.app"}
+      "env": {
+        "EXPO_PUBLIC_DOME_API_BASE_URL": "https://dome-telegram-bot-production-e6f6.up.railway.app",
+        "EXPO_PUBLIC_BUILD_COMMIT": "DOME-APK-30102-20260905-03",
+        "EXPO_PUBLIC_BUILD_TIMESTAMP": "2026-09-05T18:01:16+04:00"
+      }
     },
     "production": {
       "distribution": "store",
       "autoIncrement": false,
       "android": {"buildType": "app-bundle"},
-      "env": {"EXPO_PUBLIC_DOME_API_BASE_URL": "https://dome-telegram-bot-production.up.railway.app"}
+      "env": {"EXPO_PUBLIC_DOME_API_BASE_URL": "https://dome-telegram-bot-production-e6f6.up.railway.app"}
     }
   },
   "submit": {"production": {}}

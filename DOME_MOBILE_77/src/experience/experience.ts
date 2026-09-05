@@ -80,7 +80,19 @@ async function playSound(event:ExperienceEvent):Promise<void>{
     if(audioSuppressions.size>0)return;
     const asset=assetFor(event);const key=String(asset);let player=players[key];
     if(!player){const {createAudioPlayer}=require('expo-audio');player=createAudioPlayer(asset,{keepAudioSessionActive:true});players[key]=player}
-    player.volume=Math.max(0,Math.min(.45,preferences.uiSoundVolume*soundGainFor(event)));await player.seekTo(0);player.play();
+    player.volume=Math.max(0,Math.min(.45,preferences.uiSoundVolume*soundGainFor(event)));
+    try {
+      await player.seekTo(0);
+      player.play();
+    } catch {
+      // If native player was disposed or released, recreate and retry once
+      const {createAudioPlayer}=require('expo-audio');
+      player=createAudioPlayer(asset,{keepAudioSessionActive:true});
+      players[key]=player;
+      player.volume=Math.max(0,Math.min(.45,preferences.uiSoundVolume*soundGainFor(event)));
+      await player.seekTo(0);
+      player.play();
+    }
   }catch(error){console.warn('DOME_EXPERIENCE_AUDIO_FAILED',{event,error})}
 }
 

@@ -1,0 +1,35 @@
+# Keep EAS preview uploads limited to build source and declared assets.
+node_modules/
+.expo/
+.npm-cache/
+graphify-out/
+dist/
+.env
+.env.*
+!.env.example
+*.jks
+*.keystore
+*.p8
+*.p12
+*.mobileprovision
+*.pem
+
+# Local diagnostics, previous Expo bundles/QRs, and one-off image work are
+# never part of an installable tester APK.
+.expo-*
+.runtime-*/
+expo_*.png
+scratch_*.png
+temp_*.png
+*_files.txt
+all_*.txt
+ascii_qr.txt
+cat_stickers.txt
+chatgpt_*.txt
+detali_files.txt
+downloads_all_folders.txt
+inverted_qr.txt
+qr_display.txt
+tg_*.txt
+unicode_qr.txt
+*.zip

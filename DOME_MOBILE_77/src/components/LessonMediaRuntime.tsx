@@ -17,18 +17,22 @@ function VideoStage({source,poster,item,onEnd,onPlaybackChange}:{source:Resolved
   const player=useVideoPlayer(videoSource,current=>{current.loop=false;if(item.autoplay!==false)current.play()});
   useEffect(()=>{const endedSubscription=player.addListener('playToEnd',()=>{setEnded(true);onPlaybackChange?.(false);onEnd('ended')});const statusSubscription=player.addListener('statusChange',(event:any)=>{if(event.status==='readyToPlay'||event.status==='ready')setReady(true);if(event.status==='error'){onPlaybackChange?.(false);onEnd('failed')}});const playingSubscription=player.addListener('playingChange',(event:any)=>onPlaybackChange?.(Boolean(event.isPlaying)));return()=>{endedSubscription.remove();statusSubscription.remove();playingSubscription.remove();onPlaybackChange?.(false)}},[player,onEnd,onPlaybackChange]);
   const replay=()=>{try{player.currentTime=0;setEnded(false);player.play()}catch{onEnd('failed')}};
-  return <View style={{width:'100%',height:'100%',backgroundColor:'#111'}}>
-    <VideoView testID={`lesson-media-${item.id}`} player={player} nativeControls contentFit='contain' style={{width:'100%',height:'100%'}}/>
-    {!ready&&poster?<Image testID='lesson-video-poster' source={poster} resizeMode='contain' style={{position:'absolute',inset:0,width:'100%',height:'100%',backgroundColor:'#111'}}/>:null}
-    {!ready&&!poster?<View pointerEvents='none' style={{position:'absolute',inset:0,alignItems:'center',justifyContent:'center'}}><ActivityIndicator color='#fff'/></View>:null}
-    {ended&&item.replay!==false?<DomePressable testID='lesson-video-replay' accessibilityRole='button' onPress={replay} style={{position:'absolute',left:14,bottom:14,minHeight:44,minWidth:120,borderRadius:22,backgroundColor:'rgba(0,0,0,.68)'}}><Text style={{color:'#fff',fontWeight:'800'}}>↻ Ещё раз</Text></DomePressable>:null}
-    {item.skippable!==false&&!ended?<DomePressable testID='lesson-video-skip' accessibilityRole='button' onPress={()=>{try{player.pause()}catch{}onPlaybackChange?.(false);onEnd('skipped')}} style={{position:'absolute',right:14,top:14,minHeight:44,minWidth:120,borderRadius:22,backgroundColor:'rgba(0,0,0,.68)'}}><Text style={{color:'#fff',fontWeight:'800'}}>Пропустить</Text></DomePressable>:null}
+  // transparent background so the fantasy classroom shell artwork shows around the video
+  const overlayBtn={minHeight:44,minWidth:120,borderRadius:22,backgroundColor:'rgba(15,23,42,0.72)',borderWidth:1,borderColor:'rgba(56,189,248,0.35)',alignItems:'center' as const,justifyContent:'center' as const};
+  return <View style={{width:'100%',height:'100%',backgroundColor:'transparent'}}>
+    <VideoView testID={`lesson-media-${item.id}`} player={player} nativeControls contentFit='contain' style={{width:'100%',height:'100%',backgroundColor:'transparent'}}/>
+    {!ready&&poster?<Image testID='lesson-video-poster' source={poster} resizeMode='contain' style={{position:'absolute',inset:0,width:'100%',height:'100%',backgroundColor:'transparent'}}/>:null}
+    {!ready&&!poster?<View pointerEvents='none' style={{position:'absolute',inset:0,alignItems:'center',justifyContent:'center'}}><ActivityIndicator color='#38bdf8'/></View>:null}
+    {ended&&item.replay!==false?<DomePressable testID='lesson-video-replay' accessibilityRole='button' onPress={replay} style={{...overlayBtn,position:'absolute',left:14,bottom:14}}><Text style={{color:'#e2e8f0',fontWeight:'800'}}>↻ Ещё раз</Text></DomePressable>:null}
+    {item.skippable!==false&&!ended?<DomePressable testID='lesson-video-skip' accessibilityRole='button' onPress={()=>{try{player.pause()}catch{}onPlaybackChange?.(false);onEnd('skipped')}} style={{...overlayBtn,position:'absolute',right:14,top:14}}><Text style={{color:'#e2e8f0',fontWeight:'800'}}>Пропустить</Text></DomePressable>:null}
   </View>;
 }
 
 function AudioStage({source,item}:{source:ResolvedSource;item:LessonMediaDescriptor}){
   const player=useAudioPlayer(source);
-  return <View testID={`lesson-media-${item.id}`} style={{flex:1,alignItems:'center',justifyContent:'center',gap:12}}><Text style={{fontSize:48}}>🎧</Text><Pressable accessibilityRole='button' onPress={()=>{try{player.seekTo(0);player.play()}catch{}}} style={{minHeight:52,minWidth:180,borderRadius:18,backgroundColor:'#246bfd',alignItems:'center',justifyContent:'center'}}><Text style={{color:'#fff',fontSize:18,fontWeight:'800'}}>▶ Послушать</Text></Pressable></View>;
+  const mountedRef=useRef(true);
+  useEffect(()=>{mountedRef.current=true;return()=>{mountedRef.current=false;try{player.pause()}catch{}}},[player]);
+  return <View testID={`lesson-media-${item.id}`} style={{flex:1,alignItems:'center',justifyContent:'center',gap:12}}><Text style={{fontSize:48}}>🎧</Text><Pressable accessibilityRole='button' onPress={()=>{if(!mountedRef.current)return;try{player.seekTo(0);player.play()}catch{}}} style={{minHeight:52,minWidth:180,borderRadius:18,backgroundColor:'#246bfd',alignItems:'center',justifyContent:'center'}}><Text style={{color:'#fff',fontSize:18,fontWeight:'800'}}>▶ Послушать</Text></Pressable></View>;
 }
 
 function AnimatedStage({source,item}:{source:ResolvedSource;item:LessonMediaDescriptor}){

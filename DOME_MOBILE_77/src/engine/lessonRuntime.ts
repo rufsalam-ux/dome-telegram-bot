@@ -1,4 +1,5 @@
 import {visibleCharacterAspect} from './avatarRuntime.ts';
+import {studiedLanguageForMobile} from '../data/languagePolicy.ts';
 
 export const AVATAR_PERCEPTUAL_SCALE=1.12;
 
@@ -11,6 +12,39 @@ export type RuntimeStage = typeof RUNTIME_STAGES[number];
 export type PromptPhase = 'initial'|'retry';
 export type RectTuple = [number,number,number,number];
 export type NextPolicy={requiredForMovie?:boolean;recoveryAvailable?:boolean;hasValidRecording?:boolean;mode?:'always'|'after_action'|'after_answer'};
+export type RuntimeLanguagePair={targetLanguage:string;explanationLanguage:string};
+export type SourcedRuntimeText={text:string;sourceLanguage:string};
+
+export function normalizeRuntimeLanguage(value:unknown,fallback='ru'):string{
+  const code=String(value||'').trim().toLowerCase();
+  return /^[a-z]{2,3}(?:-[a-z]{2,4})?$/.test(code)?code:String(fallback||'ru').toLowerCase();
+}
+
+/** The server snapshot wins for an active session; profile data is only the pre-session fallback. */
+export function resolveRuntimeLanguagePair(profile:any,session?:any):RuntimeLanguagePair{
+  const server=session?.language_pair||session?.languagePair||{};
+  return {
+    // A session can carry an old multilingual target snapshot.  Keep it in the
+    // backend/domain for future releases, but the active mobile lesson is
+    // deliberately Russian-first until another studied language is enabled.
+    targetLanguage:studiedLanguageForMobile(server.target_language??server.targetLanguage??profile?.learningLanguage??profile?.target_language),
+    explanationLanguage:normalizeRuntimeLanguage(server.explanation_language??server.native_language??server.explanationLanguage??server.nativeLanguage??profile?.nativeLanguage??profile?.native_language,'ru'),
+  };
+}
+
+/** Authored lesson text has a declared source language; it is never inferred from the child's target. */
+export function authoredTextLanguage(lesson:any,slide?:any):string{
+  return normalizeRuntimeLanguage(slide?.content_source_language||lesson?.content_source_language||lesson?.target_language,'ru');
+}
+
+export function localizedItemLabel(item:any,language:string,fallback=''):string{
+  const code=normalizeRuntimeLanguage(language);
+  const direct=item?.[`label_${code}`]??item?.[`answer_value_${code}`];
+  if(direct)return String(direct);
+  if(code==='ru')return String(item?.label_ru||item?.answer_value_ru||item?.label||fallback||item?.id||'');
+  if(code==='en')return String(item?.label_en||item?.answer_value_en||item?.label||fallback||item?.id||'');
+  return String(item?.label||fallback||item?.label_en||item?.label_ru||item?.id||'');
+}
 
 export const LESSON_OPERATION_TIMEOUT_MS=18_000;
 
@@ -43,12 +77,29 @@ export type VoiceRuntimeContext={
   visible_items:string[];
   selected_items:string[];
   removed_items:string[];
+  visual_metadata?:{label?:string;color_hint?:string;fact_hint?:string;image_key?:string};
 };
 
 export function buildVoiceRuntimeContext(slide:any,items:VoiceRuntimeItem[],selectedIds:string[],removedIds:string[],targetLanguage:string,interfaceLanguage:string):VoiceRuntimeContext{
   const visible=new Set(items.map(item=>String(item.id)));
   const selected=Array.from(new Set(selectedIds.map(String))).filter(id=>visible.has(id));
   const selectedSet=new Set(selected);
+  // Extract visual_metadata from slide for factual AI checking (e.g. lion colour, animal species)
+  let visual_metadata:VoiceRuntimeContext['visual_metadata'];
+  const vm=slide?.visual_metadata;
+  if(vm&&typeof vm==='object'){
+    visual_metadata={
+      ...(vm.label!=null?{label:String(vm.label)}:{}),
+      ...(vm.color_hint!=null?{color_hint:String(vm.color_hint)}:{}),
+      ...(vm.fact_hint!=null?{fact_hint:String(vm.fact_hint)}:{}),
+      ...(vm.image_key!=null?{image_key:String(vm.image_key)}:{}),
+    };
+  } else {
+    // Derive basic label from slide image_key or image_label as fallback
+    const imgKey=String(slide?.image_key||slide?.image||slide?.photo||'');
+    const imgLabel=String(slide?.image_label||slide?.label_en||slide?.label||'');
+    if(imgKey||imgLabel) visual_metadata={...(imgKey?{image_key:imgKey}:{}),...(imgLabel?{label:imgLabel}:{})};
+  }
   return {
     task_type:String(slide?.interactive_task||slide?.interaction_kind||slide?.type||'voice'),
     selection_policy:String(slide?.selection_policy||(slide?.interactive_task==='suitcase'?'child_choice':'authored_choice')),
@@ -57,6 +108,7 @@ export function buildVoiceRuntimeContext(slide:any,items:VoiceRuntimeItem[],sele
     visible_items:[...visible],
     selected_items:selected,
     removed_items:Array.from(new Set(removedIds.map(String))).filter(id=>visible.has(id)&&!selectedSet.has(id)),
+    ...(visual_metadata?{visual_metadata}:{}),
   };
 }
 
@@ -222,12 +274,35 @@ export function adaptiveModelPhrase(slide:any,languageLevel='PRE_A1',difficulty=
   return richer&&String(languageLevel).toUpperCase()!=='PRE_A1'&&difficulty>=.45?richer:simple;
 }
 
-export function manualHintExample(slide:any,languageLevel='PRE_A1',difficulty=.15):string{
+export function manualHintSource(slide:any,languageLevel='PRE_A1',difficulty=.15,selectedItem?:string,sourceLanguage=authoredTextLanguage(undefined,slide)):SourcedRuntimeText{
+  const language=normalizeRuntimeLanguage(sourceLanguage);
   const options=(slide?.target_language_options||slide?.model_examples||[]).map((item:any)=>String(item?.text||item||'').trim()).filter(Boolean);
-  if(String(languageLevel).toUpperCase()!=='PRE_A1'&&difficulty>=.45){
-    return String(slide?.richer_model_text||slide?.model_answer_richer||options[1]||options[0]||adaptiveModelPhrase(slide,languageLevel,difficulty)).trim();
+  if(selectedItem){
+    const cleanItem=String(selectedItem).toLowerCase().replace(/_/g,' ').trim();
+    const matched=options.find((opt:string)=>opt.toLowerCase().includes(cleanItem));
+    if(matched)return {text:matched,sourceLanguage:language};
+    const dragItem=slide?.drag_items?.find?.((it:any)=>String(it.id).toLowerCase()===cleanItem||String(it.label_en||'').toLowerCase()===cleanItem||String(it.label_ru||'').toLowerCase()===cleanItem)||slide?.selection_options?.find?.((it:any)=>String(it.id).toLowerCase()===cleanItem||String(it.label_en||it.label||'').toLowerCase()===cleanItem||String(it.label_ru||it.answer_value_ru||'').toLowerCase()===cleanItem);
+    if(dragItem){
+      const label=localizedItemLabel(dragItem,language,cleanItem);
+      if(language==='ru')return {text:String(slide?.interactive_task)==='suitcase'?`Можно сказать: Я положил(а) в чемодан ${label}.`:`Можно сказать: Я выбираю ${label}.`,sourceLanguage:language};
+      if(language==='en')return {text:`You can say: I chose ${label}.`,sourceLanguage:language};
+    }
+    if((slide?.kind==='gift'||slide?.interactive_task==='gift'||slide?.slide_id==='slide_20')&&language==='ru'){
+      return {text:`Можно сказать: Мила подарила мне ${cleanItem}.`,sourceLanguage:language};
+    }
+    if((slide?.kind==='gift'||slide?.interactive_task==='gift'||slide?.slide_id==='slide_20')&&language==='en'){
+      return {text:`You can say: Mila gave me ${cleanItem}.`,sourceLanguage:language};
+    }
   }
-  return String(slide?.hint_example_target||slide?.hint_target||options[0]||adaptiveModelPhrase(slide,languageLevel,difficulty)).trim();
+  if(String(languageLevel).toUpperCase()!=='PRE_A1'&&difficulty>=.45){
+    return {text:String(slide?.richer_model_text||slide?.model_answer_richer||options[1]||options[0]||adaptiveModelPhrase(slide,languageLevel,difficulty)).trim(),sourceLanguage:language};
+  }
+  return {text:String(slide?.hint_example_target||slide?.hint_target||options[0]||adaptiveModelPhrase(slide,languageLevel,difficulty)).trim(),sourceLanguage:language};
+}
+
+/** Backward-compatible string accessor for callers that do not need source metadata. */
+export function manualHintExample(slide:any,languageLevel='PRE_A1',difficulty=.15,selectedItem?:string):string{
+  return manualHintSource(slide,languageLevel,difficulty,selectedItem).text;
 }
 
 export function advanceAfterAssessment(response:{accepted?:boolean;advance_allowed?:boolean;needs_retry?:boolean;tutor_turn?:{follow_up_target?:string}}):'FOLLOW_UP'|'COMPLETE'|'RETRY'{

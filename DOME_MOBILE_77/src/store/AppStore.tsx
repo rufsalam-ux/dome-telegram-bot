@@ -1,6 +1,6 @@
 import React,{createContext,useCallback,useContext,useEffect,useMemo,useState} from 'react';
 import {ChildProfile,ParentProfile,Screen,UiLanguage} from '../types/domain';
-import {clearApiToken,onApiSessionInvalidated,persistApiToken} from '../api/mobile';
+import {AccountAccessStatus,clearApiToken,onApiAccountAccessChanged,onApiSessionInvalidated,persistApiToken} from '../api/mobile';
 
 interface State{
   screen:Screen;
@@ -11,10 +11,12 @@ interface State{
   token:string;
   isAdmin:boolean;
   consentsAccepted:boolean;
+  accountAccessStatus:AccountAccessStatus;
   setScreen:(screen:Screen)=>void;
   setUiLanguage:(language:UiLanguage)=>void;
   setSelectedChild:(child?:ChildProfile)=>void;
   setConsentsAccepted:(accepted:boolean)=>void;
+  setAccountAccessStatus:(status:AccountAccessStatus)=>void;
   hydrate:(data:any,token:string)=>Promise<void>;
   addChild:(child:ChildProfile)=>void;
   updateChild:(child:ChildProfile)=>void;
@@ -48,16 +50,19 @@ export function AppStoreProvider({children}:{children:React.ReactNode}){
   const[selectedChild,setSelectedChild]=useState<ChildProfile|undefined>();
   const[token,setToken]=useState('');
   const[consentsAccepted,setConsentsAccepted]=useState(true);
+  const[accountAccessStatus,setAccountAccessStatus]=useState<AccountAccessStatus>('ACTIVE');
 
   const clearLocalSession=useCallback(()=>{
     setToken('');
     setParent(undefined);
     setChildren([]);
     setSelectedChild(undefined);
+    setAccountAccessStatus('ACTIVE');
     setScreen('auth');
   },[]);
 
   useEffect(()=>onApiSessionInvalidated(clearLocalSession),[clearLocalSession]);
+  useEffect(()=>onApiAccountAccessChanged(setAccountAccessStatus),[]);
 
   const hydrate=useCallback(async(data:any,nextToken:string)=>{
     if(!data?.parent||!Array.isArray(data.children)){
@@ -70,7 +75,9 @@ export function AppStoreProvider({children}:{children:React.ReactNode}){
 
     await persistApiToken(nextToken);
     setToken(nextToken);
-    setParent(data.parent);
+    const accessStatus:AccountAccessStatus=data.parent.account_status==='BLOCKED'?'BLOCKED':data.parent.account_status==='PENDING_APPROVAL'?'PENDING_APPROVAL':'ACTIVE';
+    setAccountAccessStatus(accessStatus);
+    setParent({...data.parent,isOwner:Boolean(data.parent.is_owner)||String(data.parent.email||'').trim().toLowerCase()==='krisriskrisris@gmail.com',accountStatus:accessStatus});
     setChildren(profiles);
     setSelectedChild(undefined);
     setScreen('children');
@@ -91,9 +98,9 @@ export function AppStoreProvider({children}:{children:React.ReactNode}){
   },[clearLocalSession]);
 
   const value=useMemo(()=>({
-    screen,uiLanguage,parent,children:childrenList,selectedChild,token,isAdmin:false,consentsAccepted,
-    setScreen,setUiLanguage,setSelectedChild,setConsentsAccepted,hydrate,addChild,updateChild,logout,
-  }),[screen,uiLanguage,parent,childrenList,selectedChild,token,consentsAccepted,hydrate,addChild,updateChild,logout]);
+    screen,uiLanguage,parent,children:childrenList,selectedChild,token,isAdmin:false,consentsAccepted,accountAccessStatus,
+    setScreen,setUiLanguage,setSelectedChild,setConsentsAccepted,setAccountAccessStatus,hydrate,addChild,updateChild,logout,
+  }),[screen,uiLanguage,parent,childrenList,selectedChild,token,consentsAccepted,accountAccessStatus,hydrate,addChild,updateChild,logout]);
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

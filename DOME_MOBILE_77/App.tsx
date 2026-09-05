@@ -7,6 +7,7 @@ import {AppRuntime} from './src/AppRuntime';
 const BUILD_COMMIT=(process.env.EXPO_PUBLIC_BUILD_COMMIT||'unmarked').trim();
 const BUILD_TIMESTAMP=(process.env.EXPO_PUBLIC_BUILD_TIMESTAMP||'unknown-time').trim();
 export const BUILD_MARKER=`BUILD ${BUILD_COMMIT.slice(0,12)} / ${BUILD_TIMESTAMP}`;
+const SHOW_INTERNAL_BOOT_DIAGNOSTICS=__DEV__&&process.env.EXPO_PUBLIC_SHOW_BOOT_DIAGNOSTICS==='true';
 
 // A tunnel websocket warning is not an application failure. It remains in Metro
 // output, but never covers the child-facing UI.
@@ -45,16 +46,11 @@ class RootErrorBoundary extends React.Component<RootErrorBoundaryProps,{error:Er
       return <ScrollView testID='fatal-startup-screen' contentContainerStyle={{flexGrow:1,justifyContent:'center',padding:28,backgroundColor:'#F7F7FB'}} keyboardShouldPersistTaps='always'>
         <Text style={{fontSize:34,fontWeight:'900',color:'#20243A'}}>DOME</Text>
         <Text style={{fontSize:17,marginVertical:12,color:'#42475C'}}>{failure.message}</Text>
-        <Text testID='fatal-boot-stage' selectable style={{fontSize:12,marginBottom:5,color:'#42475C'}}>BOOT STAGE: {failure.stage}</Text>
-        <Text testID='fatal-boot-error' selectable style={{fontSize:12,marginBottom:5,color:'#8A2942'}}>BOOT ERROR: {failure.code} · {failure.errorName}: {failure.errorMessage}</Text>
-        <Text selectable style={{fontSize:11,marginBottom:4,color:'#6A7088'}}>FUNCTION: {failure.failingFunction}</Text>
-        <Text selectable style={{fontSize:11,marginBottom:8,color:'#6A7088'}}>LOCATION: {failure.failingLocation}</Text>
-        <Text testID='fatal-retry-count' style={{fontSize:13,fontWeight:'800',marginBottom:10,color:'#20243A'}}>RETRY COUNT: {this.props.retryCount}</Text>
+        {SHOW_INTERNAL_BOOT_DIAGNOSTICS?<><Text testID='fatal-boot-stage' selectable style={{fontSize:12,marginBottom:5,color:'#42475C'}}>BOOT STAGE: {failure.stage}</Text><Text testID='fatal-boot-error' selectable style={{fontSize:12,marginBottom:5,color:'#8A2942'}}>BOOT ERROR: {failure.code} · {failure.errorName}: {failure.errorMessage}</Text><Text selectable style={{fontSize:11,marginBottom:4,color:'#6A7088'}}>FUNCTION: {failure.failingFunction}</Text><Text selectable style={{fontSize:11,marginBottom:8,color:'#6A7088'}}>LOCATION: {failure.failingLocation}</Text><Text testID='fatal-retry-count' style={{fontSize:13,fontWeight:'800',marginBottom:10,color:'#20243A'}}>RETRY COUNT: {this.props.retryCount}</Text></>:null}
         <Pressable testID='fatal-retry-button' accessibilityRole='button' disabled={false} collapsable={false} onPress={this.props.onRetryPress} style={({pressed})=>({minHeight:58,borderRadius:18,backgroundColor:pressed?'#174fc2':'#246bfd',alignItems:'center',justifyContent:'center',paddingHorizontal:24})}>
           <Text style={{color:'#fff',fontSize:18,fontWeight:'800'}}>Повторить запуск</Text>
         </Pressable>
-        <Text selectable style={{fontSize:9,lineHeight:12,marginTop:12,color:'#6A7088'}}>STACK: {failure.stack||'unavailable'}</Text>
-        <Text selectable style={{fontSize:9,marginTop:10,color:'#6A7088'}}>{BUILD_MARKER}</Text>
+        {SHOW_INTERNAL_BOOT_DIAGNOSTICS?<><Text selectable style={{fontSize:9,lineHeight:12,marginTop:12,color:'#6A7088'}}>STACK: {failure.stack||'unavailable'}</Text><Text selectable style={{fontSize:9,marginTop:10,color:'#6A7088'}}>{BUILD_MARKER}</Text></>:null}
       </ScrollView>;
     }
     return this.props.children;
@@ -92,7 +88,7 @@ export default function App(){
         <StatusBar barStyle='dark-content'/>
         <View style={{flex:1}}>
           <AppRuntime key={runtimeAttempt} onBootStage={reportBootStage} retryCount={retryCount} onRetryReceived={registerRetry}/>
-          <BootMarker stage={bootStage} failure={bootFailure} retryCount={retryCount}/>
+          {SHOW_INTERNAL_BOOT_DIAGNOSTICS?<BootMarker stage={bootStage} failure={bootFailure} retryCount={retryCount}/>:null}
         </View>
       </SafeAreaView>
     </SafeAreaProvider>

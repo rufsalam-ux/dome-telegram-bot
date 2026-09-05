@@ -2,7 +2,7 @@ import React,{useRef,useState} from 'react';
 import {Alert,Keyboard,TextInput} from 'react-native';
 import {Body,Button,Card,H1,H2} from '../components/Ui';
 import {KeyboardAwareForm} from '../components/KeyboardAwareForm';
-import {confirmPasswordReset,loginAccount,registerAccount,resendVerification,requestPasswordReset,verifyEmail} from '../api/mobile';
+import {accountAccessStatusFromError,confirmPasswordReset,loginAccount,registerAccount,resendVerification,requestPasswordReset,verifyEmail} from '../api/mobile';
 import {useAppStore} from '../store/AppStore';
 
 type Mode='login'|'register'|'verify'|'forgot'|'reset';
@@ -54,6 +54,8 @@ export function AuthScreen(){
         Alert.alert('Готово','Пароль изменён. Теперь войдите.');
       }
     }catch(error:any){
+      const accessStatus=accountAccessStatusFromError(error);
+      if(accessStatus){store.setAccountAccessStatus(accessStatus);return}
       Alert.alert('DOME',error?.message||'Не удалось выполнить действие');
     }finally{setBusy(false)}
   };

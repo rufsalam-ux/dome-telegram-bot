@@ -1,4 +1,5 @@
 import * as SecureStore from 'expo-secure-store';
+import { lessonVideos } from '../data/lessonVideos';
 
 const DEFAULT_BASE='https://dome-telegram-bot-production-e6f6.up.railway.app';
 const TOKEN_KEY='dome_mobile_token';
@@ -8,10 +9,13 @@ const MAX_LOCAL_VOICE_BYTES=32*1024*1024;
 export const API_BASE=(process.env.EXPO_PUBLIC_DOME_API_BASE_URL||process.env.EXPO_PUBLIC_API_URL||DEFAULT_BASE).replace(/\/$/,'');
 
 type SessionInvalidatedListener=()=>void;
+export type AccountAccessStatus='ACTIVE'|'BLOCKED'|'PENDING_APPROVAL';
+type AccountAccessListener=(status:AccountAccessStatus)=>void;
 
 let cachedToken:string|undefined;
 let invalidationPromise:Promise<void>|null=null;
 const sessionInvalidatedListeners=new Set<SessionInvalidatedListener>();
+const accountAccessListeners=new Set<AccountAccessListener>();
 
 async function readUriBase64(uri:string):Promise<string>{
   const FileSystem=require('expo-file-system/legacy');
@@ -204,9 +208,23 @@ export function isUnauthorizedError(error:unknown):boolean{
   return error instanceof MobileApiError&&error.status===401;
 }
 
+export function isAccountAccessError(error:unknown):error is MobileApiError{
+  return error instanceof MobileApiError&&error.status===403&&(error.code==='ACCOUNT_BLOCKED'||error.code==='ACCOUNT_PENDING_APPROVAL');
+}
+
+export function accountAccessStatusFromError(error:unknown):AccountAccessStatus|undefined{
+  if(!isAccountAccessError(error))return undefined;
+  return error.code==='ACCOUNT_BLOCKED'?'BLOCKED':'PENDING_APPROVAL';
+}
+
 export function onApiSessionInvalidated(listener:SessionInvalidatedListener):()=>void{
   sessionInvalidatedListeners.add(listener);
   return ()=>sessionInvalidatedListeners.delete(listener);
+}
+
+export function onApiAccountAccessChanged(listener:AccountAccessListener):()=>void{
+  accountAccessListeners.add(listener);
+  return ()=>accountAccessListeners.delete(listener);
 }
 
 export async function restoreApiToken():Promise<string>{
@@ -262,6 +280,10 @@ async function request(path:string,init:RequestInit={},authenticated=true):Promi
   const data=await decodeResponse(response);
   if(!response.ok){
     if(authenticated&&response.status===401)await invalidateApiSession();
+    if(authenticated&&response.status===403&&(data?.code==='ACCOUNT_BLOCKED'||data?.code==='ACCOUNT_PENDING_APPROVAL')){
+      const status:AccountAccessStatus=data.code==='ACCOUNT_BLOCKED'?'BLOCKED':'PENDING_APPROVAL';
+      for(const listener of accountAccessListeners)listener(status);
+    }
     const message=data.error||data.message||`${response.status} ${response.statusText||'HTTP error'}`;
     throw new MobileApiError(response.status,message,data.code,data);
   }
@@ -319,10 +341,11 @@ export async function lessonVisualSource(lessonId:string,imagePath:string,childI
   return cacheProtectedVisualSource(source,/^(png|jpe?g|webp)$/.test(extension)?extension:'png');
 }
 
-export async function lessonMediaSource(lessonId:string,mediaPath:string){
+export async function lessonMediaSource(lessonId:string,mediaPath:string):Promise<any>{
   const value=String(mediaPath||'').trim();
-  if(/^https?:\/\//i.test(value))return {uri:value,useCaching:true};
   const filename=value.split('/').pop()||'';
+  if(lessonVideos[filename])return lessonVideos[filename];
+  if(/^https?:\/\//i.test(value))return {uri:value,useCaching:true};
   return {
     uri:`${API_BASE}/api/mobile/lesson/${encodeURIComponent(lessonId)}/media/${encodeURIComponent(filename)}`,
     headers:{Authorization:`Bearer ${await requiredToken()}`},
@@ -355,6 +378,7 @@ export async function sendVoice(sessionId:number,uri:string,slideId:string,phras
   // boundary. The file's durable local .m4a name and type travel with File.
   form.append('audio',audioFile as any);
   form.append('slide_id',slideId);form.append('phrase_id',phraseId||'');form.append('prompt',prompt||'');form.append('conversation_turn',String(conversationTurn));form.append('runtime_context',JSON.stringify(runtimeContext||{}));form.append('retake',retake?'true':'false');
+  console.info('LANG_EVALUATOR_PAIR',{session_id:sessionId,slide_id:slideId,expected_target_language:runtimeContext.target_language||null,explanation_language:runtimeContext.interface_language||null});
   console.info('VOICE_UPLOAD_REQUEST',{recording_id:clientRecordingId||null,session_id:sessionId,slide_id:slideId,phrase_id:phraseId||null,path:uri,mime_type:mimeType,transport:'expo-file-formdata'});
   const response=await request(`/api/mobile/session/${sessionId}/voice`,{method:'POST',headers:clientRecordingId?{'Idempotency-Key':clientRecordingId}:{},body:form});
   console.info('VOICE_UPLOAD_RESPONSE',{http_status:200,recording_id:clientRecordingId||null,session_id:sessionId,slide_id:slideId,phrase_id:phraseId||null,accepted:Boolean(response?.accepted),movie_take_accepted:Boolean(response?.movie_take_accepted)});
@@ -426,4 +450,38 @@ export function getSubscriptionPlanChangePreview(childId:string|number,planId:st
 
 export function cancelSubscriptionPlanChange(childId:string|number,courseId='conversation'){
   return request(`/api/mobile/child/${childId}/subscription/plan-change`,jsonInit('DELETE',{course_id:courseId}));
+}
+
+export function getLessonHomework(lessonId: string) {
+  return request(`/api/mobile/lesson/${encodeURIComponent(lessonId)}/homework`);
+}
+
+export function submitLessonHomework(childId: string | number, lessonId: string, payload: Record<string, unknown>) {
+  return request(`/api/mobile/child/${childId}/homework/${encodeURIComponent(lessonId)}/submit`, jsonInit('POST', payload));
+}
+
+export function validatePromoCode(childId:string|number, code:string, planId:string, price:number, billingPeriod='MONTH', courseId='conversation') {
+  return request(`/api/mobile/child/${childId}/promo/validate`, jsonInit('POST', {
+    code, plan_id: planId, course_id: courseId, price, billing_period: billingPeriod
+  }));
+}
+
+export function subscriptionCheckout(childId:string|number, planId:string, billingPeriod='MONTH', courseId='conversation', promoCode='') {
+  return request(`/api/mobile/child/${childId}/subscription/checkout`, jsonInit('POST', {
+    plan_id: planId, billing_period: billingPeriod, course_id: courseId, promo_code: promoCode, provider: 'paypal'
+  }));
+}
+
+export function verifySubscription(childId:string|number, subscriptionId:string, courseId='conversation', promoCode='') {
+  return request(`/api/mobile/child/${childId}/subscription/verify`, jsonInit('POST', {
+    subscription_id: subscriptionId, course_id: courseId, promo_code: promoCode
+  }));
+}
+
+export function getPaymentHistory(childId:string|number) {
+  return request(`/api/mobile/child/${childId}/payment/history`);
+}
+
+export function getChildProgress(childId: string | number) {
+  return request(`/api/mobile/child/${childId}/progress`);
 }

@@ -1,5 +1,5 @@
 import React,{useMemo,useRef,useState} from 'react';
-import {Alert,Image,PanResponder,ScrollView,Text,useWindowDimensions,View} from 'react-native';
+import {ActivityIndicator,Alert,Image,PanResponder,ScrollView,Text,useWindowDimensions,View} from 'react-native';
 
 import {API_BASE,confirmHeroGeometry} from '../api/mobile';
 import {Body,Button,Card,H1,H2} from '../components/Ui';
@@ -37,12 +37,44 @@ export function HeroConfirmScreen(){
   const[rightLeg,setRightLeg]=useState<HeroPoint>(()=>point(metadata?.rightLegOrRearLimb,[bbox[0]+bbox[2]*.61,bbox[1]+bbox[3]*.86]));
   const[feet,setFeet]=useState<HeroPoint>(()=>point(metadata?.feetAnchor||metadata?.groundAnchor,[.5,bbox[1]+bbox[3]]));
   const[tail,setTail]=useState<HeroPoint>(()=>point(metadata?.tailPoint,back));const[facing,setFacing]=useState<'LEFT'|'RIGHT'|'FRONT'>(facingInitial==='LEFT'||facingInitial==='RIGHT'?facingInitial:'FRONT');const[busy,setBusy]=useState(false);
+  const[imageLoaded,setImageLoaded]=useState(false);
+  const[imageLoadError,setImageLoadError]=useState(false);
+  const[retryNonce,setRetryNonce]=useState(0);
+
   if(!child||!metadata||!child.activeCharacterId||!child.heroUrl)return <View style={{padding:24}}><H1>Герой не выбран</H1><Button title='Вернуться к выбору' onPress={()=>store.setScreen('hero')}/></View>;
-  const sourceAspect=Math.max(.25,Math.min(4,Number(metadata.sourceWidth||1)/Math.max(1,Number(metadata.sourceHeight||1))));const availableWidth=Math.max(160,dimensions.width-32);let frameHeight=Math.min(440,availableWidth/sourceAspect);let frameWidth=frameHeight*sourceAspect;if(frameWidth>availableWidth){frameWidth=availableWidth;frameHeight=frameWidth/sourceAspect}const uri=child.heroUrl.startsWith('http')?child.heroUrl:API_BASE+child.heroUrl;const hasTail=Boolean(metadata.tailPoint||metadata.tailBoundingBox);
+  const sourceAspect=Math.max(.25,Math.min(4,Number(metadata.sourceWidth||1)/Math.max(1,Number(metadata.sourceHeight||1))));const availableWidth=Math.max(160,dimensions.width-32);let frameHeight=Math.min(440,availableWidth/sourceAspect);let frameWidth=frameHeight*sourceAspect;if(frameWidth>availableWidth){frameWidth=availableWidth;frameHeight=frameWidth/sourceAspect}
+
+  const rawUrl=child.heroUrl||'';
+  const uri=rawUrl.startsWith('http://')||rawUrl.startsWith('https://')
+    ? (rawUrl.includes('localhost')||rawUrl.includes('127.0.0.1')||rawUrl.includes('0.0.0.0') ? API_BASE+rawUrl.replace(/^https?:\/\/[^/]+/, '') : rawUrl)
+    : API_BASE+(rawUrl.startsWith('/')?rawUrl:`/${rawUrl}`);
+
+  const hasTail=Boolean(metadata.tailPoint||metadata.tailBoundingBox);
   const confirm=async()=>{try{setBusy(true);const response=await confirmHeroGeometry(child.id,child.activeCharacterId!,{headPoint:head,frontPoint:front,backPoint:back,leftArmOrFrontLimb:leftArm,rightArmOrFrontLimb:rightArm,leftHandOrFrontPaw:leftHand,rightHandOrFrontPaw:rightHand,leftLegOrRearLimb:leftLeg,rightLegOrRearLimb:rightLeg,feetAnchor:feet,groundAnchor:feet,tailPoint:hasTail?tail:null,facingDirection:facing,canonicalFacing:facing});store.updateChild({...child,heroMetadata:response.hero_metadata});store.setScreen('home')}catch(error:any){Alert.alert('Не удалось сохранить разметку',error.message)}finally{setBusy(false)}};
   return <ScrollView contentContainerStyle={{padding:16,paddingBottom:32}}><H1>Проверим героя один раз</H1><Body>Перетащите метки, если DOME ошибся. Эта разметка сохранится и будет одинаково использоваться в уроках и мультфильмах.</Body>
     <View testID='hero-anatomy-canvas' style={{alignSelf:'center',width:frameWidth,height:frameHeight,marginVertical:12,borderRadius:18,overflow:'hidden',backgroundColor:'#eef6ff',borderWidth:2,borderColor:'#b9d8ff'}}>
-      <Image source={{uri}} resizeMode='stretch' style={{width:'100%',height:'100%'}}/>
+      <Image
+        key={`hero-img-${retryNonce}`}
+        source={{uri}}
+        resizeMode='contain'
+        onLoadStart={()=>{setImageLoaded(false);setImageLoadError(false)}}
+        onLoadEnd={()=>setImageLoaded(true)}
+        onError={()=>{setImageLoaded(true);setImageLoadError(true)}}
+        style={{width:'100%',height:'100%'}}
+      />
+      {!imageLoaded&&!imageLoadError?(
+        <View pointerEvents='none' style={{position:'absolute',inset:0,alignItems:'center',justifyContent:'center',backgroundColor:'rgba(238,246,255,0.7)'}}>
+          <ActivityIndicator size='large' color='#246bfd'/>
+          <Text style={{marginTop:8,color:'#42475c',fontSize:13,fontWeight:'600'}}>Загружаем рисунок героя…</Text>
+        </View>
+      ):null}
+      {imageLoadError?(
+        <View style={{position:'absolute',inset:0,alignItems:'center',justifyContent:'center',backgroundColor:'rgba(255,245,245,0.9)',padding:16}}>
+          <Text style={{fontSize:28,marginBottom:6}}>🎨</Text>
+          <Text style={{color:'#8a2942',fontSize:14,fontWeight:'700',textAlign:'center',marginBottom:8}}>Не удалось загрузить изображение героя</Text>
+          <Button compact secondary title='Повторить' onPress={()=>setRetryNonce(n=>n+1)}/>
+        </View>
+      ):null}
       <Marker label='ГОЛОВА' color='#e5484d' value={head} width={frameWidth} height={frameHeight} onChange={setHead}/>
       <Marker label='ПЕРЕД' color='#1a73e8' value={front} width={frameWidth} height={frameHeight} onChange={setFront}/>
       <Marker label='ЗАД' color='#7b61a8' value={back} width={frameWidth} height={frameHeight} onChange={setBack}/>

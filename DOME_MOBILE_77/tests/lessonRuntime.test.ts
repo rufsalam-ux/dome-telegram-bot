@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {readFileSync} from 'node:fs';
+import {existsSync, readFileSync} from 'node:fs';
 import test from 'node:test';
 
 import {
@@ -8,6 +8,7 @@ import {
   adaptiveModelPhrase,
   advanceAfterAssessment,
   answerEnabled,
+  authoredTextLanguage,
   buildVoiceRuntimeContext,
   cardQuestions,
   cardSelectionAllowed,
@@ -28,6 +29,7 @@ import {
   LessonRuntimeTimeoutError,
   lessonLayoutPolicy,
   manualHintExample,
+  manualHintSource,
   movedPixelRect,
   nextCardQuestion,
   nextEnabled,
@@ -37,6 +39,7 @@ import {
   recordingGate,
   recorderDurationForGate,
   recoveryStageAfterFailure,
+  resolveRuntimeLanguagePair,
   rectanglesOverlap,
   requiresSelection,
   requiresVoice,
@@ -86,8 +89,9 @@ const cards={slide_id:'slide_09',type:'card_selector',answer_mode:'none',card_qu
 const mila={slide_id:'slide_20',answer_mode:'required_voice',interaction_kind:'gift_selector',selection_options:[{id:'book'}],hero_placement:'left_of_mila',hero_box:[0.04,0.35,0.24,0.61]};
 
 test('portrait lesson shell preserves the supplied artwork and central safe panel',()=>{
-  const asset=readFileSync(new URL('../assets/lesson-shell/dome-lesson-shell-extended-v1.png',import.meta.url));
-  assert.equal(createHash('sha256').update(asset).digest('hex'),'9b522f7117032b8b0a0e52781edc560327027433ea87017af604616224693b93');
+  const asset=readFileSync(new URL('../assets/lesson-shell/dome-lesson-shell-extended-clean-v2.png',import.meta.url));
+  const hash=createHash('sha256').update(asset).digest('hex');
+  assert.equal(hash,'ba40576ba5abd915277773527c4c2f8f4e907aa4b9f09b6744d43d3020975433');
   for(const [width,height] of [[320,568],[360,640],[360,800],[390,844],[430,932]]){
     const shell=lessonShellLayout(width,height);assert.ok(Math.abs(shell.image.width/shell.image.height-DOME_LESSON_SHELL_SIZE.width/DOME_LESSON_SHELL_SIZE.height)<1e-12);
     assert.equal(shell.fitMode,'extended-fill');
@@ -115,8 +119,31 @@ test('portrait shell motion is local, touch transparent, and reduced-motion awar
   const shell=readFileSync(new URL('../src/components/LessonPortraitShell.tsx',import.meta.url),'utf8');
   assert.match(shell,/EnvironmentMotionLayer/);assert.match(shell,/AccessibilityInfo\.isReduceMotionEnabled/);
   assert.match(shell,/reduceMotionChanged/);assert.match(shell,/pointerEvents='none'/);
-  assert.match(shell,/dome-balloon-motion/);assert.match(shell,/dome-cat-breathing/);assert.match(shell,/dome-cat-blink-left/);assert.doesNotMatch(shell,/Animated\.View[^\n]+dome-lesson-shell-artwork/);
+  assert.match(shell,/dome-balloon-motion/);assert.match(shell,/DomeMascot/);assert.match(shell,/extended-clean-v2/);assert.doesNotMatch(shell,/Animated\.View[^\n]+dome-lesson-shell-artwork/);
   assert.match(shell,/maxHeight:'27%'/);assert.match(shell,/marginBottom:'4%'/);assert.match(shell,/width:'78%'/);
+});
+
+test('mobile policy fixes the studied language to Russian and keeps explanations selectable',()=>{
+  const russianTarget=resolveRuntimeLanguagePair({learningLanguage:'ru',nativeLanguage:'en'},{language_pair:{target_language:'ru',explanation_language:'en'}});
+  assert.deepEqual(russianTarget,{targetLanguage:'ru',explanationLanguage:'en'});
+  const englishTarget=resolveRuntimeLanguagePair({learningLanguage:'ru',nativeLanguage:'en'},{language_pair:{target_language:'en',explanation_language:'ru'}});
+  assert.deepEqual(englishTarget,{targetLanguage:'ru',explanationLanguage:'ru'});
+  assert.equal(authoredTextLanguage({target_language:'en'},{}),'en');
+  assert.equal(authoredTextLanguage({target_language:'en'},{content_source_language:'ru'}),'ru');
+  const suitcase={interactive_task:'suitcase',drag_items:[{id:'jacket',label_ru:'куртку',label_en:'a jacket'}]};
+  const russianHint=manualHintSource(suitcase,'PRE_A1',.15,'jacket','ru');
+  assert.equal(russianHint.sourceLanguage,'ru');assert.match(russianHint.text,/положил/);assert.doesNotMatch(russianHint.text,/I packed|You can say/);
+  const englishHint=manualHintSource(suitcase,'PRE_A1',.15,'jacket','en');
+  assert.equal(englishHint.sourceLanguage,'en');assert.match(englishHint.text,/You can say/);
+  const root=readFileSync(new URL('../src/screens/RootApp.tsx',import.meta.url),'utf8');
+  const addChild=readFileSync(new URL('../src/screens/AddChildScreen.tsx',import.meta.url),'utf8');
+  const policy=readFileSync(new URL('../src/data/languagePolicy.ts',import.meta.url),'utf8');
+  assert.match(policy,/STUDIED_LANGUAGE_CODE='ru'/);assert.match(policy,/STUDIED_LANGUAGE_OPTIONS/);assert.match(policy,/EXPLANATION_LANGUAGE_OPTIONS/);assert.match(policy,/\['en','English'\]/);
+  assert.match(root,/STUDIED_LANGUAGE_OPTIONS/);assert.match(root,/EXPLANATION_LANGUAGE_OPTIONS/);assert.doesNotMatch(root,/const LANGUAGES=/);
+  assert.match(addChild,/const targetLanguage=STUDIED_LANGUAGE_CODE/);assert.match(addChild,/options=\{STUDIED_LANGUAGE_OPTIONS\}/);assert.match(addChild,/options=\{EXPLANATION_LANGUAGE_OPTIONS\}/);
+  const player=readFileSync(new URL('../src/screens/LessonPlayer.tsx',import.meta.url),'utf8');
+  for(const marker of ['LANG_PROFILE_PAIR','LANG_SESSION_PAIR','LANG_PROMPT_PAIR','LANG_HINT_PAIR','LANG_EVALUATOR_PAIR'])assert.match(player+readFileSync(new URL('../src/api/mobile.ts',import.meta.url),'utf8'),new RegExp(marker));
+  assert.match(player,/promptSourceLanguage=authoredLanguage/);assert.match(player,/manualHintSource\(slide,languageLevel,workingDifficulty,choice,authoredLanguage\)/);
 });
 
 test('movie identity is stable across completion, polling and library response shapes',()=>{
@@ -361,7 +388,7 @@ test('DOME cat is an independent companion and reward star stays in its own laye
   assert.equal(catStateForStage('AI_SPEAKING'),'listening');assert.equal(catStateForStage('WAITING_VOICE'),'waiting');
   assert.equal(catProcessingState(1499),'thinking');assert.equal(catProcessingState(1500),'idle');assert.equal(catProcessingState(4000),'waiting');
   const cat=readFileSync(new URL('../src/components/CatActivityLayer.tsx',import.meta.url),'utf8');const reward=readFileSync(new URL('../src/components/RewardEffectLayer.tsx',import.meta.url),'utf8');const player=readFileSync(new URL('../src/screens/LessonPlayer.tsx',import.meta.url),'utf8');
-  assert.doesNotMatch(cat,/star\.png|gameActive|cat-mini-game-star|assets\/heroes\/cat\.png/);assert.match(cat,/dome-splash-v2\.png/);assert.match(cat,/const focused=stage==='AI_SPEAKING'\|\|stage==='PROCESSING'/);assert.doesNotMatch(cat,/return null/);assert.match(reward,/star\.png/);assert.match(player,/<CatActivityLayer/);
+  assert.doesNotMatch(cat,/star\.png|gameActive|cat-mini-game-star|assets\/heroes\/cat\.png/);assert.match(cat,/DomeMascot/);assert.doesNotMatch(cat,/return null/);assert.match(reward,/star\.png/);assert.match(player,/<CatActivityLayer/);
   assert.match(player,/childIdeaPrompt\(labelRu,'suitcase'\)/);
   assert.match(player,/const adaptiveContext=\{\.\.\.voiceRuntimeContext/);
   assert.match(player,/finalizeLocalVoiceRecording\(uri/);assert.match(player,/sendVoice\(localRecording\.sessionId/);
@@ -609,7 +636,7 @@ test('progressive assistance changes strategy and preserves the authored speech 
 test('Lyosha task is authored as asking a question and Hint is audible target-language help',()=>{
   const lyosha=(bundledLesson.slides as any[]).find(slide=>slide.slide_id==='slide_19');
   assert.equal(lyosha.pedagogical_intent,'ask_person_question');assert.match(lyosha.task_goal,/Спроси Лёшу/);assert.doesNotMatch(lyosha.simplified_text,/Ему жарко/);
-  const player=readFileSync(new URL('../src/screens/LessonPlayer.tsx',import.meta.url),'utf8');assert.match(player,/async function useHint/);assert.match(player,/manualHintExample/);assert.match(player,/await speakTutor\(spoken\|\|source/);assert.doesNotMatch(player,/onPress:\(\)=>setShowHint/);
+  const player=readFileSync(new URL('../src/screens/LessonPlayer.tsx',import.meta.url),'utf8');assert.match(player,/async function useHint/);assert.match(player,/manualHintSource/);assert.match(player,/await speakTutor\(spoken\|\|source/);assert.doesNotMatch(player,/onPress:\(\)=>setShowHint/);
 });
 
 test('cold startup is isolated from lesson native modules and cannot wait forever',async()=>{
@@ -797,6 +824,49 @@ test('quiet UI sounds have one config and recording cues stay outside the record
   assert.match(lesson,/if\(corrective\)\{playExperience\('TRY_AGAIN',\{sound:false,haptics:false\}\)/);
 });
 
+test('native tutor playback restores the full speaker session and never overlaps video',()=>{
+  const lesson=readFileSync(new URL('../src/screens/LessonPlayer.tsx',import.meta.url),'utf8');
+  assert.match(lesson,/setIsAudioActiveAsync/);
+  assert.match(lesson,/async function activateLessonPlayback/);
+  assert.match(lesson,/async function activateLessonRecording/);
+  assert.match(lesson,/shouldRouteThroughEarpiece:false/);
+  assert.match(lesson,/interruptionMode:'doNotMix'/);
+  assert.match(lesson,/TUTOR_TTS_BLOCKED_BY_VIDEO/);
+  assert.match(lesson,/videoPlaying\|\|pendingPreSlide/);
+  assert.match(lesson,/prepareVoicePlayer\(source,'tutor'\)/);
+  assert.match(lesson,/player_volume:1/);
+  assert.match(lesson,/activateLessonPlayback\('recording_finished'\)/);
+});
+
+test('saved voice controls are outside the clipped prompt and retain a safe replace path',()=>{
+  const lesson=readFileSync(new URL('../src/screens/LessonPlayer.tsx',import.meta.url),'utf8');
+  const shell=readFileSync(new URL('../src/components/LessonPortraitShell.tsx',import.meta.url),'utf8');
+  const promptStart=lesson.indexOf("const prompt=<View testID='lesson-prompt-fit'");
+  const portraitStart=lesson.indexOf('recordingTools={recordingTools}');
+  assert.ok(promptStart>=0&&portraitStart>promptStart);
+  assert.match(lesson,/testID='saved-recording-actions'/);
+  assert.match(lesson,/testID='play-current-recording'/);
+  assert.match(lesson,/testID='replace-current-recording'/);
+  assert.match(lesson,/startRec\('retake'\)/);
+  assert.match(lesson,/Новый вариант не прошёл проверку\. Предыдущая запись сохранена\./);
+  assert.match(lesson,/Новая запись сохранена на телефоне\. Предыдущая запись не изменилась/);
+  assert.match(shell,/portrait-saved-recording-tools/);
+  assert.match(shell,/promptWithRecordingTools/);
+  assert.match(shell,/recordingTools:\{position:'absolute'/);
+});
+
+test('disabled controls are visibly inert and the portrait world has distinct child-safe reactions',()=>{
+  const pressable=readFileSync(new URL('../src/components/DomePressable.tsx',import.meta.url),'utf8');
+  const ui=readFileSync(new URL('../src/components/Ui.tsx',import.meta.url),'utf8');
+  const shell=readFileSync(new URL('../src/components/LessonPortraitShell.tsx',import.meta.url),'utf8');
+  assert.match(pressable,/if\(disabled\)return/);
+  assert.match(ui,/backgroundColor=disabled\?'#E4E8EE'/);assert.match(ui,/shadowOpacity:disabled\?0/);assert.match(ui,/textColor=disabled\?'#6B7280'/);
+  assert.match(shell,/disabledVeil:\{backgroundColor:'rgba\(226, 232, 240, 0\.76\)'/);
+  assert.match(shell,/primaryHotspot/);
+  for(const detail of ['star','balloon','cloud','leaves','island'])assert.match(shell,new RegExp(`hotspot\\('${detail}'`));
+  assert.match(shell,/DOME_WORLD_DETAIL_TAP/);assert.match(shell,/DomeMascot/);assert.match(shell,/onPress=\{\(\)=>\{console\.info\('DOME_WORLD_DETAIL_TAP',\{detail:'cat'\}\)/);
+});
+
 test('drag texture and haptics are centralized, subtle, and rate limited',()=>{
   const experience=readFileSync(new URL('../src/experience/experience.ts',import.meta.url),'utf8');
   const feedback=readFileSync(new URL('../src/experience/useDomeFeedback.ts',import.meta.url),'utf8');
@@ -807,4 +877,37 @@ test('drag texture and haptics are centralized, subtle, and rate limited',()=>{
   assert.match(suitcase,/onPanResponderMove:[^\n]+emitDragTextureFeedback/);
   assert.match(tasks,/onPanResponderMove:[^\n]+emitDragTextureFeedback/);
   assert.doesNotMatch(tasks,/Vibration\.vibrate|import \{[^}]*Vibration/);
+});
+
+test('DOME interactive mascot supports all 14 emotional states, layout stability and safe transitions',()=>{
+  const mascot=readFileSync(new URL('../src/components/DomeMascot.tsx',import.meta.url),'utf8');
+  const registry=readFileSync(new URL('../src/mascot/mascotRegistry.ts',import.meta.url),'utf8');
+  const player=readFileSync(new URL('../src/screens/LessonPlayer.tsx',import.meta.url),'utf8');
+  const shell=readFileSync(new URL('../src/components/LessonPortraitShell.tsx',import.meta.url),'utf8');
+  const catLayer=readFileSync(new URL('../src/components/CatActivityLayer.tsx',import.meta.url),'utf8');
+
+  // Verify all 14 states exist in the registry
+  const requiredStates=['LETS_GO','HELLO','THINKING','LISTENING','CELEBRATE','SLEEPING','WAVE','IDEA','CONFUSED','APPLAUSE','SAD','GREAT','LOVE','PLAYING'];
+  for(const state of requiredStates){
+    assert.match(registry,new RegExp(`\\b${state}:`));
+  }
+
+  // Verify all 14 assets exist on disk
+  const mascotDir=new URL('../assets/mascot/',import.meta.url);
+  const assetFiles=['mascot_lets_go.png','mascot_hello.png','mascot_thinking.png','mascot_listening.png','mascot_celebrate.png','mascot_sleeping.png','mascot_wave.png','mascot_idea.png','mascot_confused.png','mascot_applause.png','mascot_sad.png','mascot_great.png','mascot_love.png','mascot_playing.png'];
+  for(const f of assetFiles){
+    assert.ok(existsSync(new URL(f,mascotDir)),`Missing asset: ${f}`);
+  }
+
+  // Verify tap reactions and animations
+  assert.match(mascot,/TapReactionType/);
+  assert.match(mascot,/JUMP/);
+  assert.match(mascot,/WIGGLE/);
+  assert.match(mascot,/POP/);
+  assert.match(mascot,/WOBBLE/);
+
+  // Single cat rule: portrait has DomeMascot in LessonPortraitShell, landscape has DomeMascot in CatActivityLayer
+  assert.match(shell,/<DomeMascot/);
+  assert.match(catLayer,/<DomeMascot/);
+  assert.match(player,/currentMascotState/);
 });

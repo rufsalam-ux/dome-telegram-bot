@@ -11,7 +11,7 @@ const supported=new Set([
   'tap_select','multi_select','multiple_choice','true_false','listen_choose','odd_one_out','fill_gap','matching','match_visible','memory','sorting','sequence','ordering','puzzle','interactive_scene','tap_sound','trace','draw','drawing','coloring','maze','dictation','read_aloud','read_roles','echo_reading','shared_reading','comprehension','retell','continue_story','physical_action','photo_task','real_world_find','video_pause_question','word_builder','syllable_builder','sentence_builder','find_in_text','connect_lines','handwriting_screen','letter_path','sound_position','syllable_split','visual_pack','mini_game',
 ]);
 const imageExtensions=new Set(['.png','.jpg','.jpeg','.webp','.gif']);
-const videoExtensions=new Set(['.mp4','.m4v','.webm']);
+const videoExtensions=new Set(['.mp4','.m4v','.webm','.mov']);
 const audioExtensions=new Set(['.mp3','.m4a','.ogg','.wav']);
 
 function lessonFiles(){
@@ -27,7 +27,9 @@ function checkMedia(errors,lessonDir,label,source,kind,optional=false){
   if(/^https:\/\//i.test(value))return;
   const extension=extname(value.split(/[?#]/)[0]).toLowerCase();const allowed=kind==='картинки'?imageExtensions:kind==='видео'?videoExtensions:audioExtensions;
   if(!allowed.has(extension)){errors.push(`${label}: формат ${extension||'<без расширения>'} не поддерживается для ${kind}`);return}
-  const path=resolve(lessonDir,value);if(!existsSync(path)&&!optional)errors.push(`${label}: файл ${kind} ${value} не найден`);
+  const path=resolve(lessonDir,value);
+  const bundledVideo=resolve(here,'../assets/videos',value);
+  if(!existsSync(path)&&!existsSync(bundledVideo)&&!optional)errors.push(`${label}: файл ${kind} ${value} не найден`);
 }
 
 function validateLesson(file,injectBroken=false){
