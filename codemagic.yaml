@@ -1,0 +1,84 @@
+# DOME Android release APK workflow.
+#
+# This repository is a monorepo.  The mobile app remains an Expo managed
+# project, so its Android directory is generated only on Codemagic and is not
+# committed.  The workflow deliberately has no publishing section: it creates
+# a downloadable, signed APK and does not submit anything to Google Play.
+workflows:
+  dome_android_release_apk:
+    name: DOME Android release APK
+    working_directory: DOME_MOBILE_77
+    max_build_duration: 120
+
+    environment:
+      # Expo SDK 57 / React Native 0.86 require a modern Node 22 runtime.
+      node: 22.13.1
+      java: 17
+      # The key is uploaded in Codemagic UI under Team settings ->
+      # codemagic.yaml settings -> Code signing identities -> Android
+      # keystores.  It must be the stable DOME release key, never a file in
+      # this repository.
+      android_signing:
+        - dome_android_release
+      vars:
+        # Public at runtime by design: this is the production API host, not a
+        # credential.  No localhost or Metro endpoint is supplied to releases.
+        EXPO_PUBLIC_DOME_API_BASE_URL: "https://dome-telegram-bot-production-e6f6.up.railway.app"
+        EXPO_PUBLIC_BUILD_COMMIT: "codemagic-release-apk"
+        EXPO_PUBLIC_BUILD_TIMESTAMP: "codemagic-ci"
+
+    cache:
+      cache_paths:
+        - $HOME/.npm
+        - $HOME/.gradle/caches
+        - $HOME/.gradle/wrapper
+
+    scripts:
+      - name: Install locked JavaScript dependencies
+        script: npm ci
+
+      - name: Run DOME mobile checks
+        script: |
+          npm run check
+          npm run test:runtime
+          npm run validate-lessons
+
+      - name: Generate the Android project from the Expo configuration
+        script: |
+          # Android is generated in the ephemeral CI checkout only.  It is
+          # neither committed nor copied back to the working tree.
+          npx expo prebuild --platform android --clean --no-install
+          printf 'sdk.dir=%s\n' "$ANDROID_SDK_ROOT" > android/local.properties
+
+      - name: Wire the protected Codemagic release keystore
+        script: |
+          : "${CM_KEYSTORE_PATH:?Codemagic Android keystore is missing}"
+          : "${CM_KEYSTORE_PASSWORD:?Codemagic keystore password is missing}"
+          : "${CM_KEY_ALIAS:?Codemagic key alias is missing}"
+          : "${CM_KEY_PASSWORD:?Codemagic key password is missing}"
+          test -f "$CM_KEYSTORE_PATH"
+          node scripts/codemagic-wire-android-signing.mjs
+
+      - name: Build one signed universal release APK
+        script: |
+          cd android
+          ./gradlew --no-daemon :app:assembleRelease
+
+      - name: Verify the release APK and fail closed on unsafe output
+        script: |
+          APK="android/app/build/outputs/apk/release/app-release.apk"
+          test -s "$APK"
+          BUILD_TOOLS="$(find "$ANDROID_SDK_ROOT/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
+          test -x "$BUILD_TOOLS/apksigner"
+          test -x "$BUILD_TOOLS/aapt"
+          "$BUILD_TOOLS/apksigner" verify --verbose --print-certs "$APK"
+          "$BUILD_TOOLS/aapt" dump badging "$APK"
+          "$BUILD_TOOLS/aapt" dump permissions "$APK"
+          MANIFEST="$($BUILD_TOOLS/aapt dump xmltree "$APK" AndroidManifest.xml)"
+          ! grep -Eq 'android:debuggable[^\n]*0xffffffff|android:testOnly[^\n]*0xffffffff' <<< "$MANIFEST"
+          ! unzip -l "$APK" | grep -Eqi 'expo-dev-(client|launcher|menu)'
+          "$BUILD_TOOLS/aapt" dump badging "$APK" | grep -Fq "package: name='com.bilingvadom.dome.mobile' versionCode='30102' versionName='3.1.2'"
+          "$BUILD_TOOLS/aapt" dump badging "$APK" | grep -Fq "native-code: 'arm64-v8a'"
+
+    artifacts:
+      - DOME_MOBILE_77/android/app/build/outputs/apk/release/app-release.apk
