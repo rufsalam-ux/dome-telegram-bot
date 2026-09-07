@@ -21,7 +21,7 @@ DEFAULT_TARIFFS = [
         "lessons_per_month": 4,
         "lessons_per_year": 48,
         "monthly_price": 39.0,
-        "annual_price": 399.0,
+        "annual_price": 429.0,
         "currency": "EUR",
         "active": True,
         "visible": True,
@@ -36,7 +36,7 @@ DEFAULT_TARIFFS = [
         "lessons_per_month": 8,
         "lessons_per_year": 96,
         "monthly_price": 69.0,
-        "annual_price": 699.0,
+        "annual_price": 759.0,
         "currency": "EUR",
         "active": True,
         "visible": True,
@@ -51,7 +51,7 @@ DEFAULT_TARIFFS = [
         "lessons_per_month": 12,
         "lessons_per_year": 144,
         "monthly_price": 99.0,
-        "annual_price": 999.0,
+        "annual_price": 1089.0,
         "currency": "EUR",
         "active": True,
         "visible": True,
@@ -65,8 +65,8 @@ DEFAULT_TARIFFS = [
         "lessons_per_week": 4,
         "lessons_per_month": 16,
         "lessons_per_year": 192,
-        "monthly_price": 129.0,
-        "annual_price": 1299.0,
+        "monthly_price": 139.0,
+        "annual_price": 1536.0,
         "currency": "EUR",
         "active": True,
         "visible": True,
@@ -83,14 +83,8 @@ async def seed_default_tariffs(db: AsyncSession) -> None:
         if not existing:
             plan = TariffPlan(**item)
             db.add(plan)
-        else:
-            # Keep prices synchronized if default
-            if existing.annual_price != item["annual_price"]:
-                existing.annual_price = item["annual_price"]
-            if existing.monthly_price != item["monthly_price"]:
-                existing.monthly_price = item["monthly_price"]
-            if existing.name != item["name"]:
-                existing.name = item["name"]
+        # Existing rows are owner-managed configuration.  Never overwrite an
+        # administrator's name/price after a restart or listing call.
     await db.commit()
 
 
@@ -158,10 +152,46 @@ async def update_tariff(db: AsyncSession, plan_id: str, data: dict[str, Any]) ->
         plan.name = str(data["name"]).strip()
     if "description" in data:
         plan.description = str(data["description"]).strip() or None
+    if "lessons_per_month" in data:
+        monthly = max(1, int(data["lessons_per_month"]))
+        if monthly % 4:
+            raise ValueError("Количество уроков в месяц должно быть кратно 4 (4, 8, 12 или 16).")
+        # Versioned subscription identities are weekly1..weekly4.  Changing a
+        # plan's frequency into another plan's identity would merge two price
+        # histories, so reject that unsafe operation instead of corrupting
+        # existing subscription snapshots.
+        expected_weekly = int(str(plan.plan_id).removeprefix("weekly") or plan.lessons_per_week)
+        if monthly // 4 != expected_weekly:
+            raise ValueError("Этот тариф закреплён за своей частотой. Для новой частоты создайте отдельный тарифный план, не меняя существующий.")
+        plan.lessons_per_month = monthly
+        plan.lessons_per_week = monthly // 4
+        plan.lessons_per_year = monthly * 12
+
+    # The database row is the current catalog mirror.  Subscription charging
+    # uses immutable pricing versions; a price edit must create a new version
+    # for new subscriptions rather than alter a subscriber's snapshot.
     if "monthly_price" in data:
-        plan.monthly_price = float(data["monthly_price"])
+        from app.services.pricing_versions import MONTH, set_plan_price
+        requested = float(data["monthly_price"])
+        if abs(plan.monthly_price - requested) > 0.0001:
+            plan.monthly_price = requested
+            set_plan_price(
+                lessons_per_week=int(plan.lessons_per_week),
+                billing_period=MONTH,
+                price=plan.monthly_price,
+                created_by="content-studio",
+            )
     if "annual_price" in data:
-        plan.annual_price = float(data["annual_price"])
+        from app.services.pricing_versions import YEAR, set_plan_price
+        requested = float(data["annual_price"])
+        if abs(plan.annual_price - requested) > 0.0001:
+            plan.annual_price = requested
+            set_plan_price(
+                lessons_per_week=int(plan.lessons_per_week),
+                billing_period=YEAR,
+                price=plan.annual_price,
+                created_by="content-studio",
+            )
     if "currency" in data:
         plan.currency = str(data["currency"]).strip().upper()
     if "active" in data:

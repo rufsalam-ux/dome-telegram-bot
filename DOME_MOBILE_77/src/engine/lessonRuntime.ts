@@ -207,6 +207,7 @@ export function recordingGate(previous:RecordingGateState,durationMillis:number,
 }
 
 export function isRequiredForMovie(slide:any):boolean{
+  if(slide?.interactive_task==='suitcase')return true;
   if(slide?.voice_after_action_optional===true)return false;
   return slide?.requiredForMovie===true||slide?.required_for_movie===true||Boolean(slide?.required_phrase_id&&slide?.allow_skip===false);
 }

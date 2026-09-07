@@ -320,8 +320,8 @@ export function confirmPasswordReset(email:string,code:string,password:string){
 
 export function bootstrap(){return request('/api/mobile/bootstrap')}
 
-export function createChild(name:string,ageYears:number,targetLanguage:string,nativeLanguage:string){
-  return request('/api/mobile/children',jsonInit('POST',{name,age_years:ageYears,target_language:targetLanguage,native_language:nativeLanguage}));
+export function createChild(name:string,ageYears:number,targetLanguage:string,nativeLanguage:string,gender='boy'){
+  return request('/api/mobile/children',jsonInit('POST',{name,age_years:ageYears,target_language:targetLanguage,native_language:nativeLanguage,gender}));
 }
 
 export function getLesson(id='demo_001'){return request(`/api/mobile/lesson/${encodeURIComponent(id)}`)}

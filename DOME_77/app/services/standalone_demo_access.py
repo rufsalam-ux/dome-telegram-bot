@@ -43,27 +43,34 @@ async def ensure_free_demo_entitlement(
     registration, login, retries, or a later deployment.
     """
     parent = await db.get(Parent, int(parent_id))
+    from app.services.qa_access import is_owner_parent
+    is_owner = is_owner_parent(parent)
     if (
         parent is None
-        or not bool(parent.email_verified)
+        or (not is_owner and not bool(parent.email_verified))
         or not str(parent.email or "").strip()
-        or not str(parent.password_hash or "").strip()
     ):
         return None, False
 
-    first_child = await db.scalar(
-        select(Child)
-        .where(Child.parent_id == parent.id)
-        .order_by(Child.id.asc())
-        .limit(1)
-    )
-    if first_child is None or (child_id is not None and first_child.id != int(child_id)):
+    target_child = None
+    if child_id is not None:
+        target_child = await db.get(Child, int(child_id))
+        if target_child is not None and target_child.parent_id != parent.id:
+            return None, False
+    if target_child is None:
+        target_child = await db.scalar(
+            select(Child)
+            .where(Child.parent_id == parent.id)
+            .order_by(Child.id.asc())
+            .limit(1)
+        )
+    if target_child is None:
         return None, False
 
     course_id, access_months, max_completed_runs = _demo_rules()
     existing = await db.scalar(
         select(LessonEntitlement).where(
-            LessonEntitlement.child_id == first_child.id,
+            LessonEntitlement.child_id == target_child.id,
             LessonEntitlement.lesson_id == FREE_DEMO_LESSON_ID,
             LessonEntitlement.course_id == course_id,
         )
@@ -73,7 +80,7 @@ async def ensure_free_demo_entitlement(
 
     unlocked_at = now or _utcnow()
     entitlement = LessonEntitlement(
-        child_id=first_child.id,
+        child_id=target_child.id,
         lesson_id=FREE_DEMO_LESSON_ID,
         course_id=course_id,
         unlocked_at=unlocked_at,
@@ -104,9 +111,12 @@ async def backfill_free_demo_entitlements(*, now: datetime | None = None) -> int
         ).all()
         created = 0
         for parent_id in parent_ids:
-            _, was_created = await ensure_free_demo_entitlement(
-                db, parent_id=int(parent_id), now=now
-            )
-            created += int(was_created)
+            child_ids = (await db.scalars(select(Child.id).where(Child.parent_id == int(parent_id)))).all()
+            for cid in child_ids:
+                _, was_created = await ensure_free_demo_entitlement(
+                    db, parent_id=int(parent_id), child_id=int(cid), now=now
+                )
+                created += int(was_created)
         await db.commit()
         return created
+

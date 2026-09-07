@@ -223,7 +223,7 @@ def _character_json(character:Character|None)->dict|None:
     return {**payload,'analysisStatus':character.visual_analysis_status,'analysisVersion':character.visual_analysis_version or payload.get('analysisVersion')}
 
 def _child_json(request:web.Request,c:Child,character:Character|None=None)->dict:
-    return {'id':c.id,'name':c.display_name,'age_years':c.age_years,'native_language':c.native_language,'target_language':c.target_language,'language_level':c.language_level,'working_difficulty':c.working_difficulty,'country':c.country,'active_character_id':c.active_character_id,'hero_url':_hero_url(request,c),'hero_metadata':_character_json(character)}
+    return {'id':c.id,'name':c.display_name,'age_years':c.age_years,'native_language':c.native_language,'target_language':c.target_language,'language_level':c.language_level,'working_difficulty':c.working_difficulty,'country':c.country,'gender':c.gender or 'boy','active_character_id':c.active_character_id,'hero_url':_hero_url(request,c),'hero_metadata':_character_json(character)}
 
 async def _ensure_character_geometry(character:Character)->dict:
     payload=geometry_from_json(character.visual_metadata_json)
@@ -411,7 +411,7 @@ async def create_child(request:web.Request)->web.Response:
     async with SessionLocal() as db:
         count=await db.scalar(select(func.count(Child.id)).where(Child.parent_id==p.id))
         if int(count or 0)>=5:raise web.HTTPConflict(text=json.dumps({'error':'Можно добавить не более 5 детей'}),content_type='application/json')
-        child=Child(parent_id=p.id,display_name=name,age_years=age,target_language=target,native_language=native)
+        child=Child(parent_id=p.id,display_name=name,age_years=age,target_language=target,native_language=native,gender=str(data.get('gender') or 'boy').lower()[:16])
         db.add(child);await db.flush()
         await ensure_free_demo_entitlement(db,parent_id=p.id,child_id=child.id)
         await db.commit();await db.refresh(child)
@@ -1426,10 +1426,13 @@ async def _voice_impl(request:web.Request)->web.Response:
     log.info('MOBILE_VOICE_CONTEXT session=%s slide=%s task=%s visible=%s selected=%s removed=%s policy=%s',sid,slide_id,runtime_context.get('task_type'),[item.get('id') for item in runtime_context.get('visible_items') or []],[item.get('id') for item in runtime_context.get('selected_items') or []],[item.get('id') for item in runtime_context.get('removed_items') or []],runtime_context.get('selection_policy'))
     required_movie_phrase=required_movie_slide and storage_phrase_id==str(sl.get('required_phrase_id') or storage_phrase_id)
     if activity.has_speech:
+        try:current_runtime=json.loads(sess.runtime_state_json or '{}')
+        except (TypeError,ValueError,json.JSONDecodeError):current_runtime={}
+        dialogue_hist=current_runtime.get('dialogue_history') or []
         assessment=await assess_speech(
             wav,c.target_language or 'ru',c.native_language or 'ru',goal,
             accepted_meaning,attempt_number,
-            c.display_name,c.working_difficulty,c.language_level or 'PRE_A1',
+            c.display_name,c.gender or 'boy',c.working_difficulty,c.language_level or 'PRE_A1',
             allow_follow_up=(bool(sl.get('allow_ai_followup')) and not bool(sl.get('suppress_ai_followup'))) or context_follow_up,
             max_follow_ups=max(1 if context_follow_up else 0,int(sl.get('max_ai_followups') or 0)),
             follow_up_count=conversation_turn,
@@ -1442,6 +1445,7 @@ async def _voice_impl(request:web.Request)->web.Response:
             scaffold_stage='independent_attempt' if attempt_number<=1 else ('semantic_hint' if attempt_number==2 else 'model_support'),
             open_question_first=sl.get('open_question_first') is not False,
             examples_allowed=sl.get('examples_allowed') is not False,
+            dialogue_history=dialogue_hist,
         )
     else:
         assessment=SpeechAssessment(status='NO_SPEECH')
@@ -1541,6 +1545,12 @@ async def _voice_impl(request:web.Request)->web.Response:
             try:runtime=json.loads(sess.runtime_state_json or '{}')
             except (TypeError,ValueError,json.JSONDecodeError):runtime={}
             runtime['adaptive_profile']={'working_difficulty':working_difficulty,'language_level':language_level,'proficiency_band':proficiency_band(working_difficulty),'answers_count':int(db_child.answers_count or 0)}
+            hist=runtime.get('dialogue_history') or []
+            if assessment.transcript:
+                hist.append({'role':'child','text':assessment.transcript,'slide_id':slide_id})
+            if target_response:
+                hist.append({'role':'tutor','text':target_response,'slide_id':slide_id})
+            runtime['dialogue_history']=hist[-6:]
             db_session=await db.get(LessonSession,sid);db_session.runtime_state_json=json.dumps(runtime,ensure_ascii=False)
             response_payload={'status':status,'feedback_state':feedback_state,'accepted':accepted,'movie_take_accepted':movie_take_accepted,'retake':retake_mode,'retake_replaced':retake_mode and (accepted or movie_take_accepted),'advance_allowed':outcome.advance_allowed,'needs_retry':outcome.needs_retry,'attempt_number':attempt_number,'max_attempts':max_attempts,'transcript':assessment.transcript,'task_goal':goal,'task_goal_source':'active_follow_up' if conversation_turn else 'authored_lesson','accepted_intents':accepted_meaning,'target_meaning':sl.get('target_meaning') or authored_goal,'model_examples':sl.get('model_examples') or [simple_example],'target_response':target_response,'helper_translation':helper_translation,'follow_up_question':follow_up_question,'follow_up_translation':follow_up_translation,'model_phrase':model_phrase,'model_translation':model_translation,'child_phrase_target':assessment.transcript if accepted else '','child_phrase_translation':child_phrase_translation,'feedback':feedback,'feedback_source_language':c.native_language or 'ru','correction_target':correction_target if not accepted else '','correction_source_language':c.target_language or 'ru','response_target':assessment.response_target,'response_native':tutor_turn.reaction_native if tutor_turn else '','semantic_match':assessment.semantic_match,'semantic_response':{'task_type':runtime_context.get('task_type'),'selection_policy':runtime_context.get('selection_policy'),'selected_item_ids':[item.get('id') for item in runtime_context.get('selected_items') or []],'reaction_target':target_response,'reaction_native':helper_translation,'follow_up_target':follow_up_question,'follow_up_native':follow_up_translation},'runtime_context':runtime_context,'tutor_turn':tutor_turn.payload() if tutor_turn else None,'voice_activity':{'reason':activity.reason,'duration_seconds':activity.duration_seconds,'speech_seconds':activity.speech_seconds,'speech_ratio':activity.speech_ratio,'mean_volume_db':activity.mean_volume_db,'max_volume_db':activity.max_volume_db},'adaptive_profile':{'working_difficulty':working_difficulty,'language_level':language_level,'support':complexity_support(working_difficulty)},'client_recording_id':recording_id or None,'audio_size_bytes':upload_size,'audio_mime_type':audio_mime_type,'idempotent_replay':False}
             va.response_json=json.dumps(response_payload,ensure_ascii=False)
@@ -1589,7 +1599,9 @@ async def update_child_language(request:web.Request)->web.Response:
     p=await _parent(request);cid=int(request.match_info['child_id']);await _owned_child(p.id,cid);data=await request.json();target=str(data.get('target_language') or '').strip().lower();native=str(data.get('native_language') or '').strip().lower();supported={'ru','en','es','de','fr','it','pt','tr','ar','zh'}
     if target not in supported or native not in supported:raise web.HTTPBadRequest(text=json.dumps({'error':'Unsupported language'}),content_type='application/json')
     async with SessionLocal() as db:
-        c=await db.get(Child,cid);c.target_language=target;c.native_language=native;await db.commit();await db.refresh(c);character=await db.get(Character,c.active_character_id) if c.active_character_id else None
+        c=await db.get(Child,cid);c.target_language=target;c.native_language=native
+        if data.get('gender'):c.gender=str(data.get('gender')).lower()[:16]
+        await db.commit();await db.refresh(c);character=await db.get(Character,c.active_character_id) if c.active_character_id else None
         if character:await _ensure_character_geometry(character);await db.commit()
     return web.json_response(_child_json(request,c,character))
 
@@ -1970,9 +1982,10 @@ async def verify_email(request:web.Request)->web.Response:
             raise web.HTTPBadRequest(text=json.dumps({'error':'Неверный код подтверждения'}),content_type='application/json')
         parent.email_verified=True;parent.email_verification_code_hash=None;parent.email_verification_expires_at=None
         children=(await db.scalars(select(Child).where(Child.parent_id==parent.id).order_by(Child.id))).all()
-        if children:await ensure_free_demo_entitlement(db,parent_id=parent.id,child_id=children[0].id)
+        for ch in children:
+            await ensure_free_demo_entitlement(db,parent_id=parent.id,child_id=ch.id)
         await db.commit();token=issue_session_token(parent.id);children_payload=await _children_json(request,db,list(children))
-        return web.json_response({'token':token,'parent':{'id':parent.id,'name':parent.display_name,'email':parent.email,'email_verified':True,'phone':parent.phone},'children':children_payload})
+        return web.json_response({'token':token,'parent':{'id':parent.id,'name':parent.display_name,'email':parent.email,'email_verified':True,'phone':parent.phone,'is_owner':is_owner_parent(parent)},'children':children_payload})
 
 
 async def resend_verification(request:web.Request)->web.Response:
@@ -1998,8 +2011,12 @@ async def login(request:web.Request)->web.Response:
             raise web.HTTPUnauthorized(text=json.dumps({'error':'Неверный email или пароль'}),content_type='application/json')
         if not bool(parent.email_verified):
             raise web.HTTPForbidden(text=json.dumps({'error':'Сначала подтвердите email','code':'EMAIL_NOT_VERIFIED','verification_required':True,'email':email}),content_type='application/json')
-        children=(await db.scalars(select(Child).where(Child.parent_id==parent.id).order_by(Child.id))).all();token=issue_session_token(parent.id);children_payload=await _children_json(request,db,list(children))
-        return web.json_response({'token':token,'parent':{'id':parent.id,'name':parent.display_name,'email':parent.email,'email_verified':True,'phone':parent.phone},'children':children_payload})
+        children=(await db.scalars(select(Child).where(Child.parent_id==parent.id).order_by(Child.id))).all()
+        for ch in children:
+            await ensure_free_demo_entitlement(db,parent_id=parent.id,child_id=ch.id)
+        await db.commit()
+        token=issue_session_token(parent.id);children_payload=await _children_json(request,db,list(children))
+        return web.json_response({'token':token,'parent':{'id':parent.id,'name':parent.display_name,'email':parent.email,'email_verified':True,'phone':parent.phone,'is_owner':is_owner_parent(parent)},'children':children_payload})
 
 
 async def request_password_reset(request:web.Request)->web.Response:

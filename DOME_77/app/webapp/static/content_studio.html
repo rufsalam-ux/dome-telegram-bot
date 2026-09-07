@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>DOME Admin Panel & CMS</title>
   <link rel="stylesheet" href="/content-studio/admin_panel.css">
+  <!-- Maps the preserved Antigravity visual language onto the current CMS DOM. -->
+  <link rel="stylesheet" href="/content-studio/content_studio_antigravity_bridge.css">
 </head>
 <body>
 
@@ -109,6 +111,16 @@
               </div>
             </div>
             <div id="steps" class="steps"></div>
+            <section class="card" style="margin-top:16px">
+              <div class="sequence-head">
+                <div><h2>Медиатека урока</h2><p class="muted">Файлы остаются в уроке после обновления страницы. Выберите файл в шаге или вставьте его новым шагом.</p></div>
+                <div class="toolbar">
+                  <input id="mediaSearch" type="search" placeholder="Поиск файла">
+                  <select id="mediaFilter"><option value="">Все типы</option><option value="image">Изображения</option><option value="video">Видео</option><option value="audio">Аудио</option></select>
+                </div>
+              </div>
+              <div id="mediaLibrary" class="steps"></div>
+            </section>
           </div>
 
           <!-- PANE 2: HOMEWORK BUILDER -->
@@ -203,6 +215,12 @@
         <div class="users-toolbar" style="flex-wrap:wrap;gap:8px">
           <h2 style="margin:0">&#x1F465; Клиенты</h2>
           <div class="toolbar" style="flex-wrap:wrap;gap:6px">
+            <label title="Определяет статус новых пользователей после подтверждения email" style="font-size:12px;color:#cbd5e1">Новые пользователи
+              <select id="newUserAccessMode" aria-label="Режим доступа новых пользователей">
+                <option value="AUTOMATIC">Автоматический доступ</option>
+                <option value="MANUAL">Ручное одобрение</option>
+              </select>
+            </label>
             <input id="clientSearch" type="search" placeholder="Имя, email, телефон..." style="min-width:200px">
             <select id="clientPlanFilter">
               <option value="">Все тарифы</option>
@@ -219,6 +237,8 @@
             <select id="clientStatusFilter">
               <option value="">Все статусы</option>
               <option value="ACTIVE">ACTIVE</option>
+              <option value="PENDING_APPROVAL">PENDING_APPROVAL</option>
+              <option value="BLOCKED">BLOCKED</option>
               <option value="TRIAL">TRIAL</option>
               <option value="REGISTERED">REGISTERED</option>
               <option value="EMAIL_NOT_VERIFIED">EMAIL_NOT_VERIFIED</option>
@@ -247,6 +267,7 @@
                 <th style="padding:8px">✓</th>
                 <th style="padding:8px">Страна</th>
                 <th style="padding:8px">Дата рег.</th>
+                <th style="padding:8px">Активность</th>
                 <th style="padding:8px">Дети</th>
                 <th style="padding:8px">Тариф</th>
                 <th style="padding:8px">Период</th>
@@ -257,7 +278,7 @@
               </tr>
             </thead>
             <tbody id="clientTableBody">
-              <tr><td colspan="13" style="padding:20px;text-align:center;color:#666">Загрузка...</td></tr>
+              <tr><td colspan="14" style="padding:20px;text-align:center;color:#666">Загрузка...</td></tr>
             </tbody>
           </table>
         </div>
@@ -339,6 +360,30 @@
     </div>
   </div>
 
+  <!-- DIALOG: PROMO CODE (CREATE / EDIT) -->
+  <dialog id="promoDialog">
+    <form id="promoForm" method="dialog" class="dialog-card">
+      <header><h2 id="promoDialogTitle">Новый промокод</h2><button type="button" class="cancel-btn icon">&times;</button></header>
+      <input id="promoIdInput" type="hidden">
+      <div class="two">
+        <label>Код<input id="promoCodeInput" required placeholder="WELCOME20" autocomplete="off"></label>
+        <label>Тип выгоды<select id="promoBenefitTypeSelect"><option value="PERCENTAGE">Скидка %</option><option value="FIXED_AMOUNT">Фиксированная скидка</option><option value="SPECIAL_PRICE">Специальная цена</option><option value="FREE_PERIOD_DAYS">Бесплатные дни</option><option value="EXTRA_LESSONS">Дополнительные уроки</option><option value="EXTRA_COURSE">Дополнительный курс</option><option value="TRIAL_OFFER">Пробный период</option><option value="N_PERIODS_DISCOUNT">Скидка на N периодов</option><option value="PERMANENT_SPECIAL_PRICE">Постоянная специальная цена</option></select></label>
+      </div>
+      <div class="two">
+        <label>Значение<input id="promoBenefitValueInput" type="number" min="0" step="0.01" required></label>
+        <label>Валюта<select id="promoCurrencySelect"><option value="EUR">EUR</option><option value="USD">USD</option></select></label>
+      </div>
+      <label id="promoDurationRow">Количество периодов<input id="promoDurationPeriodsInput" type="number" min="1"></label>
+      <label>Описание<textarea id="promoDescriptionInput" rows="2" placeholder="Кому и зачем предназначен промокод"></textarea></label>
+      <div class="two"><label>Начало действия<input id="promoValidFromInput" type="datetime-local"></label><label>Окончание действия<input id="promoValidUntilInput" type="datetime-local"></label></div>
+      <div class="two"><label>Максимум использований<input id="promoMaxUsesInput" type="number" min="1"></label><label>Максимум на пользователя<input id="promoMaxUsesPerUserInput" type="number" min="1" value="1"></label></div>
+      <label>Разрешённые тарифы (через запятую, необязательно)<input id="promoAllowedPlansInput" placeholder="weekly1, weekly2"></label>
+      <label>Разрешённые курсы (через запятую, необязательно)<input id="promoAllowedCoursesInput" placeholder="conversation"></label>
+      <div class="two"><label class="check"><input id="promoNewUsersOnlyCheck" type="checkbox"> Только для новых пользователей</label><label class="check"><input id="promoActiveCheck" type="checkbox" checked> Активен</label></div>
+      <footer><button type="button" class="cancel-btn">Отмена</button><button id="savePromoBtn" value="default" class="primary">Сохранить промокод</button></footer>
+    </form>
+  </dialog>
+
   <!-- DIALOG: COURSE (CREATE / EDIT) -->
   <dialog id="courseDialog">
     <form method="dialog" class="dialog-card">
@@ -346,6 +391,8 @@
       <div>
         <label>Название курса<input id="courseTitleInput" required placeholder="Читайка"></label>
         <label>Описание курса<textarea id="courseDescInput" rows="2" placeholder="Обучение чтению и буквам"></textarea></label>
+        <label>Обложка курса (PNG, JPG или WebP)<input id="courseCoverFile" type="file" accept="image/png,image/jpeg,image/webp"></label>
+        <div id="courseCoverPreview" class="muted" style="font-size:12px">Обложка не выбрана</div>
         <details style="margin: 8px 0; font-size: 13px;">
           <summary style="cursor: pointer; color: #246BFD;">Дополнительно (ID курса)</summary>
           <div style="margin-top: 6px;">
@@ -406,7 +453,7 @@
           </div>
         </details>
         <div class="two">
-          <label>Изучаемый язык<input id="newLessonTargetLanguage" value="en"></label>
+          <label>Изучаемый язык<input id="newLessonTargetLanguage" value="ru"></label>
           <label>Язык объяснения<input id="newLessonExplanationLanguage" value="ru"></label>
         </div>
       </div>
@@ -497,9 +544,10 @@
       </div>
       <div class="step-body">
         <div class="step-grid">
-          <div class="media-column">
+            <div class="media-column">
             <div class="media-preview"></div>
             <label class="file-button">Загрузить / заменить<input class="replace-media" type="file"></label>
+            <label class="existing-media-row">Или выбрать из медиатеки<select class="existing-media"><option value="">— нет файла —</option></select></label>
             <div class="media-path muted"></div>
           </div>
           <div class="fields-column">

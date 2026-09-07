@@ -216,7 +216,9 @@ async def _evaluate_with_chat(prompt: dict) -> dict | None:
         "When runtime_context.visible_items is present, referenced_item_ids must list every visible item ID referred to in your response. "
         "Never mention, request, recommend, correct toward, or invent an item absent from runtime_context.visible_items. "
         "When selection_policy is child_choice, the child's selected_items are valid by definition: there is no hidden correct set. "
-        "If the child answers in native_language, preserve the child's exact idea and selected nouns when helping express it in target_language. "
+        "If the child answers in native_language when target_language was required, set decision=WRONG_LANGUAGE, set reaction_target='', and provide a warm, encouraging hint in response_native/native_hint asking the child to repeat in target_language. Do not mark as CORRECT when spoken in native_language or wrong language. "
+        "child_gender indicates if the child is a boy or girl. Use grammatically appropriate forms in target and native languages (e.g. in Russian: молодец/умница, past tense verbs like сказал/сказала, выбрал/выбрала). "
+        "dialogue_history contains recent turns of conversation in this lesson. Maintain conversational continuity and do not repeat previous questions. "
         "response_native/native_hint are brief and only needed for wrong-language, off-topic, confused, or explicitly requested progressive help. "
         "emotion must be one of warm, happy, curious, surprised, encouraging, gentle_correction. "
         "When runtime_context.visual_metadata is present it describes the REAL visible object in the image. "
@@ -260,6 +262,7 @@ async def assess_speech(
     accepted_meaning: list[str] | None,
     attempt_number: int,
     child_name: str = "",
+    child_gender: str = "boy",
     working_difficulty: float = 0.15,
     language_level: str = "PRE_A1",
     allow_follow_up: bool = False,
@@ -274,6 +277,7 @@ async def assess_speech(
     scaffold_stage: str = "independent_attempt",
     open_question_first: bool = True,
     examples_allowed: bool = True,
+    dialogue_history: list[dict] | None = None,
 ) -> SpeechAssessment:
     transcript, detected, confidence = await transcribe_audio(wav_path, target_language, native_language, goal)
     if is_non_speech_transcript(transcript) or confidence < 0.35:
@@ -288,14 +292,17 @@ async def assess_speech(
         )
 
     if not settings.openai_api_key:
+        # Do not emit an English sentence when the active target language is
+        # something else. The caller can complete this accepted best effort
+        # without a tutor utterance until the optional AI service is available.
         return SpeechAssessment(
             transcript=transcript,
             detected_language=detected,
             confidence=confidence,
             semantic_match=0.5,
             status="ACCEPTED_BEST_ATTEMPT",
-            response_target="Let's continue.",
-            tutor_turn=TutorTurn(reaction_target="Let's continue.", complete=True, reason="offline_fallback"),
+            response_target="",
+            tutor_turn=TutorTurn(complete=True, reason="offline_fallback"),
         )
 
     follow_up_candidate, bounded_follow_ups, follow_up_reason = adaptive_follow_up_policy(
@@ -327,6 +334,8 @@ async def assess_speech(
         "accepted_meaning": accepted_meaning or [],
         "attempt_number": attempt_number,
         "child_name": child_name,
+        "child_gender": child_gender or "boy",
+        "dialogue_history": (dialogue_history or [])[-6:],
         "working_difficulty_0_to_1": max(0.0, min(1.0, float(working_difficulty or 0.15))),
         "profile_language_level": language_level or "PRE_A1",
         "dialogue_policy": {

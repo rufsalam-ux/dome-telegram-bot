@@ -30,6 +30,12 @@ class Parent(Base):
     # Explicit server-side account classification. Standalone lesson access
     # never infers QA privileges from a Telegram id, email, or display name.
     account_role: Mapped[str] = mapped_column(String(30), default="STANDARD", index=True)
+    # Access administration is deliberately separate from subscriptions and
+    # entitlements: blocking must never delete a family's learning data.
+    account_status: Mapped[str] = mapped_column(String(30), default="ACTIVE", index=True)
+    access_status_changed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    access_status_changed_by: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    last_active_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     children: Mapped[list["Child"]] = relationship(back_populates="parent")
 

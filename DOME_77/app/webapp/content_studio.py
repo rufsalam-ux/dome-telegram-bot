@@ -246,6 +246,9 @@ def _summary(lesson_id: str) -> dict[str, Any]:
         "order": int(current.get("order") or 9999),
         "draft": draft is not None,
         "published": live is not None and lifecycle == "PUBLISHED" and bool(live.get("active", True)),
+        # status is retained for the active admin_panel.js and external CMS
+        # consumers; publication_status remains the explicit lifecycle label.
+        "status": lifecycle.lower(),
         "publication_status": lifecycle,
         "source": "persistent" if persistent_live.exists() or draft is not None else "bundled",
         "slide_count": len(current.get("steps") or current.get("slides") or []),
@@ -266,6 +269,7 @@ async def studio_static(request: web.Request) -> web.FileResponse:
     _ALLOWED_STATIC = {
         "content_studio.css",
         "content_studio_extensions.css",
+        "content_studio_antigravity_bridge.css",
         "content_studio.js",
         "admin_panel.js",
         "admin_panel.css",
@@ -313,7 +317,10 @@ async def create_lesson(request: web.Request) -> web.Response:
         "import_status": "DRAFT",
         "max_completed_runs": 2,
         "expires_after_months": 10,
-        "target_language": str(data.get("target_language") or "en"),
+        # Current standalone DOME lessons are authored for Russian as the
+        # studied language.  The explanation language remains a runtime child
+        # profile setting; it is deliberately not a second copy of the lesson.
+        "target_language": str(data.get("target_language") or "ru"),
         "explanation_language": str(data.get("explanation_language") or "ru"),
         "age_min": max(2, int(data.get("age_min") or 4)),
         "age_max": max(2, int(data.get("age_max") or 10)),
@@ -323,12 +330,16 @@ async def create_lesson(request: web.Request) -> web.Response:
         "revision": 1,
     }
     _atomic_json(_draft_path(lesson_id), lesson)
-    # Register lesson into course catalog (keeps lesson_ids in sync)
+    # Register a new draft in its course catalog.  The import used here used
+    # to point at a non-existent compatibility name, so the exception was
+    # swallowed and the hierarchy silently became inconsistent.
     try:
-        from app.services.course_catalog import catalog_add_lesson
-        catalog_add_lesson(lesson["course_id"], lesson_id)
+        _catalog_add_lesson(lesson["course_id"], lesson_id)
     except Exception:
-        pass  # Non-fatal; lesson is still discoverable via filesystem scan
+        # A missing course must not discard a newly authored draft.  It is
+        # surfaced in the Studio hierarchy as unassigned until the owner moves
+        # it to an existing course.
+        pass
     _audit("LESSON_CREATED", lesson_id)
     return web.json_response({"lesson": lesson, "summary": _summary(lesson_id)}, status=201)
 
@@ -434,6 +445,10 @@ async def duplicate_lesson(request: web.Request) -> web.Response:
     duplicate = json.loads(json.dumps(source))
     duplicate.update({"lesson_id": target_id, "title": str(data.get("title") or f'{source.get("title", source_id)} — копия'), "active": False, "status": "draft", "import_status": "DRAFT", "revision": 1})
     _atomic_json(_draft_path(target_id), duplicate)
+    try:
+        _catalog_add_lesson(str(duplicate.get("course_id") or "conversation"), target_id)
+    except Exception:
+        pass
     _audit("LESSON_DUPLICATED", target_id, source_lesson_id=source_id)
     return web.json_response({"lesson": duplicate, "summary": _summary(target_id)}, status=201)
 
@@ -445,9 +460,44 @@ async def delete_lesson(request: web.Request) -> web.Response:
     expected = persistent_lessons_root().resolve()
     if expected not in root.parents or not root.exists():
         raise web.HTTPNotFound()
+    # Never hard-delete published/history-bearing content.  Children keep the
+    # immutable revision attached to their existing sessions; new children no
+    # longer see an archived lesson.  Only a disposable draft with no versions
+    # and no session history can be removed physically.
+    has_live_revision = (root / "lesson.json").is_file()
+    has_versions = (root / "_versions").exists() and any((root / "_versions").iterdir())
+    # A live/versioned lesson is already unconditionally archival; avoid a
+    # needless database dependency on this safe path.
+    has_history = False if (has_live_revision or has_versions) else await _lesson_has_session_history(lesson_id)
+    if has_live_revision or has_versions or has_history:
+        source = _editable_lesson(lesson_id)
+        if source is None:
+            raise web.HTTPNotFound()
+        archived = json.loads(json.dumps(source))
+        archived.update({
+            "lesson_id": lesson_id,
+            "engine": "content_v1",
+            "schema_version": str(archived.get("schema_version") or "2.1"),
+            "active": False,
+            "status": "archived",
+            "import_status": "ARCHIVED",
+            "revision": max(1, int(archived.get("revision") or 1)) + 1,
+        })
+        if has_live_revision:
+            backup_lesson_version(lesson_id, "before_safe_delete_archive")
+        _atomic_json(root / "lesson.json", archived)
+        _draft_path(lesson_id).unlink(missing_ok=True)
+        _audit("LESSON_SAFE_DELETE_ARCHIVED", lesson_id, has_live_revision=has_live_revision, has_versions=has_versions, has_history=has_history)
+        return web.json_response({"ok": True, "action": "archived", "reason": "Опубликованный урок или его история сохранены в архиве."})
+
+    draft = _read_json(_draft_path(lesson_id)) or {}
     shutil.rmtree(root)
-    _audit("LESSON_PERSISTENT_COPY_DELETED", lesson_id)
-    return web.json_response({"ok": True, "bundled_fallback": (bundled_lessons_root() / lesson_id / "lesson.json").exists()})
+    try:
+        _catalog_remove_lesson(str(draft.get("course_id") or "conversation"), lesson_id)
+    except Exception:
+        pass
+    _audit("LESSON_DISPOSABLE_DRAFT_DELETED", lesson_id)
+    return web.json_response({"ok": True, "action": "deleted", "bundled_fallback": (bundled_lessons_root() / lesson_id / "lesson.json").exists()})
 
 
 async def validate_lesson(request: web.Request) -> web.Response:
@@ -495,10 +545,27 @@ async def publish_lesson(request: web.Request) -> web.Response:
     if errors:
         raise web.HTTPUnprocessableEntity(text=json.dumps({"error": "Lesson validation failed", "errors": errors}, ensure_ascii=False), content_type="application/json")
     root = ensure_persistent_lesson(lesson_id)
+    # Read the currently live revision before replacing it.  This is needed to
+    # keep course membership aligned with the version children can actually
+    # start, rather than merely with an unsaved draft.
+    previous = _read_json(root / "lesson.json") or _read_json(_live_path(lesson_id)) or {}
     if (root / "lesson.json").exists():
         backup_lesson_version(lesson_id, "before_studio_publish")
     _atomic_json(root / "lesson.json", candidate)
     _draft_path(lesson_id).unlink(missing_ok=True)
+    # Course membership changes only when the new revision is published.  A
+    # draft move must never rewrite the course seen by an active child session.
+    previous_course_id = str(previous.get("course_id") or "").strip().lower()
+    candidate_course_id = str(candidate.get("course_id") or "conversation").strip().lower()
+    if previous_course_id and previous_course_id != candidate_course_id:
+        try:
+            _catalog_remove_lesson(previous_course_id, lesson_id)
+        except Exception:
+            pass
+    try:
+        _catalog_add_lesson(candidate_course_id, lesson_id)
+    except Exception:
+        pass
     _audit("LESSON_PUBLISHED", lesson_id, revision=candidate["revision"])
     return web.json_response({"lesson": candidate, "summary": _summary(lesson_id)})
 
@@ -822,17 +889,11 @@ async def admin_list_clients(request: web.Request) -> web.Response:
             promo_usages = list((await db.scalars(_select(_PromoUsage).where(_PromoUsage.parent_id == p.id))).all())
             latest_promo = promo_usages[0] if promo_usages else None
 
-            is_owner = str(p.account_role or "").upper() == "OWNER"
+            is_owner = _is_owner_parent(p)
             if is_owner:
                 status = "OWNER"
-            elif sub and sub.status in {"ACTIVE", "PAST_DUE", "CANCELLED", "TRIAL", "EXPIRED", "PAYMENT_FAILED"}:
-                status = sub.status
-            elif not p.email_verified:
-                status = "EMAIL_NOT_VERIFIED"
-            elif p.email_verified and not sub:
-                status = "VERIFIED"
             else:
-                status = str(sub.status if sub else p.onboarding_stage or "REGISTERED").upper()
+                status = _account_status(p)
 
             if status_filter and status != status_filter:
                 continue
@@ -877,7 +938,9 @@ async def admin_list_clients(request: web.Request) -> web.Response:
                 "account_role": p.account_role or "STANDARD",
                 "is_owner": is_owner,
                 "status": status,
+                "account_status": _account_status(p),
                 "registered_at": p.created_at.isoformat() if p.created_at else None,
+                "last_active_at": p.last_active_at.isoformat() if p.last_active_at else None,
                 "children": [
                     {
                         "id": c.id,
@@ -992,7 +1055,9 @@ async def admin_get_client_card(request: web.Request) -> web.Response:
                 "country": parent.country or "",
                 "preferred_language": parent.preferred_language or "ru",
                 "account_role": parent.account_role or "STANDARD",
-                "is_owner": str(parent.account_role or "").upper() == "OWNER",
+                "is_owner": _is_owner_parent(parent),
+                "account_status": _account_status(parent),
+                "last_active_at": parent.last_active_at.isoformat() if parent.last_active_at else None,
                 "onboarding_stage": parent.onboarding_stage or "REGISTERED",
                 "verification_status": parent.verification_status or "UNVERIFIED",
                 "marketing_opt_in": bool(parent.marketing_opt_in),
@@ -1123,8 +1188,12 @@ def register_content_studio_routes(app: web.Application) -> None:
     app.router.add_delete("/api/studio/promos/{promo_id}", studio_delete_promo)
     app.router.add_get("/api/studio/admin/clients", admin_list_clients)
     app.router.add_get("/api/studio/admin/clients/{parent_id}", admin_get_client_card)
+    app.router.add_get("/api/studio/admin/access-settings", admin_account_access_settings)
+    app.router.add_put("/api/studio/admin/access-settings", admin_account_access_settings)
+    app.router.add_post("/api/studio/admin/clients/{parent_id}/access", admin_set_client_access)
     app.router.add_get("/api/studio/admin/tariffs", admin_list_tariffs)
     app.router.add_put("/api/studio/admin/tariffs/{plan_id}", admin_update_tariff)
+    app.router.add_get("/api/studio/dashboard", studio_dashboard)
     app.router.add_get("/api/studio/lessons", list_lessons)
     app.router.add_post("/api/studio/lessons", create_lesson)
     app.router.add_post("/api/studio/lessons/reorder", reorder_lessons)
@@ -1153,6 +1222,7 @@ def register_content_studio_routes(app: web.Application) -> None:
     app.router.add_get("/api/studio/courses", studio_list_courses)
     app.router.add_post("/api/studio/courses", studio_create_course)
     app.router.add_post("/api/studio/courses/reorder", studio_reorder_courses)
+    app.router.add_get("/api/studio/courses/{course_id}/cover/{filename}", studio_course_cover)
     app.router.add_get("/api/studio/courses/{course_id}", studio_get_course)
     app.router.add_put("/api/studio/courses/{course_id}", studio_update_course)
     app.router.add_post("/api/studio/courses/{course_id}/duplicate", studio_duplicate_course)
@@ -1178,7 +1248,7 @@ def register_content_studio_routes(app: web.Application) -> None:
 # Admin / user-management endpoints (all require Content Studio token)
 # ---------------------------------------------------------------------------
 
-from app.db.models import Child as _Child, LessonEntitlement as _LessonEntitlement  # noqa: E402
+from app.db.models import Child as _Child, LessonEntitlement as _LessonEntitlement, LessonSession as _LessonSession  # noqa: E402
 from app.db.session import SessionLocal as _SessionLocal  # noqa: E402
 from app.services.qa_access import (  # noqa: E402
     OWNER_ROLE as _OWNER_ROLE,
@@ -1186,7 +1256,14 @@ from app.services.qa_access import (  # noqa: E402
     ADMIN_ROLE as _ADMIN_ROLE,
     STANDARD_ROLE as _STANDARD_ROLE,
 )
-from sqlalchemy import select as _select  # noqa: E402
+from app.services.account_access import (  # noqa: E402
+    account_access_settings as _account_access_settings,
+    account_status as _account_status,
+    set_account_status as _set_account_status,
+    set_new_user_access_mode as _set_new_user_access_mode,
+)
+from app.services.qa_access import is_owner_parent as _is_owner_parent  # noqa: E402
+from sqlalchemy import func as _func, select as _select  # noqa: E402
 
 _ALLOWED_ROLES = {_STANDARD_ROLE, _QA_TEST_ROLE, _ADMIN_ROLE, _OWNER_ROLE}
 
@@ -1197,12 +1274,66 @@ OWNER_EMAIL_ALLOWLIST: list[str] = [
 ]
 
 
+async def _lesson_has_session_history(lesson_id: str) -> bool:
+    """Return whether a lesson is referenced by real child session history."""
+
+    async with _SessionLocal() as db:
+        row = await db.scalar(
+            _select(_LessonSession.id).where(_LessonSession.lesson_id == lesson_id).limit(1)
+        )
+    return row is not None
+
+
+async def studio_dashboard(request: web.Request) -> web.Response:
+    """Return only persisted dashboard facts; unavailable metrics stay null."""
+
+    _authorized(request)
+    from app.db.models import Parent as _Parent, Subscription as _Subscription
+
+    courses = _catalog_list_courses(for_client=False)
+    summaries = [_summary(lesson_id) for lesson_id in _all_lesson_ids()]
+    validation = {
+        item["lesson_id"]: _validation_errors(item["lesson_id"], _editable_lesson(item["lesson_id"]) or {})
+        for item in summaries
+    }
+    media_issues = sum(
+        1 for errors in validation.values()
+        if any("media" in str(error).lower() or "image" in str(error).lower() or "video" in str(error).lower() for error in errors)
+    )
+    async with _SessionLocal() as db:
+        total_users = int(await db.scalar(_select(_func.count()).select_from(_Parent)) or 0)
+        active_children = int(await db.scalar(_select(_func.count()).select_from(_Child)) or 0)
+        active_subscriptions = int(await db.scalar(
+            _select(_func.count()).select_from(_Subscription).where(_Subscription.status.in_(["ACTIVE", "TRIALING", "PAID"]))
+        ) or 0)
+        completed_lessons = int(await db.scalar(
+            _select(_func.count()).select_from(_LessonSession).where(_LessonSession.status.in_(["COMPLETED", "COMPLETE"]))
+        ) or 0)
+    return web.json_response({
+        "total_users": total_users,
+        "active_children": active_children,
+        "active_subscriptions": active_subscriptions,
+        "courses": len(courses),
+        "published_lessons": sum(1 for item in summaries if item["published"]),
+        "draft_lessons": sum(1 for item in summaries if item["draft"]),
+        "archived_lessons": sum(1 for item in summaries if item["publication_status"] == "ARCHIVED"),
+        "lessons_completed": completed_lessons,
+        "validation_issues": sum(len(errors) for errors in validation.values()),
+        "media_issues": media_issues,
+        # Errors are not currently persisted as a structured event stream;
+        # null intentionally tells the owner that the metric is unavailable.
+        "recent_errors": None,
+    })
+
+
 def _parent_payload(parent, children) -> dict:
     return {
         "id": parent.id,
         "email": parent.email,
         "display_name": parent.display_name,
         "account_role": str(parent.account_role or _STANDARD_ROLE),
+        "account_status": _account_status(parent),
+        "last_active_at": parent.last_active_at.isoformat() if parent.last_active_at else None,
         "email_verified": bool(parent.email_verified),
         "created_at": parent.created_at.isoformat() if parent.created_at else None,
         "children": [
@@ -1284,11 +1415,49 @@ async def admin_set_role(request: web.Request) -> web.Response:
         p = await db.get(_Parent, pid)
         if p is None:
             raise web.HTTPNotFound(text=json.dumps({"error": "User not found"}), content_type="application/json")
+        if _is_owner_parent(p) and new_role != _OWNER_ROLE:
+            raise web.HTTPForbidden(text=json.dumps({"error": "OWNER cannot be downgraded"}), content_type="application/json")
         old_role = str(p.account_role or _STANDARD_ROLE)
         p.account_role = new_role
         await db.commit()
         log.info("ADMIN_SET_ROLE parent_id=%s email=%s old=%s new=%s", pid, p.email, old_role, new_role)
     return web.json_response({"ok": True, "parent_id": pid, "old_role": old_role, "new_role": new_role})
+
+
+async def admin_account_access_settings(request: web.Request) -> web.Response:
+    """Read or update the persisted new-registration access policy."""
+    _authorized(request)
+    if request.method == "GET":
+        return web.json_response({"ok": True, **_account_access_settings()})
+    data = await request.json()
+    try:
+        saved = _set_new_user_access_mode(str(data.get("new_user_access_mode") or ""))
+    except ValueError as exc:
+        raise web.HTTPBadRequest(text=json.dumps({"error": str(exc)}), content_type="application/json") from exc
+    return web.json_response({"ok": True, **saved})
+
+
+async def admin_set_client_access(request: web.Request) -> web.Response:
+    """Server-side, reversible access status mutation for one registered parent."""
+    _authorized(request)
+    from app.db.models import Parent as _Parent
+    parent_id = int(request.match_info["parent_id"])
+    data = await request.json()
+    requested = str(data.get("status") or "").upper()
+    async with _SessionLocal() as db:
+        parent = await db.get(_Parent, parent_id)
+        if parent is None:
+            raise web.HTTPNotFound(text=json.dumps({"error": "Клиент не найден"}, ensure_ascii=False), content_type="application/json")
+        before = _account_status(parent)
+        try:
+            updated = _set_account_status(parent, requested, actor="content_studio")
+        except PermissionError as exc:
+            raise web.HTTPForbidden(text=json.dumps({"error": "OWNER нельзя заблокировать", "code": str(exc)}, ensure_ascii=False), content_type="application/json") from exc
+        except ValueError as exc:
+            raise web.HTTPBadRequest(text=json.dumps({"error": str(exc)}), content_type="application/json") from exc
+        await db.commit()
+        is_owner = _is_owner_parent(parent)
+    return web.json_response({"ok": True, "parent_id": parent_id, "old_status": before, "account_status": updated, "is_owner": is_owner})
 
 
 async def admin_apply_owner_emails(request: web.Request) -> web.Response:
@@ -1350,7 +1519,10 @@ async def studio_list_courses(request: web.Request) -> web.Response:
     payload = []
     for c in courses:
         data = c.model_dump()
-        data["lesson_count"] = len(c.lesson_ids)
+        # Draft moves are deliberately not committed to the client catalog
+        # until publish.  The Studio tree must nevertheless reflect the
+        # author's current draft location immediately.
+        data["lesson_count"] = sum(1 for lesson_id in _all_lesson_ids() if _summary(lesson_id)["course_id"] == c.course_id)
         payload.append(data)
     return web.json_response({"courses": payload})
 
@@ -1372,6 +1544,8 @@ async def studio_create_course(request: web.Request) -> web.Response:
             active=bool(data.get("active", True)),
             status=str(data.get("status") or "draft"),
         )
+        if "locked" in data:
+            manifest = _catalog_update_course(cid, {"locked": bool(data.get("locked"))})
         return web.json_response({"ok": True, "course": manifest.model_dump()})
     except ValueError as e:
         raise web.HTTPBadRequest(text=json.dumps({"error": str(e)}), content_type="application/json")
@@ -1428,6 +1602,12 @@ async def studio_archive_course(request: web.Request) -> web.Response:
 async def studio_delete_course(request: web.Request) -> web.Response:
     _authorized(request)
     cid = request.match_info["course_id"].strip().lower()
+    course = _catalog_load_course(cid)
+    # A published course is part of the catalogue/history even before it has
+    # acquired lesson ids.  Preserve it as an archive rather than unlinking it.
+    if str(course.status).lower() == "published":
+        archived = _catalog_archive_course(cid)
+        return web.json_response({"ok": True, "action": "archived", "course": archived.model_dump(), "reason": "Опубликованный курс сохранён в архиве."})
     result = _catalog_delete_course(cid)
     return web.json_response({"ok": True, **result})
 
@@ -1467,6 +1647,23 @@ async def studio_upload_course_cover(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "cover_image": rel_url})
 
 
+async def studio_course_cover(request: web.Request) -> web.StreamResponse:
+    """Serve a course cover stored by the Studio, guarded by Studio auth."""
+
+    _authorized(request)
+    cid = request.match_info["course_id"].strip().lower()
+    filename = Path(request.match_info["filename"]).name
+    if filename != request.match_info["filename"] or filename not in {"cover.png", "cover.jpg", "cover.jpeg", "cover.webp"}:
+        raise web.HTTPNotFound()
+    path = (settings.storage_root / "courses" / cid / filename).resolve()
+    expected = (settings.storage_root / "courses" / cid).resolve()
+    if expected not in path.parents or not path.is_file():
+        raise web.HTTPNotFound()
+    response = web.FileResponse(path)
+    response.headers["Cache-Control"] = "private, max-age=86400"
+    return response
+
+
 async def studio_move_lesson(request: web.Request) -> web.Response:
     _authorized(request)
     lid = request.match_info["lesson_id"].strip().lower()
@@ -1474,28 +1671,32 @@ async def studio_move_lesson(request: web.Request) -> web.Response:
     target_course_id = str(data.get("target_course_id") or "").strip().lower()
     if not target_course_id:
         raise web.HTTPBadRequest(text=json.dumps({"error": "target_course_id is required"}), content_type="application/json")
+    try:
+        _catalog_load_course(target_course_id)
+    except FileNotFoundError as exc:
+        raise web.HTTPNotFound(text=json.dumps({"error": "Целевой курс не найден."}, ensure_ascii=False), content_type="application/json") from exc
 
-    # 1. Update lesson data
-    lesson_data = load_authored_lesson(lid)
+    # A move creates a new draft.  Do not mutate lesson.json or course
+    # membership until the owner validates and publishes it: active child
+    # sessions remain pinned to the existing published revision.
+    lesson_data = _editable_lesson(lid)
+    if lesson_data is None:
+        raise web.HTTPNotFound()
     old_course_id = str(lesson_data.get("course_id") or "conversation").strip().lower()
-    lesson_data["course_id"] = target_course_id
-
-    # Save lesson
-    from app.services.authored_content import ensure_persistent_lesson
-    p_path = ensure_persistent_lesson(lid)
-    p_path.write_text(json.dumps(lesson_data, ensure_ascii=False, indent=2) + "\n", "utf-8")
-
-    # 2. Update courses
-    try:
-        _catalog_remove_lesson(old_course_id, lid)
-    except Exception:
-        pass
-    try:
-        _catalog_add_lesson(target_course_id, lid)
-    except Exception:
-        pass
-
-    return web.json_response({"ok": True, "lesson_id": lid, "old_course_id": old_course_id, "new_course_id": target_course_id})
+    moved = json.loads(json.dumps(lesson_data))
+    moved.update({
+        "lesson_id": lid,
+        "course_id": target_course_id,
+        "engine": "content_v1",
+        "schema_version": str(moved.get("schema_version") or "2.1"),
+        "active": False,
+        "status": "draft",
+        "import_status": "DRAFT",
+    })
+    backup = backup_lesson_version(lid, "before_course_move")
+    _atomic_json(_draft_path(lid), moved)
+    _audit("LESSON_MOVE_DRAFTED", lid, old_course_id=old_course_id, new_course_id=target_course_id, backup_version=backup.name if backup else None)
+    return web.json_response({"ok": True, "lesson_id": lid, "old_course_id": old_course_id, "new_course_id": target_course_id, "pending_publish": True})
 
 
 # Homework Endpoints
@@ -1517,11 +1718,15 @@ async def studio_save_homework(request: web.Request) -> web.Response:
     saved_path = _catalog_save_homework(hw_data)
     loaded = _catalog_load_homework(lid)
 
-    # Sync back to lesson manifest for backward compatibility
+    # Sync homework to the lesson *draft*, never directly to lesson.json.
+    # The previous directory write also failed at runtime because
+    # ensure_persistent_lesson returns a directory, not a JSON path.
     try:
-        from app.services.authored_content import load_authored_lesson, ensure_persistent_lesson
-        ld = load_authored_lesson(lid)
-        ld["homework"] = {
+        ld = _editable_lesson(lid)
+        if ld is None:
+            raise FileNotFoundError(lid)
+        draft = json.loads(json.dumps(ld))
+        draft["homework"] = {
             "enabled": loaded.enabled,
             "optional": loaded.optional,
             "available_policy": loaded.available_policy,
@@ -1531,8 +1736,9 @@ async def studio_save_homework(request: web.Request) -> web.Response:
             "duration_minutes": loaded.duration_minutes,
             "slides": loaded.slides,
         }
-        p_path = ensure_persistent_lesson(lid)
-        p_path.write_text(json.dumps(ld, ensure_ascii=False, indent=2) + "\n", "utf-8")
+        draft.update({"lesson_id": lid, "engine": "content_v1", "active": False, "status": "draft", "import_status": "DRAFT"})
+        _atomic_json(_draft_path(lid), draft)
+        _audit("HOMEWORK_DRAFT_SAVED", lid, homework_status=loaded.status)
     except Exception as e:
         import logging
         logging.getLogger("dome.content_studio").warning("Could not sync homework back to lesson: %s", e)

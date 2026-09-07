@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-# Set to False so courses managed via Admin Panel appear dynamically in mobile client
-CONVERSATION_ONLY = False
+# Set to True so only published conversational course is visible in mobile client
+CONVERSATION_ONLY = True
 ALLOWED_CLIENT_COURSES = {"conversation"}
 
 

@@ -19,11 +19,25 @@ function LanguagePicker({options,value,onChange,compact}:{options:readonly (read
   </View>
 }
 
+function GenderPicker({value,onChange,compact}:{value:string;onChange:(v:'boy'|'girl')=>void;compact:boolean}){
+  const options:[ 'boy' | 'girl', string][]=[['boy','👦 Мальчик'],['girl','👧 Девочка']];
+  return <View style={{flexDirection:'row',gap:compact?6:10,marginBottom:compact?5:10}}>
+    {options.map(([code,label])=>{
+      const selected=value===code;
+      return <Pressable key={code} accessibilityRole='button' accessibilityState={{selected}} onPress={()=>onChange(code)}
+        style={{flex:1,borderWidth:2,borderColor:selected?theme.colors.primary:'#CCC',backgroundColor:selected?theme.colors.primary+'18':'#FFF',borderRadius:12,paddingVertical:compact?8:12,alignItems:'center'}}>
+        <Text style={{color:selected?theme.colors.primary:'#666',fontWeight:'700',fontSize:compact?13:15}}>{label}</Text>
+      </Pressable>;
+    })}
+  </View>
+}
+
 export function AddChildScreen(){
   const store=useAppStore();
   const ageRef=useRef<TextInput>(null);
   const[name,setName]=useState('');
   const[age,setAge]=useState('');
+  const[gender,setGender]=useState<'boy'|'girl'>('boy');
   const targetLanguage=STUDIED_LANGUAGE_CODE;
   const[nativeLanguage,setNativeLanguage]=useState('ru');
   const[busy,setBusy]=useState(false);
@@ -35,12 +49,13 @@ export function AddChildScreen(){
     if(!name.trim()||!validAge)return;
     try{
       setBusy(true);
-      const response=await createChild(name.trim(),ageNumber,targetLanguage,nativeLanguage);
+      const response=await createChild(name.trim(),ageNumber,targetLanguage,nativeLanguage,gender);
       const child:ChildProfile={
         id:String(response.id),
         parentId:String(store.parent?.id||''),
         name:response.name||response.display_name||name.trim(),
         age:response.age_years??ageNumber,
+        gender:response.gender==='girl'?'girl':'boy',
         learningLanguage:response.target_language||targetLanguage,
         nativeLanguage:response.native_language||nativeLanguage,
         languageLevel:response.language_level||'PRE_A1',
@@ -67,6 +82,8 @@ export function AddChildScreen(){
         {!compact?<Body>Укажите основные данные — их можно будет изменить позже.</Body>:null}
         <TextInput value={name} onChangeText={setName} placeholder='Имя ребёнка' autoCapitalize='words' returnKeyType='next' onFocus={onFieldFocus} onSubmitEditing={()=>ageRef.current?.focus()} style={[input,compact&&compactInput]}/>
         <TextInput ref={ageRef} value={age} onChangeText={value=>setAge(value.replace(/\D/g,'').slice(0,2))} placeholder='Возраст (2–18)' keyboardType='number-pad' returnKeyType='done' onFocus={onFieldFocus} onSubmitEditing={Keyboard.dismiss} style={[input,compact&&compactInput]}/>
+        {!compact?<H2>Пол ребёнка</H2>:null}
+        <GenderPicker value={gender} onChange={setGender} compact={compact}/>
         {compact?<Body compact>Изучаемый: Русский · объяснения: {nativeLanguage.toUpperCase()}. Закройте клавиатуру, чтобы изменить.</Body>:<>
           <H2>Изучаемый язык</H2>
           <LanguagePicker options={STUDIED_LANGUAGE_OPTIONS} compact={false} value={targetLanguage} onChange={()=>{}}/>

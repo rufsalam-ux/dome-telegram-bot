@@ -1,13 +1,21 @@
 "use strict";
 const TASK_TYPES = [
-  ["presentation", "Информационный слайд"],
-  ["guided_speaking", "Разговор с подсказками"],
+  ["presentation", "Текст / инструкция"],
+  ["guided_speaking", "AI-голос и ответ ребёнка"],
   ["guided_scene", "Разговор на сцене"],
+  ["voice_answer", "Голосовой ответ"],
+  ["repeat", "Повтори за AI"],
+  ["choice", "Выбор ответа (текст / изображение)"],
   ["choice_card", "Выбор ответа"],
   ["card_selector", "Карточки-выбор"],
   ["animal_compare", "Сравнение животных"],
   ["animal_riddle", "Загадка"],
   ["drag_and_drop", "Перетаскивание"],
+  ["matching", "Сопоставление"],
+  ["drawing", "Рисование"],
+  ["tap_select", "Интерактивный тап"],
+  ["interactive_scene", "Интерактивная сцена"],
+  ["physical_action", "Пауза / физическая активность"],
   ["transition", "Переход"],
   ["roleplay", "Ролевая игра"],
   ["mood_choice", "Выбор настроения"],
@@ -61,6 +69,8 @@ const state = {
   dragIndex: null,
   hwDragIndex: null,
   blobUrls: new Map(),
+  courseCoverPreviewUrl: null,
+  courseCoverPreviewRequest: 0,
   pendingRoleParentId: null
 };
 
@@ -266,6 +276,8 @@ function renderHierarchyTree() {
       <span class="tree-badge ${course.status === 'published' ? 'on' : 'off'}">${escH(course.status || 'draft')}</span>
       <span class="tree-badge ${course.active !== false ? 'on' : 'off'}">${course.active !== false ? 'ON' : 'OFF'}</span>
       <div class="tree-actions">
+        <button class="tree-action-btn" data-act="course_up" title="Поднять курс">↑</button>
+        <button class="tree-action-btn" data-act="course_down" title="Опустить курс">↓</button>
         <button class="tree-action-btn" data-act="add_lesson" title="Создать урок в этом курсе">+ Урок</button>
         <button class="tree-action-btn" data-act="edit_course" title="Настройки курса">✏</button>
         <button class="tree-action-btn" data-act="dup_course" title="Дублировать курс">⧉</button>
@@ -285,6 +297,14 @@ function renderHierarchyTree() {
     header.querySelector("[data-act=add_lesson]")?.addEventListener("click", (ev) => {
       ev.stopPropagation();
       openLessonDialog("create", course.id);
+    });
+    header.querySelector("[data-act=course_up]")?.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      reorderCourse(course.id, -1);
+    });
+    header.querySelector("[data-act=course_down]")?.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      reorderCourse(course.id, 1);
     });
     header.querySelector("[data-act=edit_course]")?.addEventListener("click", (ev) => {
       ev.stopPropagation();
@@ -462,8 +482,64 @@ function openCourseDialog(mode, course = null) {
   if ($("#courseStatusInput")) $("#courseStatusInput").value = course ? (course.status || "published") : "published";
   if ($("#courseActiveInput")) $("#courseActiveInput").checked = course ? course.active !== false : true;
   if ($("#courseLockedInput")) $("#courseLockedInput").checked = course ? Boolean(course.locked) : false;
+  const coverInput = $("#courseCoverFile");
+  if (coverInput) coverInput.value = "";
+  renderCourseCoverPreview(course);
 
   if ($("#courseDialog")) $("#courseDialog").showModal();
+}
+
+function replaceCourseCoverPreview(node) {
+  const host = $("#courseCoverPreview");
+  if (!host) return;
+  if (state.courseCoverPreviewUrl) URL.revokeObjectURL(state.courseCoverPreviewUrl);
+  state.courseCoverPreviewUrl = null;
+  host.replaceChildren(node);
+}
+
+function courseCoverImage(url, label) {
+  const wrapper = document.createElement("div");
+  const image = document.createElement("img");
+  image.src = url;
+  image.alt = "Обложка курса";
+  image.style.cssText = "display:block;max-width:180px;max-height:96px;object-fit:contain;border-radius:8px;margin:6px 0";
+  const caption = document.createElement("span");
+  caption.textContent = label;
+  wrapper.append(image, caption);
+  return wrapper;
+}
+
+function renderCourseCoverPreview(course) {
+  const host = $("#courseCoverPreview");
+  if (!host) return;
+  const requestId = ++state.courseCoverPreviewRequest;
+  if (!course?.cover_image) {
+    replaceCourseCoverPreview(document.createTextNode("Обложка не выбрана"));
+    return;
+  }
+  replaceCourseCoverPreview(document.createTextNode("Загружаем текущую обложку…"));
+  fetch(course.cover_image, { headers: { Authorization: `Bearer ${state.token}` } })
+    .then(res => {
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.blob();
+    })
+    .then(blob => {
+      const url = URL.createObjectURL(blob);
+      if (requestId !== state.courseCoverPreviewRequest) {
+        URL.revokeObjectURL(url);
+        return;
+      }
+      state.courseCoverPreviewUrl = url;
+      const preview = $("#courseCoverPreview");
+      if (preview) {
+        preview.replaceChildren(courseCoverImage(state.courseCoverPreviewUrl, "Текущая обложка. Выберите файл, чтобы заменить её."));
+      }
+    })
+    .catch(() => {
+      if (requestId !== state.courseCoverPreviewRequest) return;
+      const preview = $("#courseCoverPreview");
+      if (preview) preview.textContent = "Текущая обложка сохранена, но предпросмотр временно недоступен.";
+    });
 }
 
 function slugifyCourseTitle(title) {
@@ -496,13 +572,21 @@ async function confirmCourseAction(ev) {
 
   const payload = { course_id: id, id, title, description, order, status, active, locked };
   try {
+    let saved;
     if (state.courseDialogMode === "edit") {
-      await api(`/api/studio/courses/${state.targetCourseId}`, { method: "PUT", body: JSON.stringify(payload) });
+      saved = await api(`/api/studio/courses/${state.targetCourseId}`, { method: "PUT", body: JSON.stringify(payload) });
       notice("Курс обновлен.");
     } else {
-      await api("/api/studio/courses", { method: "POST", body: JSON.stringify(payload) });
+      saved = await api("/api/studio/courses", { method: "POST", body: JSON.stringify(payload) });
       state.expandedCourses.add(id);
       notice("Курс создан.");
+    }
+    const file = $("#courseCoverFile")?.files?.[0];
+    if (file) {
+      const form = new FormData();
+      form.append("file", file);
+      await api(`/api/studio/courses/${saved.course?.course_id || id}/cover`, { method: "POST", body: form });
+      notice("Курс и обложка сохранены.");
     }
     if ($("#courseDialog")) $("#courseDialog").close();
     await loadCourses();
@@ -535,6 +619,21 @@ async function deleteCourse(courseId) {
   }
 }
 
+async function reorderCourse(courseId, direction) {
+  const ordered = state.courses.map(course => course.id);
+  const index = ordered.indexOf(courseId);
+  const target = index + direction;
+  if (index < 0 || target < 0 || target >= ordered.length) return;
+  [ordered[index], ordered[target]] = [ordered[target], ordered[index]];
+  try {
+    await api("/api/studio/courses/reorder", { method: "POST", body: JSON.stringify({ order: ordered }) });
+    await loadCourses();
+    notice("Порядок курсов сохранён.");
+  } catch (e) {
+    showErrors(e.details?.length ? e.details : e.message);
+  }
+}
+
 function openMoveLessonDialog(lessonId) {
   state.targetLessonIdForMove = lessonId;
   const lesson = state.lessons.find(l => l.lesson_id === lessonId);
@@ -554,12 +653,12 @@ async function confirmMoveLesson(ev) {
   const targetCourseId = $("#targetCourseSelect")?.value;
   if (!targetCourseId || !state.targetLessonIdForMove) return;
   try {
-    await api("/api/studio/courses/move-lesson", {
+    await api(`/api/studio/lessons/${state.targetLessonIdForMove}/move`, {
       method: "POST",
-      body: JSON.stringify({ lesson_id: state.targetLessonIdForMove, target_course_id: targetCourseId })
+      body: JSON.stringify({ target_course_id: targetCourseId })
     });
     if ($("#moveLessonDialog")) $("#moveLessonDialog").close();
-    notice("Урок перенесен.");
+    notice("Урок перенесён в черновик. Проверьте и опубликуйте его — активные сессии детей не изменятся.");
     await loadCourses();
     await loadLessons();
     if (state.lessonId === state.targetLessonIdForMove) {
@@ -613,7 +712,7 @@ async function openLesson(id) {
     const status = data.summary?.status || state.lesson.status || "draft";
     if ($("#lessonMeta")) $("#lessonMeta").textContent = `Курс: ${state.lesson.course_id || "conversation"} · Статус: ${status} · Ревизия: ${state.lesson.revision || 1}`;
 
-    setV("lessonTargetLanguage", state.lesson.target_language || "en");
+    setV("lessonTargetLanguage", state.lesson.target_language || "ru");
     setV("lessonExplanationLanguage", state.lesson.explanation_language || state.lesson.native_language || "ru");
     setV("lessonDifficulty", state.lesson.difficulty || "PRE_A1");
     setV("lessonMaxRuns", state.lesson.max_completed_runs || state.lesson.max_runs || 2);
@@ -737,6 +836,67 @@ function renderSteps() {
   renumber();
   steps().forEach((step, i) => host.append(renderStep(step, i)));
   if (!steps().length) host.innerHTML = '<div class="empty card"><h3>В уроке пока нет шагов</h3><p>Добавьте первый слайд или видео.</p></div>';
+  renderMediaLibrary();
+}
+
+function mediaKind(asset) {
+  const path = String(asset.path || asset.name || "").toLowerCase();
+  if (/\.(mp4|mov|m4v|webm)$/.test(path)) return "video";
+  if (/\.(mp3|m4a|wav|aac|ogg)$/.test(path)) return "audio";
+  return "image";
+}
+
+function renderMediaLibrary() {
+  const host = $("#mediaLibrary");
+  if (!host) return;
+  const query = ($("#mediaSearch")?.value || "").trim().toLowerCase();
+  const filter = $("#mediaFilter")?.value || "";
+  const assets = (state.media || []).filter(asset => {
+    const kind = mediaKind(asset);
+    const text = `${asset.display_name || ""} ${asset.name || ""}`.toLowerCase();
+    return (!query || text.includes(query)) && (!filter || kind === filter);
+  });
+  host.innerHTML = "";
+  if (!assets.length) {
+    host.innerHTML = '<div class="muted">Подходящих файлов пока нет. Загрузите файл в любом шаге — он появится здесь.</div>';
+    return;
+  }
+  for (const asset of assets) {
+    const row = document.createElement("article");
+    row.className = "step-card";
+    row.innerHTML = `<div class="step-summary"><span class="step-badge">${escH(mediaKind(asset))}</span><strong class="step-name">${escH(asset.display_name || asset.name)}</strong><span class="muted">${Math.max(1, Math.round((asset.size || 0) / 1024))} KB</span><button type="button" class="insert-media">Вставить шагом</button><button type="button" class="remove-media danger">Удалить</button></div><div class="media-preview"></div>`;
+    row.querySelector(".insert-media")?.addEventListener("click", () => {
+      const video = mediaKind(asset) === "video";
+      const step = {
+        slide_id: uniqueId(video ? "video" : "slide"),
+        order: steps().length + 1,
+        type: video ? "video" : "presentation",
+        prompt: video ? "Посмотри видео" : "Рассмотри изображение",
+        requiredForMovie: false,
+      };
+      setMedia(step, asset.path, video);
+      steps().push(step);
+      markDirty();
+      renderSteps();
+      notice("Файл добавлен новым шагом. Сохраните урок.");
+    });
+    row.querySelector(".remove-media")?.addEventListener("click", () => removeMediaAsset(asset));
+    host.append(row);
+    renderMedia(row.querySelector(".media-preview"), asset.path, mediaKind(asset) === "video");
+  }
+}
+
+async function removeMediaAsset(asset) {
+  if (!confirm(`Удалить файл «${asset.display_name || asset.name}»? Он будет удалён только если не используется в уроке.`)) return;
+  try {
+    await api(`/api/studio/lessons/${state.lessonId}/media/${encodeURIComponent(asset.name)}`, { method: "DELETE" });
+    state.media = state.media.filter(item => item.name !== asset.name);
+    releaseBlobs();
+    renderSteps();
+    notice("Неиспользуемый файл удалён.");
+  } catch (error) {
+    showErrors(error.details?.length ? error.details : error.message);
+  }
 }
 
 function renderStep(step, index) {
@@ -812,6 +972,22 @@ function renderStep(step, index) {
   const mp = tpl.querySelector(".media-path"); if (mp) mp.textContent = src || "Медиафайл не выбран";
   const repM = tpl.querySelector(".replace-media");
   if (repM) repM.accept = video ? "video/mp4,video/quicktime,video/webm" : "image/*,video/mp4,video/quicktime";
+  const existingMedia = tpl.querySelector(".existing-media");
+  if (existingMedia) {
+    const options = (state.media || []).map(asset => {
+      const label = `${asset.display_name || asset.name} (${Math.max(1, Math.round((asset.size || 0) / 1024))} KB)`;
+      return `<option value="${escH(asset.path)}">${escH(label)}</option>`;
+    }).join("");
+    existingMedia.innerHTML = `<option value="">— выбрать уже загруженный файл —</option>${options}`;
+    existingMedia.value = (state.media || []).some(asset => asset.path === src) ? src : "";
+    existingMedia.addEventListener("change", event => {
+      const path = event.target.value;
+      if (!path) return;
+      setMedia(step, path, /\.(mp4|mov|m4v|webm)(\?|$)/i.test(path));
+      markDirty();
+      renderSteps();
+    });
+  }
   renderMedia(tpl.querySelector(".media-preview"), src, video);
 
   const advEl = tpl.querySelector("[data-adv]");
@@ -1101,7 +1277,7 @@ async function confirmAdd(ev) {
 function candidate() {
   const lesson = deepCopy(state.lesson);
   lesson.title = ($("#lessonTitle")?.value || "").trim();
-  lesson.target_language = ($("#lessonTargetLanguage")?.value || "en").trim();
+  lesson.target_language = ($("#lessonTargetLanguage")?.value || "ru").trim();
   lesson.explanation_language = ($("#lessonExplanationLanguage")?.value || "ru").trim();
   lesson.native_language = lesson.explanation_language;
   lesson.difficulty = $("#lessonDifficulty")?.value || "PRE_A1";
@@ -1219,7 +1395,7 @@ function openLessonDialog(mode, courseId = null, existingLesson = null) {
   if ($("#confirmLessonAction")) $("#confirmLessonAction").textContent = dup ? "Создать копию" : "Создать урок";
   if ($("#newLessonId")) $("#newLessonId").value = dup ? `${existingLesson?.lesson_id || state.lessonId}_copy` : "";
   if ($("#newLessonTitle")) $("#newLessonTitle").value = dup ? `${existingLesson?.title || state.lesson?.title || state.lessonId} — копия` : "";
-  if ($("#newLessonTargetLanguage")) $("#newLessonTargetLanguage").value = existingLesson?.target_language || state.lesson?.target_language || "en";
+  if ($("#newLessonTargetLanguage")) $("#newLessonTargetLanguage").value = existingLesson?.target_language || state.lesson?.target_language || "ru";
   if ($("#newLessonExplanationLanguage")) $("#newLessonExplanationLanguage").value = existingLesson?.explanation_language || state.lesson?.explanation_language || "ru";
 
   const sel = $("#newLessonCourseSelect");
@@ -1262,7 +1438,7 @@ async function confirmLessonAction(ev) {
       lesson_id: id,
       title,
       course_id: $("#newLessonCourseSelect")?.value || "conversation",
-      target_language: ($("#newLessonTargetLanguage")?.value || "en").trim(),
+      target_language: ($("#newLessonTargetLanguage")?.value || "ru").trim(),
       explanation_language: ($("#newLessonExplanationLanguage")?.value || "ru").trim()
     };
     const path = state.lessonDialogMode === "duplicate" ? `/api/studio/lessons/${state.lessonId}/duplicate` : "/api/studio/lessons";
@@ -1759,22 +1935,21 @@ async function applyOwnerAllowlist() {
 
 async function loadDashboard() {
   try {
-    const [status, lessons, courses] = await Promise.all([
-      api("/api/studio/status"),
-      api("/api/studio/lessons"),
-      api("/api/studio/courses")
-    ]);
+    const dashboard = await api("/api/studio/dashboard");
     const host = $("#dashboardContent");
     if (!host) return;
     host.innerHTML = "";
-    const lArr = lessons.lessons || [];
-    const cArr = courses.courses || [];
     [
-      { label: "Всего блоков/курсов", value: cArr.length },
-      { label: "Всего уроков", value: lArr.length },
-      { label: "Опубликовано уроков", value: lArr.filter(l => l.status === "published").length },
-      { label: "Черновики", value: lArr.filter(l => !l.status || l.status === "draft").length },
-      { label: "Версия сервера", value: status.version || "—" }
+      { label: "Пользователи", value: dashboard.total_users },
+      { label: "Активные дети", value: dashboard.active_children },
+      { label: "Активные подписки", value: dashboard.active_subscriptions },
+      { label: "Курсы", value: dashboard.courses },
+      { label: "Опубликовано уроков", value: dashboard.published_lessons },
+      { label: "Черновики", value: dashboard.draft_lessons },
+      { label: "Завершено уроков", value: dashboard.lessons_completed },
+      { label: "Ошибки медиа", value: dashboard.media_issues },
+      { label: "Ошибки валидации", value: dashboard.validation_issues },
+      { label: "Недавние runtime-ошибки", value: dashboard.recent_errors ?? "N/A" }
     ].forEach(s => {
       const card = document.createElement("div");
       card.className = "stat-card";
@@ -1819,7 +1994,7 @@ async function loadPromos() {
     state.promos = data.promos || [];
     renderPromos();
   } catch (err) {
-    tbody.innerHTML = `<tr><td colspan="8" style="padding: 24px; text-align: center; color: #ef4444;">Ошибка: ${escapeHtml(err.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" style="padding: 24px; text-align: center; color: #ef4444;">Ошибка: ${escH(err.message)}</td></tr>`;
   }
 }
 
@@ -1850,12 +2025,12 @@ function renderPromos() {
 
     return `
       <tr style="border-bottom: 1px solid #1e293b;">
-        <td style="padding: 12px 8px; font-weight: 700; font-family: monospace; font-size: 15px; color: #38bdf8;">${escapeHtml(p.code)}</td>
-        <td style="padding: 12px 8px;">${escapeHtml(typeLabel)}</td>
-        <td style="padding: 12px 8px; font-weight: 600;">${escapeHtml(valStr)}</td>
-        <td style="padding: 12px 8px; color: #94a3b8; font-size: 13px;">${escapeHtml(p.description || "—")}</td>
-        <td style="padding: 12px 8px; font-size: 13px; color: #cbd5e1;">${escapeHtml(dateStr)}</td>
-        <td style="padding: 12px 8px; font-size: 13px;">${escapeHtml(maxUsesStr)}</td>
+        <td style="padding: 12px 8px; font-weight: 700; font-family: monospace; font-size: 15px; color: #38bdf8;">${escH(p.code)}</td>
+        <td style="padding: 12px 8px;">${escH(typeLabel)}</td>
+        <td style="padding: 12px 8px; font-weight: 600;">${escH(valStr)}</td>
+        <td style="padding: 12px 8px; color: #94a3b8; font-size: 13px;">${escH(p.description || "—")}</td>
+        <td style="padding: 12px 8px; font-size: 13px; color: #cbd5e1;">${escH(dateStr)}</td>
+        <td style="padding: 12px 8px; font-size: 13px;">${escH(maxUsesStr)}</td>
         <td style="padding: 12px 8px;">${statusBadge}</td>
         <td style="padding: 12px 8px; text-align: right; white-space: nowrap;">
           <button class="small-btn" onclick="editPromo(${p.id})" style="margin-right: 6px;">Редактировать</button>
@@ -2009,7 +2184,21 @@ function boot() {
   // Hierarchy & Course events
   bind("refreshHierarchy", async () => { await loadCourses(); await loadLessons(); });
   bind("hierarchySearch", renderHierarchyTree, "input");
+  bind("mediaSearch", renderMediaLibrary, "input");
+  bind("mediaFilter", renderMediaLibrary, "change");
   bind("newCourseBtn", () => openCourseDialog("create"));
+  bind("courseCoverFile", ev => {
+    const file = ev.target.files?.[0];
+    if (!file) {
+      renderCourseCoverPreview(state.courses.find(course => course.id === state.targetCourseId));
+      return;
+    }
+    ++state.courseCoverPreviewRequest;
+    replaceCourseCoverPreview(document.createTextNode("Загружаем новую обложку…"));
+    state.courseCoverPreviewUrl = URL.createObjectURL(file);
+    const preview = $("#courseCoverPreview");
+    if (preview) preview.replaceChildren(courseCoverImage(state.courseCoverPreviewUrl, `Новая обложка: ${file.name}`));
+  }, "change");
   bind("confirmCourseAction", confirmCourseAction);
   bind("moveLessonBtn", () => openMoveLessonDialog(state.lessonId));
   bind("confirmMoveLesson", confirmMoveLesson);
@@ -2095,7 +2284,7 @@ const STATUS_COLOR = {
   ACTIVE: "#2ecc40", TRIAL: "#7df3e1", REGISTERED: "#aaa",
   EMAIL_NOT_VERIFIED: "#f4a", VERIFIED: "#7df3e1",
   PAST_DUE: "#ff851b", PAYMENT_FAILED: "#ff4136", CANCELLED: "#999",
-  EXPIRED: "#888", OWNER: "#ffd700"
+  EXPIRED: "#888", OWNER: "#ffd700", BLOCKED: "#ff4136", PENDING_APPROVAL: "#ffb020"
 };
 
 const PLAN_TITLE = {
@@ -2110,7 +2299,7 @@ async function loadClients() {
   const status = $("#clientStatusFilter")?.value || "";
   const country = $("#clientCountryFilter")?.value || "";
   const tbody = $("#clientTableBody");
-  if (tbody) tbody.innerHTML = `<tr><td colspan="13" style="padding:20px;text-align:center;color:#888">Загрузка...</td></tr>`;
+  if (tbody) tbody.innerHTML = `<tr><td colspan="14" style="padding:20px;text-align:center;color:#888">Загрузка...</td></tr>`;
 
   const params = new URLSearchParams();
   if (q) params.set("q", q);
@@ -2125,7 +2314,7 @@ async function loadClients() {
     const cnt = $("#clientCount");
     if (cnt) cnt.textContent = `Найдено: ${data.count || 0} клиентов`;
   } catch(e) {
-    if (tbody) tbody.innerHTML = `<tr><td colspan="13" style="padding:20px;text-align:center;color:#f44">${escH(e.message)}</td></tr>`;
+    if (tbody) tbody.innerHTML = `<tr><td colspan="14" style="padding:20px;text-align:center;color:#f44">${escH(e.message)}</td></tr>`;
   }
 }
 
@@ -2133,7 +2322,7 @@ function renderClientTable(clients) {
   const tbody = $("#clientTableBody");
   if (!tbody) return;
   if (!clients.length) {
-    tbody.innerHTML = `<tr><td colspan="13" style="padding:20px;text-align:center;color:#888">Клиенты не найдены</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="14" style="padding:20px;text-align:center;color:#888">Клиенты не найдены</td></tr>`;
     return;
   }
   tbody.innerHTML = clients.map(c => {
@@ -2144,9 +2333,17 @@ function renderClientTable(clients) {
     const price = sub.price ? `€${sub.price}` : "—";
     const lessonsLabel = sub.status ? `${sub.lessons_used || 0}/${(sub.lessons_used||0)+(sub.lessons_remaining||0)}` : "—";
     const regDate = c.registered_at ? c.registered_at.split("T")[0] : "—";
+    const lastActive = c.last_active_at ? c.last_active_at.replace("T", " ").slice(0, 16) : "—";
     const childrenCount = (c.children || []).length;
     const ownerBadge = c.is_owner ? ' <span style="background:#ffd700;color:#000;font-size:10px;padding:1px 5px;border-radius:4px">OWNER</span>' : '';
     const verifiedBadge = c.email_verified ? '✅' : '❌';
+    const accessAction = c.is_owner
+      ? `<span style="color:#ffd700;font-size:12px;font-weight:700">UNLIMITED</span>`
+      : c.account_status === "BLOCKED"
+        ? `<button class="primary" style="padding:3px 8px;font-size:12px" onclick="event.stopPropagation();setClientAccess(${c.id},'ACTIVE')">Разблокировать</button>`
+        : c.account_status === "PENDING_APPROVAL"
+          ? `<button class="primary" style="padding:3px 8px;font-size:12px" onclick="event.stopPropagation();setClientAccess(${c.id},'ACTIVE')">Разрешить</button>`
+          : `<button style="padding:3px 8px;font-size:12px;color:#ffb4b4" onclick="event.stopPropagation();setClientAccess(${c.id},'BLOCKED')">Заблокировать</button>`;
     return `<tr style="border-bottom:1px solid #1a1a2e;cursor:pointer" onclick="openClientCard(${c.id})">
       <td style="padding:7px 8px;color:#888">${c.id}</td>
       <td style="padding:7px 8px">${escH(c.display_name)}${ownerBadge}</td>
@@ -2154,13 +2351,14 @@ function renderClientTable(clients) {
       <td style="padding:7px 8px;text-align:center">${verifiedBadge}</td>
       <td style="padding:7px 8px;color:#aaa">${escH(c.country || "—")}</td>
       <td style="padding:7px 8px;color:#888;font-size:12px">${regDate}</td>
+      <td style="padding:7px 8px;color:#aaa;font-size:12px">${escH(lastActive)}</td>
       <td style="padding:7px 8px;text-align:center">${childrenCount}</td>
       <td style="padding:7px 8px">${escH(planTitle)}</td>
       <td style="padding:7px 8px;color:#aaa">${periodLabel}</td>
       <td style="padding:7px 8px">${price}</td>
       <td style="padding:7px 8px"><span style="color:${statusColor};font-weight:600;font-size:12px">${c.status}</span></td>
       <td style="padding:7px 8px;color:#aaa">${lessonsLabel}</td>
-      <td style="padding:7px 8px"><button class="primary" style="padding:3px 8px;font-size:12px" onclick="event.stopPropagation();openClientCard(${c.id})">Карточка</button></td>
+      <td style="padding:7px 8px;white-space:nowrap"><button class="primary" style="padding:3px 8px;font-size:12px" onclick="event.stopPropagation();openClientCard(${c.id})">Открыть</button> ${accessAction}</td>
     </tr>`;
   }).join("");
 }
@@ -2218,11 +2416,14 @@ function renderClientCardTab(tab) {
         <div><strong>Страна:</strong> ${escH(p.country || "—")}</div>
         <div><strong>Язык:</strong> ${escH(p.preferred_language || "ru")}</div>
         <div><strong>Роль:</strong> ${ownerBadge || escH(p.account_role)}</div>
+        <div><strong>Доступ:</strong> <span style="color:${STATUS_COLOR[p.account_status] || '#aaa'};font-weight:700">${escH(p.is_owner ? 'OWNER / UNLIMITED' : (p.account_status || 'ACTIVE'))}</span></div>
         <div><strong>Регистрация:</strong> ${(p.registered_at || "").split("T")[0] || "—"}</div>
+        <div><strong>Последняя активность:</strong> ${(p.last_active_at || "").replace("T", " ").slice(0, 16) || "—"}</div>
         <div><strong>Рассылка:</strong> ${p.marketing_opt_in ? "✅ Да" : "❌ Нет"}</div>
         <div><strong>Онбординг:</strong> ${escH(p.onboarding_stage)}</div>
         <div><strong>Верификация:</strong> ${escH(p.verification_status)}</div>
-      </div>`;
+      </div>
+      ${p.is_owner ? `<p style="color:#ffd700;font-weight:700">OWNER / UNLIMITED — блокировка недоступна.</p>` : `<div style="display:flex;gap:8px;margin-top:16px"><button class="primary" onclick="setClientAccess(${p.id},'ACTIVE')">Разрешить / разблокировать</button><button style="color:#ffb4b4" onclick="setClientAccess(${p.id},'BLOCKED')">Заблокировать</button></div>`}`;
   } else if (tab === "children") {
     const items = (d.children || []).map(c => `
       <div style="background:#1a1a2e;border-radius:8px;padding:12px;margin-bottom:8px">
@@ -2314,6 +2515,43 @@ function renderClientCardTab(tab) {
   }
 }
 
+async function loadNewUserAccessMode() {
+  const select = $("#newUserAccessMode");
+  if (!select) return;
+  try {
+    const data = await api("/api/studio/admin/access-settings");
+    select.value = data.new_user_access_mode === "MANUAL" ? "MANUAL" : "AUTOMATIC";
+  } catch (error) {
+    console.warn("ACCOUNT_ACCESS_SETTINGS_LOAD_FAILED", error);
+  }
+}
+
+async function saveNewUserAccessMode() {
+  const select = $("#newUserAccessMode");
+  if (!select) return;
+  const value = select.value === "MANUAL" ? "MANUAL" : "AUTOMATIC";
+  try {
+    await api("/api/studio/admin/access-settings", { method: "PUT", body: JSON.stringify({ new_user_access_mode: value }) });
+    notice(value === "MANUAL" ? "Новые пользователи будут ждать одобрения." : "Новые пользователи будут получать доступ автоматически.");
+  } catch (error) {
+    alert("Не удалось сохранить режим доступа: " + error.message);
+    await loadNewUserAccessMode();
+  }
+}
+
+async function setClientAccess(parentId, status) {
+  const label = status === "BLOCKED" ? "заблокировать" : "разблокировать";
+  if (status === "BLOCKED" && !confirm(`Вы уверены, что хотите ${label} пользователя? Его профиль и прогресс сохранятся.`)) return;
+  try {
+    await api(`/api/studio/admin/clients/${parentId}/access`, { method: "POST", body: JSON.stringify({ status }) });
+    notice(status === "BLOCKED" ? "Доступ пользователя приостановлен." : "Доступ пользователя активен.");
+    await loadClients();
+    if (_clientCard?.parent?.id === parentId) await openClientCard(parentId);
+  } catch (error) {
+    alert("Не удалось изменить доступ: " + error.message);
+  }
+}
+
 /* ============================================================================
    TARIFF MANAGEMENT
    ========================================================================== */
@@ -2347,10 +2585,16 @@ function renderTariffGrid(tariffs) {
       </div>
       <div style="margin-top:12px;display:flex;flex-direction:column;gap:8px">
         <label style="font-size:12px;color:#aaa">Название<input type="text" value="${escH(t.name)}" id="tname_${t.plan_id}" style="margin-top:4px;width:100%"></label>
+        <label style="font-size:12px;color:#aaa">Описание<input type="text" value="${escH(t.description || "")}" id="tdesc_${t.plan_id}" style="margin-top:4px;width:100%"></label>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
           <label style="font-size:12px;color:#aaa">€/мес<input type="number" step="0.01" value="${t.monthly_price}" id="tmonth_${t.plan_id}" style="margin-top:4px;width:100%"></label>
           <label style="font-size:12px;color:#aaa">€/год<input type="number" step="0.01" value="${t.annual_price}" id="tyear_${t.plan_id}" style="margin-top:4px;width:100%"></label>
         </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+          <label style="font-size:12px;color:#aaa">Уроков/месяц<input type="number" min="4" step="4" value="${t.lessons_per_month}" id="tlessons_${t.plan_id}" style="margin-top:4px;width:100%"></label>
+          <label style="font-size:12px;color:#aaa">Порядок<input type="number" min="1" value="${t.display_order}" id="torder_${t.plan_id}" style="margin-top:4px;width:100%"></label>
+        </div>
+        <small style="color:#94a3b8">Изменение цены создаёт новую версию только для новых подписок. Цена действующих подписчиков не меняется.</small>
         <label style="font-size:12px"><input type="checkbox" id="tactive_${t.plan_id}" ${t.active ? "checked" : ""}> Активен / Видим</label>
         <button class="primary" style="width:100%" onclick="saveTariff('${t.plan_id}')">💾 Сохранить тариф</button>
       </div>
@@ -2362,12 +2606,15 @@ async function saveTariff(planId) {
   const name = $(`#tname_${planId}`)?.value?.trim();
   const monthlyPrice = parseFloat($(`#tmonth_${planId}`)?.value || "0");
   const annualPrice = parseFloat($(`#tyear_${planId}`)?.value || "0");
+  const description = $(`#tdesc_${planId}`)?.value?.trim() || "";
+  const lessonsPerMonth = parseInt($(`#tlessons_${planId}`)?.value || "0", 10);
+  const displayOrder = parseInt($(`#torder_${planId}`)?.value || "0", 10);
   const active = $(`#tactive_${planId}`)?.checked;
-  if (!name || !monthlyPrice || !annualPrice) { alert("Заполните все поля тарифа"); return; }
+  if (!name || !monthlyPrice || !annualPrice || !lessonsPerMonth || !displayOrder) { alert("Заполните все поля тарифа"); return; }
   try {
     await api(`/api/studio/admin/tariffs/${planId}`, {
       method: "PUT",
-      body: JSON.stringify({ name, monthly_price: monthlyPrice, annual_price: annualPrice, active, visible: active })
+      body: JSON.stringify({ name, description, monthly_price: monthlyPrice, annual_price: annualPrice, lessons_per_month: lessonsPerMonth, display_order: displayOrder, active, visible: active })
     });
     notice("✅ Тариф обновлён успешно!");
     await loadTariffs();
@@ -2388,6 +2635,8 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#clientPeriodFilter")?.addEventListener("change", loadClients);
   $("#clientStatusFilter")?.addEventListener("change", loadClients);
   $("#clientCountryFilter")?.addEventListener("change", loadClients);
+  $("#newUserAccessMode")?.addEventListener("change", saveNewUserAccessMode);
+  loadNewUserAccessMode();
 
   // CSV export
   $("#clientExportCsvBtn")?.addEventListener("click", () => {

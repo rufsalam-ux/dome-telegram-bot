@@ -198,32 +198,31 @@ export function HomeworkScreen({ lessonId, onBack }: { lessonId?: string; onBack
       const targetLang = String(child?.learningLanguage || 'en').toLowerCase();
       const sameLanguage = nativeLang === targetLang;
 
-      // 1. Play in native (explanation) language
-      const nativeText = nativeLang === 'en' ? aiTaskTextEn : aiTaskTextRu;
-      const remoteNative = await ttsSource(nativeText, nativeLang, '', nativeLang, nativeLang, nativeLang, 'encouraging');
+      // 1. Play in TARGET (studied) language FIRST
+      const targetText = targetLang === 'ru' ? aiTaskTextRu : aiTaskTextEn;
+      const remoteTarget = await ttsSource(targetText, targetLang, '', nativeLang, nativeLang, targetLang, 'encouraging');
       if (!isMountedRef.current) return;
 
-      const cachedNative = await cacheTutorAudioSource(remoteNative);
+      const cachedTarget = await cacheTutorAudioSource(remoteTarget);
       if (!isMountedRef.current) return;
 
       try {
-        voicePlayer.replace(cachedNative);
+        voicePlayer.replace(cachedTarget);
         voicePlayer.play();
       } catch (err) {
-        console.warn('AI Homework native playback error', err);
+        console.warn('AI Homework target playback error', err);
       }
 
-      // 2. If target language differs — wait for native playback to finish, then play target
+      // 2. If target language differs from explanation — wait for target playback to finish, then play explanation
       if (!sameLanguage && isMountedRef.current) {
-        const targetText = targetLang === 'ru' ? aiTaskTextRu : aiTaskTextEn;
-        // Pre-cache target audio while native is playing
-        const remoteTarget = await ttsSource(targetText, targetLang, '', nativeLang, nativeLang, targetLang, 'encouraging');
+        const nativeText = nativeLang === 'en' ? aiTaskTextEn : aiTaskTextRu;
+        const remoteNative = await ttsSource(nativeText, nativeLang, '', nativeLang, nativeLang, nativeLang, 'encouraging');
         if (!isMountedRef.current) return;
 
-        const cachedTarget = await cacheTutorAudioSource(remoteTarget);
+        const cachedNative = await cacheTutorAudioSource(remoteNative);
         if (!isMountedRef.current) return;
 
-        // Wait for native audio to finish (safely polled with mounted and try-catch guards)
+        // Wait for target audio to finish (safely polled with mounted and try-catch guards)
         await new Promise<void>((resolve) => {
           let elapsed = 0;
           if (activeIntervalRef.current) {
@@ -267,10 +266,10 @@ export function HomeworkScreen({ lessonId, onBack }: { lessonId?: string; onBack
         if (!isMountedRef.current) return;
 
         try {
-          voicePlayer.replace(cachedTarget);
+          voicePlayer.replace(cachedNative);
           voicePlayer.play();
         } catch (err) {
-          console.warn('AI Homework target playback error', err);
+          console.warn('AI Homework native playback error', err);
         }
       }
     } catch (e) {

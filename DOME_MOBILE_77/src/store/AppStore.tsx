@@ -31,6 +31,7 @@ function childProfile(raw:any,parentId:string):ChildProfile{
     parentId,
     name:String(raw.name||raw.display_name).trim(),
     age:raw.age??raw.age_years,
+    gender:raw.gender==='girl'?'girl':'boy',
     learningLanguage:raw.target_language||'ru',
     nativeLanguage:raw.native_language||'ru',
     languageLevel:raw.language_level||'PRE_A1',

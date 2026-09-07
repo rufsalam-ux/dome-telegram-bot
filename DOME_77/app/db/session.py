@@ -120,9 +120,15 @@ async def init_db() -> None:
             "verification_status": "VARCHAR(40) DEFAULT 'UNVERIFIED'",
             "active_child_id": "INTEGER",
             "account_role": "VARCHAR(30) NOT NULL DEFAULT 'STANDARD'",
+            "account_status": "VARCHAR(30) NOT NULL DEFAULT 'ACTIVE'",
+            "access_status_changed_at": "TIMESTAMP",
+            "access_status_changed_by": "VARCHAR(120)",
+            "last_active_at": "TIMESTAMP",
         })
         await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_parents_active_child_id ON parents(active_child_id)"))
         await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_parents_account_role ON parents(account_role)"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_parents_account_status ON parents(account_status)"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_parents_last_active_at ON parents(last_active_at)"))
         await conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_parents_email ON parents(email) WHERE email IS NOT NULL AND email <> ''"))
         # Existing accounts predate standalone verification. New registrations
         # explicitly set email_verified=False until the emailed code is entered.

@@ -198,6 +198,13 @@ DEFAULT_LEGAL: dict[str, Any] = {
 DEFAULT_FREE_TOPIC = json.loads((CONFIG_DIR / "free_topic.json").read_text("utf-8")) if (CONFIG_DIR / "free_topic.json").exists() else {"schema_version":"1.0","enabled":True,"min_slides":18,"max_slides":25,"default_slides":21,"allow_test_payment_bypass":True}
 DEFAULT_CARTOON = json.loads((CONFIG_DIR / "cartoon.json").read_text("utf-8")) if (CONFIG_DIR / "cartoon.json").exists() else {"schema_version":"1.0","first_child_scene_seconds":8,"companions":{"enabled":True}}
 DEFAULT_PAYMENTS = json.loads((CONFIG_DIR / "payments.json").read_text("utf-8")) if (CONFIG_DIR / "payments.json").exists() else {"schema_version":"1.0","save_card_once":True,"future_package_confirmation":"sms_otp","allow_test_free_topic_bypass":True}
+DEFAULT_ACCOUNT_ACCESS: dict[str, Any] = {
+    "schema_version": "1.0",
+    # New standalone testers receive access automatically after the existing
+    # email verification step.  The Content Studio can later switch this to
+    # MANUAL without changing the mobile application.
+    "new_user_access_mode": "AUTOMATIC",
+}
 
 DEFAULTS = {
     "features": DEFAULT_FEATURES,
@@ -211,6 +218,7 @@ DEFAULTS = {
     "free_topic": DEFAULT_FREE_TOPIC,
     "cartoon": DEFAULT_CARTOON,
     "payments": DEFAULT_PAYMENTS,
+    "account_access": DEFAULT_ACCOUNT_ACCESS,
 }
 
 

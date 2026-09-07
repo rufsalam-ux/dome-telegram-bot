@@ -25,6 +25,7 @@ class AISpeechError(RuntimeError):
 log = logging.getLogger("dome.ai_speech")
 TTS_CACHE_RESERVE_BYTES = 16 * 1024 * 1024
 TTS_CACHE_ACTIVE_GRACE_SECONDS = 10 * 60
+TTS_LOUDNESS_FILTER = "loudnorm=I=-16:TP=-1.5:LRA=11,alimiter=limit=0.891"
 
 
 def _ephemeral_tts_dir(cache_dir: Path) -> Path:
@@ -147,6 +148,30 @@ def _write_tts_atomically(output: Path, payload: bytes) -> Path:
         return fallback_output
 
 
+def _normalize_tts_audio(source: Path, destination: Path) -> None:
+    """Make spoken tutor audio consistently audible without clipping.
+
+    The mobile player already runs at its maximum legal volume (1.0).  The
+    provider's source clips have varying loudness, so a client-side multiplier
+    cannot solve quiet voice on phone speakers.  We instead normalise once on
+    the server and cache the bounded output for every later listener.
+    """
+    temporary = destination.with_name(f"{destination.stem}.{secrets.token_hex(5)}.tmp.ogg")
+    command = [
+        settings.ffmpeg_bin, "-y", "-hide_banner", "-loglevel", "error",
+        "-i", str(source), "-vn", "-af", TTS_LOUDNESS_FILTER,
+        "-c:a", "libopus", "-b:a", "64k", str(temporary),
+    ]
+    try:
+        result = subprocess.run(command, check=False, capture_output=True, timeout=90)
+        if result.returncode != 0 or not temporary.exists() or temporary.stat().st_size <= 0:
+            detail = result.stderr.decode("utf-8", errors="replace")[-300:]
+            raise AISpeechError(f"Tutor audio normalization failed: {detail}")
+        temporary.replace(destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def _extract_output_text(payload: dict) -> str:
     for item in payload.get("output", []):
         for content in item.get("content", []):
@@ -224,31 +249,48 @@ async def synthesize_speech(
         "warm": "Sound warm, attentive and conversational.",
     }
     style_instruction = styles.get(style, styles["warm"])
-    digest = hashlib.sha256(f"DOME_TTS_V4|{settings.openai_tts_model}|{settings.child_tts_voice}|{language}|{style}|{text}".encode()).hexdigest()[:24]
+    # V5 deliberately invalidates the old, unnormalised cache.  The player is
+    # already capped at 1.0, so serving an old low-level source would preserve
+    # the physical-device quiet-voice regression forever.
+    digest = hashlib.sha256(f"DOME_TTS_V5_LOUDNESS|{settings.openai_tts_model}|{settings.child_tts_voice}|{language}|{style}|{text}".encode()).hexdigest()[:24]
     filename = f"{purpose}_{digest}.ogg"
     cached = _existing_tts_path(cache_dir, filename)
     if cached:
         return cached
-    headers = {"Authorization": f"Bearer {settings.openai_api_key}", "Content-Type": "application/json"}
-    payload = {
-        "model": settings.openai_tts_model,
-        "voice": settings.child_tts_voice,
-        "input": text,
-        "response_format": "opus",
-        "instructions": (
-            f"Speak to a child learning {language_name(language)}. "
-            "Use a soft, friendly, youthful feminine voice for a child. Sound kind, warm, emotionally expressive and genuinely interested. "
-            "Sound like a warm, lively female children's presenter: smile in the voice, vary intonation naturally, use playful curiosity, gentle excitement, expressive pauses and a calm conversational pace. Questions should sound curious and praise should sound genuinely pleased. "
-            f"{style_instruction} "
-            "Never sound stern, rough, flat, robotic, cold, rushed or babyish. Keep pronunciation very clear."
-        ),
-    }
-    async with httpx.AsyncClient(timeout=90) as client:
-        response = await client.post("https://api.openai.com/v1/audio/speech", headers=headers, content=json.dumps(payload))
-    if response.status_code >= 400:
-        raise AISpeechError(f"Speech API error {response.status_code}: {response.text[:300]}")
-    output = _tts_output_path(cache_dir, filename, len(response.content))
-    return _write_tts_atomically(output, response.content)
+    source_filename = f"{purpose}_source_{digest}.ogg"
+    source_audio = _existing_tts_path(cache_dir, source_filename)
+    if source_audio is None:
+        headers = {"Authorization": f"Bearer {settings.openai_api_key}", "Content-Type": "application/json"}
+        payload = {
+            "model": settings.openai_tts_model,
+            "voice": settings.child_tts_voice,
+            "input": text,
+            "response_format": "opus",
+            "instructions": (
+                f"Speak to a child learning {language_name(language)}. "
+                "Use a soft, friendly, youthful feminine voice for a child. Sound kind, warm, emotionally expressive and genuinely interested. "
+                "Sound like a warm, lively female children's presenter: smile in the voice, vary intonation naturally, use playful curiosity, gentle excitement, expressive pauses and a calm conversational pace. Questions should sound curious and praise should sound genuinely pleased. "
+                f"{style_instruction} "
+                "Never sound stern, rough, flat, robotic, cold, rushed or babyish. Keep pronunciation very clear."
+            ),
+        }
+        async with httpx.AsyncClient(timeout=90) as client:
+            response = await client.post("https://api.openai.com/v1/audio/speech", headers=headers, content=json.dumps(payload))
+        if response.status_code >= 400:
+            raise AISpeechError(f"Speech API error {response.status_code}: {response.text[:300]}")
+        source_output = _tts_output_path(cache_dir, source_filename, len(response.content))
+        source_audio = _write_tts_atomically(source_output, response.content)
+    output = _tts_output_path(cache_dir, filename, source_audio.stat().st_size)
+    try:
+        await asyncio.to_thread(_normalize_tts_audio, source_audio, output)
+        log.info("TTS_LOUDNESS_NORMALIZED source=%s output=%s filter=%s", source_audio.name, output.name, TTS_LOUDNESS_FILTER)
+        return output
+    except (AISpeechError, OSError, subprocess.SubprocessError) as exc:
+        # A working provider source is preferable to a total tutor outage if a
+        # transient encoder problem occurs.  The warning is server-only; the
+        # app stays usable and a later request retries normalization.
+        log.warning("TTS_LOUDNESS_NORMALIZATION_FALLBACK source=%s error=%s", source_audio.name, exc)
+        return source_audio
 
 
 async def synthesize_bilingual_speech(
@@ -282,7 +324,7 @@ async def synthesize_bilingual_speech(
     if not native_audio:
         return target_audio
     digest = hashlib.sha256(
-        f"DOME_BILINGUAL_TTS_V1|{target_language}|{native_language}|{delivery_style}|{target_text}|{native_text}".encode()
+        f"DOME_BILINGUAL_TTS_V2_LOUDNESS|{target_language}|{native_language}|{delivery_style}|{target_text}|{native_text}".encode()
     ).hexdigest()[:24]
     filename = f"{purpose}_bilingual_{digest}.ogg"
     cached = _existing_tts_path(cache_dir, filename)
