@@ -80,18 +80,20 @@ export function AddChildScreen(){
       <Card compact={compact}>
         <H2 compact={compact}>{compact?'Добавить ребёнка':'Знакомство с DOME'}</H2>
         {!compact?<Body>Укажите основные данные — их можно будет изменить позже.</Body>:null}
-        <TextInput value={name} onChangeText={setName} placeholder='Имя ребёнка' autoCapitalize='words' returnKeyType='next' onFocus={onFieldFocus} onSubmitEditing={()=>ageRef.current?.focus()} style={[input,compact&&compactInput]}/>
-        <TextInput ref={ageRef} value={age} onChangeText={value=>setAge(value.replace(/\D/g,'').slice(0,2))} placeholder='Возраст (2–18)' keyboardType='number-pad' returnKeyType='done' onFocus={onFieldFocus} onSubmitEditing={Keyboard.dismiss} style={[input,compact&&compactInput]}/>
-        {!compact?<H2>Пол ребёнка</H2>:null}
+        <Text style={fieldLabel}>Имя ребёнка *</Text>
+        <TextInput value={name} onChangeText={setName} placeholder='Например: Артём' autoCapitalize='words' returnKeyType='next' onFocus={onFieldFocus} onSubmitEditing={()=>ageRef.current?.focus()} style={[input,compact&&compactInput]}/>
+        <Text style={fieldLabel}>Возраст ребёнка * (от 2 до 18 лет)</Text>
+        <TextInput ref={ageRef} value={age} onChangeText={value=>setAge(value.replace(/\D/g,'').slice(0,2))} placeholder='Например: 7' keyboardType='number-pad' returnKeyType='done' onFocus={onFieldFocus} onSubmitEditing={Keyboard.dismiss} style={[input,compact&&compactInput]}/>
+        <Text style={fieldLabel}>Пол ребёнка *</Text>
         <GenderPicker value={gender} onChange={setGender} compact={compact}/>
         {compact?<Body compact>Изучаемый: Русский · объяснения: {nativeLanguage.toUpperCase()}. Закройте клавиатуру, чтобы изменить.</Body>:<>
-          <H2>Изучаемый язык</H2>
+          <Text style={fieldLabel}>Изучаемый язык *</Text>
           <LanguagePicker options={STUDIED_LANGUAGE_OPTIONS} compact={false} value={targetLanguage} onChange={()=>{}}/>
-          <H2>Язык объяснений</H2>
+          <Text style={fieldLabel}>Язык объяснений * (язык родителя)</Text>
           <LanguagePicker options={EXPLANATION_LANGUAGE_OPTIONS} compact={false} value={nativeLanguage} onChange={setNativeLanguage}/>
         </>}
         {inlineAction}
-        {!compact?<Button secondary disabled={busy} title='Назад' onPress={()=>{Keyboard.dismiss();store.setScreen('children')}}/>:null}
+        {!compact?<Button secondary disabled={busy} title='Назад' onPress={()=>{Keyboard.dismiss();store.setScreen('children')}}/> :null}
       </Card>
     </>}
   </KeyboardAwareForm>
@@ -99,3 +101,4 @@ export function AddChildScreen(){
 
 const input={borderWidth:1,borderColor:'#CCC',borderRadius:14,padding:14,fontSize:16,marginBottom:12,backgroundColor:'#FFF'} as const;
 const compactInput={borderRadius:9,paddingVertical:6,paddingHorizontal:10,fontSize:14,lineHeight:17,marginBottom:3} as const;
+const fieldLabel={fontSize:13,fontWeight:'600' as const,color:'#444',marginBottom:5,marginTop:2};

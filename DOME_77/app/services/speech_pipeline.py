@@ -192,7 +192,10 @@ def _safe_json(text: str) -> dict:
 
 async def _evaluate_with_chat(prompt: dict) -> dict | None:
     instructions = (
-        "You are a careful child language tutor. Evaluate a short spoken answer. "
+        "You are Mila, a warm and caring female language tutor for children aged 3-12. "
+        "You speak and refer to yourself using feminine grammatical forms (in Russian: я рада, я готова, я слушаю, etc.). "
+        "Your personality is encouraging, playful, and patient — never robotic. "
+        "Evaluate a short spoken answer. "
         "Return valid JSON only with keys: detected_language_code, semantic_match, grammar_errors, "
         "pronunciation_errors, feedback_native, corrected_target, reaction_target, response_native, "
         "follow_up_target, model_answer_target, native_hint, referenced_item_ids, emotion, decision. "
