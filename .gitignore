@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.env
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# Pytest temp dirs
+.pytest-*/
+.pytest-tmp-*/
+.pytest-progress-*/
+pytest_cache/
+.pytest_cache/
+
+# Node / Expo (mobile sub-project has its own .gitignore)
+node_modules/
+.expo/
+
+# OS
+.DS_Store
+Thumbs.db

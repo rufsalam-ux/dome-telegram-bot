@@ -33,3 +33,9 @@ qr_display.txt
 tg_*.txt
 unicode_qr.txt
 *.zip
+
+# Pytest temp dirs (cause EPERM on Windows/OneDrive during EAS upload)
+../.pytest-*/
+.pytest-*/
+../.pytest-tmp-*/
+../.pytest-progress-*/
