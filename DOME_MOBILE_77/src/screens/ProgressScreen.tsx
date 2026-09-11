@@ -148,6 +148,7 @@ export function ProgressScreen({ onBack }: { onBack?: () => void } = {}) {
 
           const totalCatalog = rawLessons.length;
           const overallPct = totalCatalog > 0 ? Math.round((uniqueCompleted / totalCatalog) * 100) : 0;
+          const totalHwDone = rawLessons.filter((l: any) => Boolean(l.homework_completed)).length;
 
           setData({
             child: {
@@ -162,7 +163,7 @@ export function ProgressScreen({ onBack }: { onBack?: () => void } = {}) {
               unique_lessons_completed: uniqueCompleted,
               total_lessons_catalog: totalCatalog,
               overall_progress_percent: overallPct,
-              homeworks_completed_count: 0,
+              homeworks_completed_count: totalHwDone,
               current_streak_days: uniqueCompleted > 0 ? 1 : 0,
               activity_dates: [],
               scores: {

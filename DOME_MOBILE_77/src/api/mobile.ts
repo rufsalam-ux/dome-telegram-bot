@@ -126,16 +126,16 @@ async function foregroundAudioDownload(FileSystem:any,source:TutorAudioSource,te
   return outcome.result;
 }
 
-async function cacheRemoteAudioSource(source:TutorAudioSource,namespace:string,extension:string,timeoutMs=CHILD_AUDIO_CACHE_TIMEOUT_MS):Promise<TutorAudioSource>{
+async function cacheRemoteAudioSource(source:TutorAudioSource,namespace:string,extension:string,timeoutMs=CHILD_AUDIO_CACHE_TIMEOUT_MS,forceFresh=false):Promise<TutorAudioSource>{
   const FileSystem=require('expo-file-system/legacy');const cacheRoot=String(FileSystem.cacheDirectory||'');
   if(!cacheRoot){console.warn('TUTOR_AUDIO_CACHE_UNAVAILABLE',{namespace,remote_url:remoteAudioLogUrl(source.uri)});return source}
   const directory=`${cacheRoot}${namespace}/`;const destination=`${directory}${tutorAudioCacheKey(source.uri)}.${extension}`;const temporary=`${destination}.download`;const cacheKey=`${namespace}:${destination}`;
   const existing=await FileSystem.getInfoAsync(destination,{size:true});
-  if(existing.exists&&Number(existing.size||0)>0){console.info('TUTOR_AUDIO_CACHE_HIT',{namespace,local_path:destination,byte_size:Number(existing.size||0)});return {uri:destination,name:source.name||`dome-audio.${extension}`}}
-  const running=audioCacheInFlight.get(cacheKey);if(running)return running;
+  if(!forceFresh&&existing.exists&&Number(existing.size||0)>0){console.info('TUTOR_AUDIO_CACHE_HIT',{namespace,local_path:destination,byte_size:Number(existing.size||0)});return {uri:destination,name:source.name||`dome-audio.${extension}`}}
+  const running=audioCacheInFlight.get(cacheKey);if(!forceFresh&&running)return running;
   const operation=(async()=>{
     const label=namespace==='dome-tutor-audio'?'tutor voice cache':'child recording cache';
-    console.info('TUTOR_AUDIO_CACHE_REQUEST',{label,remote_url:remoteAudioLogUrl(source.uri),local_path:destination,timeout_ms:timeoutMs});
+    console.info('TUTOR_AUDIO_CACHE_REQUEST',{label,remote_url:remoteAudioLogUrl(source.uri),local_path:destination,timeout_ms:timeoutMs,force_fresh:forceFresh});
     await FileSystem.makeDirectoryAsync(directory,{intermediates:true});
     await FileSystem.deleteAsync(temporary,{idempotent:true}).catch(()=>{});
     try{
@@ -186,8 +186,18 @@ export function cacheTutorAudioSource(source:TutorAudioSource):Promise<TutorAudi
   return cacheRemoteAudioSource(source,'dome-tutor-audio','ogg',TUTOR_AUDIO_CACHE_TIMEOUT_MS);
 }
 
-export function cacheChildRecordingSource(source:TutorAudioSource):Promise<TutorAudioSource>{
-  return cacheRemoteAudioSource(source,'dome-child-recordings','wav');
+export function cacheChildRecordingSource(source:TutorAudioSource,forceFresh=false):Promise<TutorAudioSource>{
+  return cacheRemoteAudioSource(source,'dome-child-recordings','wav',CHILD_AUDIO_CACHE_TIMEOUT_MS,forceFresh);
+}
+
+export async function invalidateChildRecordingCache(sessionId:number,phraseId:string){
+  try{
+    const FileSystem=require('expo-file-system/legacy');const cacheRoot=String(FileSystem.cacheDirectory||'');
+    if(!cacheRoot)return;
+    const directory=`${cacheRoot}dome-child-recordings/`;
+    const destination=`${directory}${tutorAudioCacheKey(`${API_BASE}/api/mobile/session/${sessionId}/voice/${encodeURIComponent(phraseId)}`)}.wav`;
+    await FileSystem.deleteAsync(destination,{idempotent:true}).catch(()=>{});
+  }catch(e){console.warn('Failed to invalidate child recording cache',e)}
 }
 
 export class MobileApiError extends Error{
@@ -385,8 +395,9 @@ export async function sendVoice(sessionId:number,uri:string,slideId:string,phras
   return response;
 }
 
-export async function currentVoiceSource(sessionId:number,phraseId:string):Promise<TutorAudioSource>{
-  return {uri:`${API_BASE}/api/mobile/session/${sessionId}/voice/${encodeURIComponent(phraseId)}`,headers:{Authorization:`Bearer ${await requiredToken()}`},name:'child-take.wav'};
+export async function currentVoiceSource(sessionId:number,phraseId:string,cacheBust?:number|string):Promise<TutorAudioSource>{
+  const query=cacheBust?`?v=${encodeURIComponent(String(cacheBust))}`:'';
+  return {uri:`${API_BASE}/api/mobile/session/${sessionId}/voice/${encodeURIComponent(phraseId)}${query}`,headers:{Authorization:`Bearer ${await requiredToken()}`},name:'child-take.wav'};
 }
 
 export function sendInteractive(sessionId:number,slideId:string,taskType:string,result:any){

@@ -88,6 +88,18 @@ export function HomeScreen({
       onPress: () => store.setScreen('progress'),
     },
     {
+      id: 'consents',
+      title: 'Согласия',
+      icon: '📋',
+      onPress: () => store.setScreen('consents'),
+    },
+    {
+      id: 'about',
+      title: 'О приложении',
+      icon: 'ℹ️',
+      onPress: () => store.setScreen('about'),
+    },
+    {
       id: 'children',
       title: 'Сменить ребёнка',
       icon: '👨‍👩‍👧',
