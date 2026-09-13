@@ -283,6 +283,7 @@ async def _mobile_pre_slide_video_state(db,child_id:int,lesson_id:str,current_se
         try:payload=json.loads(row.result_json or '{}')
         except (TypeError,ValueError,json.JSONDecodeError):continue
         key=str(payload.get('video_key') or '').strip()
+        if payload.get('outcome')=='failed' or payload.get('completed') is False:continue
         if not key:continue
         if key not in ever:ever.append(key)
         if session.id==current_session_id and key not in attempt:attempt.append(key)
@@ -610,7 +611,17 @@ async def hero_preset(request:web.Request)->web.Response:
     except Exception: raise web.HTTPBadRequest(text=json.dumps({'error':'Unknown hero'}),content_type='application/json')
     metadata=preset_character_geometry(catalog)
     async with SessionLocal() as db:
-        ch=Character(child_id=cid,original_path=str(path),processed_path=str(path),status='READY',source='CATALOG',catalog_id=catalog,visual_metadata_json=json.dumps(metadata,ensure_ascii=False),visual_analysis_version=ANALYSIS_VERSION,visual_analysis_status='CONFIRMED');db.add(ch);await db.flush();c2=await db.get(Child,cid);c2.active_character_id=ch.id;await db.commit();await db.refresh(ch)
+        c2=await db.get(Child,cid)
+        current=await db.get(Character,c2.active_character_id) if c2.active_character_id else None
+        ch=current if current and current.child_id==cid and current.source=='CATALOG' and current.catalog_id==catalog and current.status=='READY' else None
+        if ch is None:
+            ch=await db.scalar(select(Character).where(Character.child_id==cid,Character.source=='CATALOG',Character.catalog_id==catalog,Character.status=='READY').order_by(Character.id))
+        if ch is None:
+            ch=Character(child_id=cid,original_path=str(path),processed_path=str(path),status='READY',source='CATALOG',catalog_id=catalog,visual_metadata_json=json.dumps(metadata,ensure_ascii=False),visual_analysis_version=ANALYSIS_VERSION,visual_analysis_status='CONFIRMED')
+            db.add(ch);await db.flush()
+        c2.active_character_id=ch.id
+        await db.commit();await db.refresh(ch)
+        log.info('HERO_SELECTION_SAVED parent=%s child=%s catalog_id=%s character_id=%s asset=%s',p.id,cid,catalog,ch.id,ch.processed_path)
     val=f'hero:{cid}:{ch.id}'; t=signed_media_token(val)
     return web.json_response({'character_id':ch.id,'hero_url':f'{_base(request)}/api/mobile/hero/file/{cid}/{ch.id}?t={t}','hero_metadata':_character_json(ch)})
 
