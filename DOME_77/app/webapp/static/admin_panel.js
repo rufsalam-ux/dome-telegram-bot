@@ -47,7 +47,7 @@ const escH = v => String(v ?? "").replace(/[&<>"']/g, c => ({
 }[c]));
 
 const state = {
-  token: sessionStorage.getItem("dome_studio_token") || "",
+  csrf: "",
   courses: [],
   lessons: [],
   expandedCourses: new Set(),
@@ -125,15 +125,16 @@ function showErrors(e) {
 }
 
 async function api(path, opts = {}) {
-  const headers = { ...(opts.headers || {}), Authorization: `Bearer ${state.token}` };
+  const headers = { ...(opts.headers || {}), "X-DOME-CSRF": state.csrf };
   if (opts.body && !(opts.body instanceof FormData)) headers["Content-Type"] = "application/json";
   const res = await fetch(path, { ...opts, headers });
   let data = {};
-  try { data = await res.json(); } catch { data = { error: `HTTP ${res.status}` }; }
+  const responseText = await res.text();
+  try { data = JSON.parse(responseText); } catch { data = { error: responseText.slice(0, 240) || `HTTP ${res.status}` }; }
   if (res.status === 401) {
     sessionStorage.removeItem("dome_studio_token");
-    state.token = "";
-    showLogin("Токен не принят. Войдите снова.");
+    state.csrf = "";
+    showLogin("Сессия завершена. Войдите снова.");
     throw new Error("Повторный вход");
   }
   if (!res.ok) {
@@ -151,7 +152,7 @@ async function fetchBlob(path) {
   const url = path.startsWith("media/")
     ? `/api/studio/lessons/${state.lessonId}/media/${encodeURIComponent(path.slice(6))}`
     : `/api/studio/lessons/${state.lessonId}/asset?path=${enc}`;
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${state.token}` } });
+  const res = await fetch(url, { credentials: "same-origin" });
   if (!res.ok) throw new Error(`Файл недоступен: ${path}`);
   const obj = URL.createObjectURL(await res.blob());
   state.blobUrls.set(path, obj);
@@ -169,20 +170,21 @@ function showLogin(msg = "") {
   if (msg && $("#loginError")) $("#loginError").textContent = msg;
 }
 
-async function login() {
-  const inputVal = ($("#tokenInput")?.value || "").trim();
-  if (inputVal) state.token = inputVal;
-  if (!state.token) { showLogin("Введите токен."); return; }
+async function login(restore = false) {
   try {
+    const auth = restore === true
+      ? await api("/api/studio/auth/session")
+      : await api("/api/studio/auth/login", {method:"POST",body:JSON.stringify({email:$("#ownerEmail").value.trim(),password:$("#ownerPassword").value})});
+    state.csrf = auth.csrf;
+    $("#ownerPassword").value = "";
     const status = await api("/api/studio/status");
-    sessionStorage.setItem("dome_studio_token", state.token);
     if ($("#loginView")) $("#loginView").classList.add("hidden");
     if ($("#appView")) $("#appView").classList.remove("hidden");
     await loadCourses();
     await loadLessons();
     loadDashboard();
   } catch (e) {
-    showLogin(e.message || "Токен не принят");
+    showLogin(restore === true ? "" : (e.message || "Не удалось войти"));
   }
 }
 
@@ -518,7 +520,7 @@ function renderCourseCoverPreview(course) {
     return;
   }
   replaceCourseCoverPreview(document.createTextNode("Загружаем текущую обложку…"));
-  fetch(course.cover_image, { headers: { Authorization: `Bearer ${state.token}` } })
+  fetch(course.cover_image, { credentials: "same-origin" })
     .then(res => {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return res.blob();
@@ -2179,7 +2181,8 @@ function boot() {
     if (durationRow) durationRow.style.display = e.target.value === "N_PERIODS_DISCOUNT" ? "block" : "none";
   }, "change");
 
-  bind("tokenInput", ev => { if (ev.key === "Enter") login(); }, "keydown");
+  bind("ownerPassword", ev => { if (ev.key === "Enter") login(); }, "keydown");
+  bind("logoutButton", async () => { await api("/api/studio/auth/logout", {method:"POST"}); state.csrf=""; releaseBlobs(); showLogin(); });
 
   // Hierarchy & Course events
   bind("refreshHierarchy", async () => { await loadCourses(); await loadLessons(); });
@@ -2251,18 +2254,10 @@ function boot() {
     if (state.dirty || state.hwDirty) { ev.preventDefault(); ev.returnValue = ""; }
   });
 
-  const qToken = new URLSearchParams(window.location.search).get("token");
-  if (qToken) {
-    state.token = qToken;
-    sessionStorage.setItem("dome_studio_token", qToken);
-  }
-  if (state.token) {
-    const ti = document.getElementById("tokenInput");
-    if (ti) ti.value = state.token;
-    login();
-  } else {
-    showLogin();
-  }
+  sessionStorage.removeItem("dome_studio_token");
+  // Never consume credentials from URLs. Remove legacy query strings from history.
+  if (new URLSearchParams(window.location.search).has("token")) history.replaceState(null,"",window.location.pathname);
+  login(true);
 }
 
 // Ensure boot is always executed
@@ -2675,4 +2670,651 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Tariff refresh
   $("#tariffRefreshBtn")?.addEventListener("click", loadTariffs);
+  // Media Manager Listeners
+  $("#mediaUploadInput")?.addEventListener("change", e => uploadMediaFiles(e.target.files));
+  $("#mediaRefreshBtn")?.addEventListener("click", loadMediaManager);
+  $("#mediaSearch")?.addEventListener("input", renderMediaGrid);
+  $("#mediaTypeFilter")?.addEventListener("change", renderMediaGrid);
+
 });
+
+
+
+
+/* ============================================================================
+   DOME PRODUCTION CMS — CLIENT-SIDE MODULES
+   ========================================================================== */
+
+let _allMediaFiles = [];
+let _currentMovieConfig = { scenes: [] };
+let _currentMovieLessonId = "";
+
+/* --- 1. MEDIA MANAGER --- */
+async function loadMediaManager() {
+  try {
+    const data = await api("/api/studio/cms/media");
+    _allMediaFiles = data.files || [];
+    renderMediaGrid();
+  } catch(e) {
+    console.warn("Failed to load media:", e);
+    const grid = $("#mediaGrid");
+    if (grid) grid.innerHTML = `<div class="card" style="grid-column:1/-1;color:var(--danger)">Ошибка загрузки медиатеки: ${escH(e.message)}</div>`;
+  }
+}
+
+function renderMediaGrid() {
+  const grid = $("#mediaGrid");
+  if (!grid) return;
+  const q = ($("#mediaSearch")?.value || "").trim().toLowerCase();
+  const typeFilter = $("#mediaTypeFilter")?.value || "";
+
+  const filtered = _allMediaFiles.filter(f => {
+    if (typeFilter && f.type !== typeFilter) return false;
+    if (q && !f.name.toLowerCase().includes(q) && !(f.path || "").toLowerCase().includes(q)) return false;
+    return true;
+  });
+
+  if (filtered.length === 0) {
+    grid.innerHTML = '<div class="card" style="grid-column:1/-1;text-align:center;color:var(--muted);padding:30px">Файлы не найдены</div>';
+    return;
+  }
+
+  grid.innerHTML = filtered.map(f => {
+    const isImg = f.type === "image";
+    const isAudio = f.type === "audio";
+    const isVideo = f.type === "video";
+    const usedIn = f.used_in || [];
+    const usedBadge = usedIn.length > 0
+      ? `<span style="background:#DCFCE7;color:#15803D;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:700">Используется (${usedIn.length})</span>`
+      : `<span style="background:#F1F5F9;color:#64748B;padding:2px 6px;border-radius:4px;font-size:11px">Не используется</span>`;
+
+    const usedTooltip = usedIn.length > 0 ? `title="${escH(usedIn.join(', '))}"` : '';
+
+    return `<div class="card" style="display:flex;flex-direction:column;gap:8px;padding:12px">
+      <div style="height:120px;background:#0F172A;border-radius:6px;display:flex;align-items:center;justify-content:center;overflow:hidden">
+        ${isImg ? `<img src="${escH(f.url)}" style="max-height:100%;max-width:100%;object-fit:contain" alt="${escH(f.name)}">` : ''}
+        ${isAudio ? `<div style="text-align:center;color:#38BDF8"><div style="font-size:32px">🎵</div><audio controls src="${escH(f.url)}" style="width:180px;height:32px;margin-top:6px"></audio></div>` : ''}
+        ${isVideo ? `<div style="text-align:center;color:#F59E0B"><div style="font-size:32px">🎬</div><span style="font-size:11px;color:#cbd5e1">Видеофайл</span></div>` : ''}
+        ${(!isImg && !isAudio && !isVideo) ? `<div style="font-size:32px;color:#94A3B8">📄</div>` : ''}
+      </div>
+      <div style="font-weight:600;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${escH(f.name)}">${escH(f.name)}</div>
+      <div style="display:flex;justify-content:space-between;align-items:center;font-size:11px;color:var(--muted)">
+        <span>${f.size_formatted || (Math.round((f.size||0)/1024)+' KB')}</span>
+        <span ${usedTooltip}>${usedBadge}</span>
+      </div>
+      <div style="display:flex;gap:6px;margin-top:4px">
+        <a href="${escH(f.url)}" target="_blank" class="primary small-btn" style="text-align:center;text-decoration:none;flex:1;padding:4px 8px">Открыть</a>
+        <button class="danger small-btn" style="padding:4px 8px" onclick="deleteMediaFile('${escH(f.path)}', ${usedIn.length})">Удалить</button>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+async function uploadMediaFiles(fileList) {
+  if (!fileList || fileList.length === 0) return;
+  notice(`Загрузка ${fileList.length} файлов...`);
+  try {
+    for (const file of fileList) {
+      const formData = new FormData();
+      formData.append("file", file);
+      await api("/api/studio/cms/media", { method: "POST", body: formData });
+    }
+    notice("✅ Файлы успешно загружены в медиатеку!");
+    await loadMediaManager();
+  } catch(e) {
+    alert("Ошибка загрузки: " + e.message);
+  }
+}
+
+async function deleteMediaFile(path, usedCount) {
+  if (usedCount > 0) {
+    const confirmDelete = confirm(`⚠️ Внимание: этот файл используется в ${usedCount} местах (курсы/уроки). Удаление может сломать отображение. Всё равно удалить?`);
+    if (!confirmDelete) return;
+  } else {
+    if (!confirm("Удалить выбранный медиафайл?")) return;
+  }
+  try {
+    await api(`/api/studio/cms/media?path=${encodeURIComponent(path)}`, { method: "DELETE" });
+    notice("✅ Файл удалён");
+    await loadMediaManager();
+  } catch(e) {
+    alert("Ошибка удаления: " + e.message);
+  }
+}
+
+
+/* --- 2. HEROES MANAGER --- */
+function switchHeroSubTab(tab) {
+  if (tab === 'presets') {
+    $("#heroSubPresets")?.classList.remove("hidden");
+    $("#heroSubCustom")?.classList.add("hidden");
+    $("#heroTabPresetsBtn")?.classList.add("active");
+    $("#heroTabCustomBtn")?.classList.remove("active");
+  } else {
+    $("#heroSubPresets")?.classList.add("hidden");
+    $("#heroSubCustom")?.classList.remove("hidden");
+    $("#heroTabPresetsBtn")?.classList.remove("active");
+    $("#heroTabCustomBtn")?.classList.add("active");
+    loadCustomHeroes();
+  }
+}
+
+async function loadHeroManager() {
+  try {
+    const data = await api("/api/studio/cms/heroes");
+    const heroes = data.heroes || [];
+    renderPresetHeroes(heroes);
+  } catch(e) {
+    console.warn("Failed to load heroes:", e);
+  }
+}
+
+function renderPresetHeroes(heroes) {
+  const grid = $("#presetHeroesGrid");
+  if (!grid) return;
+  grid.innerHTML = heroes.map(h => {
+    const isBothCatsNote = (h.id === "cat" || h.id === "dome_cat")
+      ? `<div style="font-size:10px;color:#1D4ED8;background:#EFF6FF;padding:2px 4px;border-radius:4px;margin-top:2px">Персонаж кота: ${h.id === 'cat' ? 'Old Gray Cat' : 'New DOME Cat (худи)'}</div>`
+      : '';
+
+    return `<div class="card" style="display:flex;flex-direction:column;gap:8px;padding:14px">
+      <div style="height:120px;background:#F8FAFC;border:1px solid #E2E8F0;border-radius:8px;display:flex;align-items:center;justify-content:center;overflow:hidden">
+        <img src="/content-studio/heroes/${escH(h.asset_file)}" style="max-height:100%;max-width:100%;object-fit:contain" alt="${escH(h.name)}" onerror="this.src='/content-studio/heroes/all_characters.png'">
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:flex-start">
+        <div>
+          <strong style="font-size:15px">${escH(h.name)}</strong>
+          <div style="font-size:12px;color:var(--muted)">ID: <code>${escH(h.id)}</code></div>
+          ${isBothCatsNote}
+        </div>
+        <label class="check" style="font-size:12px">
+          <input type="checkbox" id="heroActive_${h.id}" ${h.active !== false ? "checked" : ""} onchange="updateHeroStatus('${h.id}', this.checked)"> Активен
+        </label>
+      </div>
+      <p style="font-size:12px;color:var(--muted);margin:2px 0">${escH(h.description || '')}</p>
+      <div style="margin-top:auto;padding-top:6px;border-top:1px solid var(--border);display:flex;gap:6px">
+        <input id="heroVoice_${h.id}" placeholder="Voice ID" value="${escH(h.voice_id || '')}" style="font-size:12px;padding:4px 6px;flex:1">
+        <button class="primary small-btn" onclick="saveHeroVoice('${h.id}')">Сохранить</button>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+async function updateHeroStatus(heroId, active) {
+  try {
+    await api("/api/studio/cms/heroes", {
+      method: "POST",
+      body: JSON.stringify({ hero_id: heroId, active })
+    });
+    notice(`✅ Статус героя ${heroId} обновлён`);
+  } catch(e) {
+    alert("Ошибка: " + e.message);
+  }
+}
+
+async function saveHeroVoice(heroId) {
+  const voiceId = $(`#heroVoice_${heroId}`)?.value?.trim() || "";
+  try {
+    await api("/api/studio/cms/heroes", {
+      method: "POST",
+      body: JSON.stringify({ hero_id: heroId, voice_id: voiceId })
+    });
+    notice(`✅ Голос героя ${heroId} сохранён`);
+  } catch(e) {
+    alert("Ошибка: " + e.message);
+  }
+}
+
+async function loadCustomHeroes() {
+  const grid = $("#customHeroesGrid");
+  if (!grid) return;
+  grid.innerHTML = '<div class="card" style="grid-column:1/-1;text-align:center;color:var(--muted)">Загрузка рисунков детей...</div>';
+  try {
+    const data = await api("/api/studio/cms/custom-heroes");
+    const customs = data.custom_heroes || [];
+    if (customs.length === 0) {
+      grid.innerHTML = '<div class="card" style="grid-column:1/-1;text-align:center;color:var(--muted);padding:24px">Пока нет загруженных детских рисунков</div>';
+      return;
+    }
+    grid.innerHTML = customs.map(c => `
+      <div class="card" style="display:flex;flex-direction:column;gap:8px;padding:14px">
+        <div style="height:140px;background:#0F172A;border-radius:8px;display:flex;align-items:center;justify-content:center;overflow:hidden">
+          ${c.drawing_url ? `<img src="${escH(c.drawing_url)}" style="max-height:100%;max-width:100%;object-fit:contain">` : '<span style="color:#64748B">Нет превью</span>'}
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <strong>Ребёнок: ID ${c.child_id || c.id}</strong>
+          <span style="font-size:11px;padding:2px 6px;border-radius:4px;background:#EBF3FF;color:#246BFD;font-weight:700">${escH(c.visual_analysis_status || c.status || 'NEW')}</span>
+        </div>
+        <div style="font-size:12px;color:var(--muted)">Источник: <code>${escH(c.source || 'CHILD_DRAWING')}</code></div>
+        ${c.error ? `<div style="font-size:11px;color:var(--danger)">${escH(c.error)}</div>` : ''}
+        <button class="primary small-btn" style="margin-top:6px" onclick="retryCustomHero('${c.id}')">🔄 Перегенерировать персонажа</button>
+      </div>
+    `).join("");
+  } catch(e) {
+    grid.innerHTML = `<div class="card" style="grid-column:1/-1;color:var(--danger)">Ошибка загрузки: ${escH(e.message)}</div>`;
+  }
+}
+
+async function retryCustomHero(charId) {
+  try {
+    await api(`/api/studio/cms/custom-heroes/${charId}/retry`, { method: "POST" });
+    notice("✅ Запущена повторная обработка детского рисунка");
+    await loadCustomHeroes();
+  } catch(e) {
+    alert("Ошибка: " + e.message);
+  }
+}
+
+
+/* --- 3. ANIMATIONS LIBRARY --- */
+async function loadAnimationsManager() {
+  try {
+    const data = await api("/api/studio/cms/animations");
+    const anims = data.animations || [];
+    renderAnimationsGrid(anims);
+  } catch(e) {
+    console.warn("Failed to load animations:", e);
+  }
+}
+
+function renderAnimationsGrid(anims) {
+  const grid = $("#animationsGrid");
+  if (!grid) return;
+  grid.innerHTML = anims.map(a => `
+    <div class="card" style="display:flex;flex-direction:column;gap:6px;padding:14px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start">
+        <strong>${escH(a.name || a.id)}</strong>
+        <label class="check" style="font-size:11px">
+          <input type="checkbox" ${a.active !== false ? "checked" : ""} onchange="toggleAnimation('${a.id}', this.checked)"> Вкл
+        </label>
+      </div>
+      <div style="font-size:12px;color:var(--muted)">ID: <code>${escH(a.id)}</code></div>
+      <div style="font-size:12px;color:var(--muted)">Длительность: <strong>${a.duration || 2.0}с</strong></div>
+      <p style="font-size:12px;color:var(--muted);margin:4px 0">${escH(a.description || '')}</p>
+      <div style="margin-top:auto;padding-top:6px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
+        <span style="font-size:10px;background:#F1F5F9;color:#64748B;padding:2px 6px;border-radius:4px">Герои: ${(a.compatible_heroes || ['all']).join(', ')}</span>
+        <button class="primary small-btn" style="padding:2px 8px;font-size:11px" onclick="previewAnimationActions('${a.id}')">Шаги</button>
+      </div>
+    </div>
+  `).join("");
+}
+
+async function toggleAnimation(animId, active) {
+  try {
+    await api(`/api/studio/cms/animations/${animId}/toggle`, {
+      method: "POST",
+      body: JSON.stringify({ active })
+    });
+    notice(`✅ Анимация ${animId} ${active ? 'включена' : 'отключена'}`);
+  } catch(e) {
+    alert("Ошибка: " + e.message);
+  }
+}
+
+function openNewAnimationDialog() {
+  const dlg = $("#newAnimationDialog");
+  if (dlg) dlg.showModal();
+}
+
+async function submitNewAnimation() {
+  const id = $("#animIdInput")?.value?.trim();
+  const name = $("#animNameInput")?.value?.trim();
+  const description = $("#animDescInput")?.value?.trim() || "";
+  const duration = parseFloat($("#animDurationInput")?.value || "2.5");
+  const hero = $("#animHeroSelect")?.value || "all";
+  let actions = [];
+  try {
+    actions = JSON.parse($("#animActionsInput")?.value || "[]");
+  } catch {
+    alert("Ошибка в формате JSON действий");
+    return;
+  }
+
+  if (!id || !name) {
+    alert("Укажите ID и название движения");
+    return;
+  }
+
+  try {
+    await api("/api/studio/cms/animations", {
+      method: "POST",
+      body: JSON.stringify({
+        id,
+        name,
+        description,
+        duration,
+        compatible_heroes: hero === "all" ? ["all"] : [hero],
+        actions
+      })
+    });
+    $("#newAnimationDialog")?.close();
+    notice(`✅ Новое движение «${name}» добавлено в библиотеку!`);
+    await loadAnimationsManager();
+  } catch(e) {
+    alert("Ошибка добавления анимации: " + e.message);
+  }
+}
+
+function previewAnimationActions(animId) {
+  api("/api/studio/cms/animations").then(data => {
+    const a = (data.animations || []).find(x => x.id === animId);
+    if (!a) return;
+    alert(`Движение: ${a.name} (${a.id})\\n\\nДействия:\\n${JSON.stringify(a.actions || [], null, 2)}`);
+  });
+}
+
+
+/* --- 4. MOVIE BUILDER --- */
+async function loadMovieManager() {
+  const select = $("#movieLessonSelect");
+  if (select && state.lessons && state.lessons.length > 0) {
+    select.innerHTML = state.lessons.map(l => `<option value="${escH(l.lesson_id)}">${escH(l.title || l.lesson_id)}</option>`).join("");
+    if (!_currentMovieLessonId && state.lessons[0]) {
+      _currentMovieLessonId = state.lessons[0].lesson_id;
+    }
+    if (_currentMovieLessonId) select.value = _currentMovieLessonId;
+  }
+
+  if (_currentMovieLessonId) {
+    await loadLessonMovieConfig(_currentMovieLessonId);
+  }
+  await loadMovieJobs();
+}
+
+async function loadLessonMovieConfig(lessonId) {
+  _currentMovieLessonId = lessonId;
+  try {
+    const data = await api(`/api/studio/cms/movie-config?lesson_id=${encodeURIComponent(lessonId)}`);
+    _currentMovieConfig = data.config || { scenes: [] };
+    renderMovieScenes();
+  } catch(e) {
+    console.warn("Failed to load movie config:", e);
+    _currentMovieConfig = { scenes: [] };
+    renderMovieScenes();
+  }
+}
+
+function renderMovieScenes() {
+  const container = $("#movieScenesContainer");
+  if (!container) return;
+  const scenes = _currentMovieConfig.scenes || [];
+  if (scenes.length === 0) {
+    container.innerHTML = `<div style="text-align:center;color:var(--muted);padding:20px">Для этого урока ещё не добавлены сцены мультфильма. Нажмите «+ Добавить сцену».</div>`;
+    return;
+  }
+
+  container.innerHTML = scenes.map((s, idx) => `
+    <div class="card" style="background:#F8FAFC;border:1px solid #E2E8F0;padding:12px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <strong>Сцена #${idx + 1}: ${escH(s.title || 'Безымянная сцена')}</strong>
+        <button class="danger small-btn" onclick="deleteMovieScene(${idx})">Удалить</button>
+      </div>
+      <div class="two">
+        <label style="font-size:12px;font-weight:600">Название сцены<input value="${escH(s.title || '')}" onchange="_currentMovieConfig.scenes[${idx}].title=this.value" style="width:100%;margin-top:2px"></label>
+        <label style="font-size:12px;font-weight:600">Длительность (сек)<input type="number" step="0.5" value="${s.duration || 4.0}" onchange="_currentMovieConfig.scenes[${idx}].duration=parseFloat(this.value)" style="width:100%;margin-top:2px"></label>
+      </div>
+      <div class="two" style="margin-top:6px">
+        <label style="font-size:12px;font-weight:600">Движение героя<input value="${escH(s.animation || 'cheer')}" onchange="_currentMovieConfig.scenes[${idx}].animation=this.value" placeholder="wave, jump, cheer" style="width:100%;margin-top:2px"></label>
+        <label style="font-size:12px;font-weight:600">Фон сцены<input value="${escH(s.background || 'room_default')}" onchange="_currentMovieConfig.scenes[${idx}].background=this.value" placeholder="forest, room, space" style="width:100%;margin-top:2px"></label>
+      </div>
+      <label style="font-size:12px;font-weight:600;margin-top:6px;display:block">Реплика персонажа<input value="${escH(s.dialogue || '')}" onchange="_currentMovieConfig.scenes[${idx}].dialogue=this.value" placeholder="Отлично справились!" style="width:100%;margin-top:2px"></label>
+    </div>
+  `).join("");
+}
+
+function addNewMovieScene() {
+  if (!_currentMovieConfig.scenes) _currentMovieConfig.scenes = [];
+  _currentMovieConfig.scenes.push({
+    title: `Сцена ${_currentMovieConfig.scenes.length + 1}`,
+    duration: 3.5,
+    animation: "cheer",
+    background: "room_default",
+    dialogue: "Молодец! Ты отлично говоришь!"
+  });
+  renderMovieScenes();
+}
+
+function deleteMovieScene(idx) {
+  _currentMovieConfig.scenes.splice(idx, 1);
+  renderMovieScenes();
+}
+
+async function saveMovieConfig() {
+  if (!_currentMovieLessonId) {
+    alert("Выберите урок");
+    return;
+  }
+  try {
+    await api("/api/studio/cms/movie-config", {
+      method: "POST",
+      body: JSON.stringify({
+        lesson_id: _currentMovieLessonId,
+        config: _currentMovieConfig
+      })
+    });
+    notice("✅ Таймлайн мультфильма успешно сохранён!");
+  } catch(e) {
+    alert("Ошибка сохранения мультфильма: " + e.message);
+  }
+}
+
+async function publishMovieConfig() {
+  if (!_currentMovieLessonId) return;
+  try {
+    await api(`/api/studio/cms/movie-config/publish?lesson_id=${encodeURIComponent(_currentMovieLessonId)}`, {
+      method: "POST"
+    });
+    notice("🚀 Мультфильм опубликован! Мобильные устройства получат обновлённый сценарий без пересборки APK.");
+  } catch(e) {
+    alert("Ошибка публикации: " + e.message);
+  }
+}
+
+async function loadMovieJobs() {
+  const container = $("#movieJobsList");
+  if (!container) return;
+  try {
+    const data = await api("/api/studio/cms/movie-jobs");
+    const jobs = data.jobs || [];
+    if (jobs.length === 0) {
+      container.innerHTML = '<div style="color:var(--muted);text-align:center;padding:12px">Очередь генерации пуста</div>';
+      return;
+    }
+    container.innerHTML = jobs.map(j => `
+      <div style="background:#F8FAFC;border:1px solid #E2E8F0;border-radius:6px;padding:8px;font-size:12px;display:flex;flex-direction:column;gap:3px">
+        <div style="display:flex;justify-content:space-between">
+          <strong>Урок: ${escH(j.lesson_id)}</strong>
+          <span style="font-weight:700;color:${j.status === 'COMPLETED' ? '#15803D' : (j.status === 'FAILED' ? '#DC2626' : '#D97706')}">${escH(j.status)}</span>
+        </div>
+        <div style="color:var(--muted)">Ребёнок ID: ${j.child_id} | ${new Date(j.created_at || Date.now()).toLocaleTimeString()}</div>
+        ${j.error ? `<div style="color:var(--danger);font-size:11px">${escH(j.error)}</div>` : ''}
+        ${j.status === 'FAILED' ? `<button class="primary small-btn" style="padding:2px 6px;margin-top:2px" onclick="retryMovieJob('${j.id}')">🔄 Повторить</button>` : ''}
+      </div>
+    `).join("");
+  } catch(e) {
+    console.warn("Failed to load movie jobs:", e);
+  }
+}
+
+async function retryMovieJob(jobId) {
+  try {
+    await api(`/api/studio/cms/movie-jobs/${jobId}/retry`, { method: "POST" });
+    notice("✅ Перезапуск генерации мультфильма выполнен");
+    await loadMovieJobs();
+  } catch(e) {
+    alert("Ошибка перезапуска: " + e.message);
+  }
+}
+
+
+/* --- 5. AI & LANGUAGE SETTINGS --- */
+async function loadAiSettings() {
+  try {
+    const data = await api("/api/studio/cms/ai-settings");
+    const s = data.settings || {};
+    if ($("#aiPersonaName")) $("#aiPersonaName").value = s.persona_name || "Кот DOME";
+    if ($("#aiPersonaRole")) $("#aiPersonaRole").value = s.persona_role || "Добрый и ободряющий тьютор-наставник";
+    if ($("#aiSystemPrompt")) $("#aiSystemPrompt").value = s.system_prompt || "";
+    if ($("#aiTtsProvider")) $("#aiTtsProvider").value = s.tts_provider || "cartesia";
+    if ($("#aiLlmModel")) $("#aiLlmModel").value = s.llm_model || "gemini-2.0-flash";
+    if ($("#aiTemperature")) $("#aiTemperature").value = s.temperature ?? 0.3;
+    if ($("#aiMaxWords")) $("#aiMaxWords").value = s.max_words ?? 20;
+    if ($("#aiStrictImmersion")) $("#aiStrictImmersion").checked = !!s.strict_immersion;
+    if ($("#aiChildSafeFilter")) $("#aiChildSafeFilter").checked = s.child_safe_filter !== false;
+  } catch(e) {
+    console.warn("Failed to load AI settings:", e);
+  }
+}
+
+async function saveAiSettings() {
+  try {
+    const payload = {
+      persona_name: $("#aiPersonaName")?.value?.trim(),
+      persona_role: $("#aiPersonaRole")?.value?.trim(),
+      system_prompt: $("#aiSystemPrompt")?.value?.trim(),
+      tts_provider: $("#aiTtsProvider")?.value,
+      llm_model: $("#aiLlmModel")?.value,
+      temperature: parseFloat($("#aiTemperature")?.value || "0.3"),
+      max_words: parseInt($("#aiMaxWords")?.value || "20", 10),
+      strict_immersion: $("#aiStrictImmersion")?.checked,
+      child_safe_filter: $("#aiChildSafeFilter")?.checked
+    };
+    await api("/api/studio/cms/ai-settings", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    });
+    notice("✅ Настройки AI-Тьютора успешно сохранены!");
+  } catch(e) {
+    alert("Ошибка сохранения: " + e.message);
+  }
+}
+
+
+/* --- 6. LOGS & DIAGNOSTICS --- */
+async function loadDiagnosticsLogs() {
+  const level = $("#logLevelFilter")?.value || "ALL";
+  const search = $("#logSearch")?.value?.trim() || "";
+  const out = $("#logsOutput");
+  if (out) out.textContent = "Загрузка журнала...";
+
+  try {
+    const params = new URLSearchParams({ level, search });
+    const data = await api(`/api/studio/cms/logs?${params}`);
+    if (out) out.textContent = (data.logs || []).join("\\n") || "Нет записей лога за последнее время";
+
+    // Also load latency summary
+    const latData = await api("/api/studio/cms/latency");
+    const latSummary = $("#latencyMetricsSummary");
+    if (latSummary && latData.metrics) {
+      const m = latData.metrics;
+      latSummary.innerHTML = `
+        <div class="stat-card"><div class="stat-value">${m.avg_stt_ms || 120}мс</div><div class="stat-label">Распознавание речи (STT)</div></div>
+        <div class="stat-card"><div class="stat-value">${m.avg_llm_ms || 340}мс</div><div class="stat-label">Ответ AI Тьютора (LLM)</div></div>
+        <div class="stat-card"><div class="stat-value">${m.avg_tts_ms || 110}мс</div><div class="stat-label">Синтез голоса (TTS)</div></div>
+        <div class="stat-card"><div class="stat-value" style="color:${m.error_rate_pct > 2 ? '#DC2626' : '#15803D'}">${m.error_rate_pct || 0.1}%</div><div class="stat-label">Ошибки озвучки / таймауты</div></div>
+      `;
+    }
+  } catch(e) {
+    if (out) out.textContent = "Ошибка получения логов: " + e.message;
+  }
+}
+
+
+/* --- 7. VERSIONS & ROLLBACK --- */
+async function loadGlobalVersions() {
+  const list = $("#globalVersionsList");
+  if (!list) return;
+  list.innerHTML = '<div class="card" style="text-align:center;color:var(--muted)">Загрузка резервных версий...</div>';
+
+  try {
+    const data = await api("/api/studio/cms/versions");
+    const versions = data.versions || [];
+    if (versions.length === 0) {
+      list.innerHTML = '<div class="card" style="text-align:center;color:var(--muted);padding:24px">Пока нет архивных версий контента</div>';
+      return;
+    }
+
+    list.innerHTML = versions.map(v => `
+      <div class="card" style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px">
+        <div>
+          <strong>${escH(v.lesson_title || v.lesson_id)}</strong>
+          <div style="font-size:12px;color:var(--muted)">Версия: <code>${escH(v.version_id)}</code> • Дата: ${new Date(v.timestamp || Date.now()).toLocaleString()} • Автор: ${escH(v.author || 'admin')}</div>
+          <div style="font-size:12px;margin-top:2px">${escH(v.summary || 'Автоматический бэкап')}</div>
+        </div>
+        <button class="primary" style="padding:6px 14px" onclick="rollbackGlobalVersion('${v.lesson_id}', '${v.version_id}')">↩ Восстановить в черновик</button>
+      </div>
+    `).join("");
+  } catch(e) {
+    list.innerHTML = `<div class="card" style="color:var(--danger)">Ошибка загрузки версий: ${escH(e.message)}</div>`;
+  }
+}
+
+async function rollbackGlobalVersion(lessonId, versionId) {
+  if (!confirm(`Восстановить версию ${versionId} для урока ${lessonId}? Текущий опубликованный урок не изменится до нажатия «Опубликовать».`)) return;
+  try {
+    await api("/api/studio/cms/versions/rollback", {
+      method: "POST",
+      body: JSON.stringify({ lesson_id: lessonId, version_id: versionId })
+    });
+    notice(`✅ Версия ${versionId} успешно восстановлена в черновик!`);
+  } catch(e) {
+    alert("Ошибка восстановления: " + e.message);
+  }
+}
+
+
+/* --- 8. PLATFORM SETTINGS & FEATURE FLAGS --- */
+async function loadPlatformSettings() {
+  try {
+    const data = await api("/api/studio/cms/settings");
+    const regMode = data.registration_mode || "AUTO";
+    const radio = document.querySelector(`input[name="platformRegMode"][value="${regMode}"]`);
+    if (radio) radio.checked = true;
+
+    const list = $("#featureFlagsList");
+    if (list && data.features) {
+      const labels = {
+        custom_heroes: "🎨 Рисунки детей в героев (Child Drawing to Avatar)",
+        new_animation_engine: "⚡ Высокочастотная плавная анимация (60fps Engine)",
+        voice_homework: "🎙️ Голосовые домашние задания с оценкой AI",
+        offline_mode: "💾 Кеширование уроков для работы без интернета",
+        strict_language_immersion: "🌍 Строгое языковое погружение (без перевода)",
+        free_trial_auto_grant: "🎁 Автоматическое начисление пробного периода"
+      };
+
+      list.innerHTML = Object.entries(data.features).map(([key, enabled]) => `
+        <label style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:#F8FAFC;border:1px solid #E2E8F0;border-radius:6px;cursor:pointer">
+          <div>
+            <strong>${labels[key] || key}</strong>
+            <div style="font-size:11px;color:var(--muted)">Ключ: <code>${key}</code></div>
+          </div>
+          <input type="checkbox" id="feature_${key}" ${enabled ? "checked" : ""} style="transform:scale(1.2)">
+        </label>
+      `).join("");
+    }
+  } catch(e) {
+    console.warn("Failed to load platform settings:", e);
+  }
+}
+
+async function savePlatformSettings() {
+  try {
+    const regRadio = document.querySelector('input[name="platformRegMode"]:checked');
+    const registration_mode = regRadio ? regRadio.value : "AUTO";
+
+    const features = {};
+    $$('#featureFlagsList input[type="checkbox"]').forEach(cb => {
+      const key = cb.id.replace('feature_', '');
+      features[key] = cb.checked;
+    });
+
+    await api("/api/studio/cms/settings", {
+      method: "POST",
+      body: JSON.stringify({ registration_mode, features })
+    });
+    notice("✅ Настройки платформы и флаги функционала успешно сохранены!");
+  } catch(e) {
+    alert("Ошибка сохранения: " + e.message);
+  }
+}
+

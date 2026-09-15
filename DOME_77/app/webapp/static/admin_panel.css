@@ -19,7 +19,7 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
 .admin-topbar{display:flex;align-items:center;gap:16px;padding:0 20px;height:52px;background:var(--card);border-bottom:1px solid var(--border);flex-shrink:0}
 .admin-brand{font-weight:800;font-size:18px;color:var(--accent);white-space:nowrap}
 .admin-brand span{color:var(--text);font-weight:600}
-.admin-nav{display:flex;gap:4px;flex:1}
+.admin-nav{display:flex;gap:4px;flex:1;overflow-x:auto;white-space:nowrap;padding-bottom:2px;-webkit-overflow-scrolling:touch}
 .nav-btn{padding:6px 14px;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:600;background:transparent;color:var(--muted);transition:all .15s}
 .nav-btn:hover{background:var(--bg);color:var(--text)}
 .nav-btn.active{background:var(--accent);color:#fff}

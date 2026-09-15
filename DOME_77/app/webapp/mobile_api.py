@@ -13,6 +13,7 @@ from app.services.mobile_tokens import issue_session_token,verify_session_token,
 from app.services.lesson_loader import LessonConfigurationError, load_lesson
 from app.services.lesson_access import can_start,complete_session_once,mark_cartoon_generated
 from app.services.qa_access import is_owner_parent
+from app.services.account_access import account_access_error, account_status, initial_account_status
 from app.services.preset_characters import preset_character_geometry,preset_character_path,list_preset_characters
 from app.services.character_processor import process_character
 from app.services.character_geometry import ANALYSIS_VERSION,analyze_character_geometry,confirm_character_geometry,geometry_from_json,geometry_status,upgrade_character_geometry_payload
@@ -203,6 +204,10 @@ async def _parent(request:web.Request)->Parent:
         p=await db.get(Parent,pid)
         if not p:
             raise web.HTTPUnauthorized(text=json.dumps({'error':'Mobile session is no longer valid','code':'MOBILE_SESSION_REVOKED'}),content_type='application/json')
+        err=account_access_error(p)
+        if err:
+            code_err,msg=err
+            raise web.HTTPForbidden(text=json.dumps({'error':msg,'code':code_err}),content_type='application/json')
         return p
 
 async def _owned_child(parent_id:int, child_id:int)->Child:
@@ -283,6 +288,9 @@ async def _mobile_pre_slide_video_state(db,child_id:int,lesson_id:str,current_se
         try:payload=json.loads(row.result_json or '{}')
         except (TypeError,ValueError,json.JSONDecodeError):continue
         key=str(payload.get('video_key') or '').strip()
+        # Failed downloads/playback are not views, including historical records
+        # written by older mobile builds with completed=true on failure.
+        if payload.get('outcome')=='failed' or payload.get('completed') is False:continue
         if not key:continue
         if key not in ever:ever.append(key)
         if session.id==current_session_id and key not in attempt:attempt.append(key)
@@ -317,7 +325,7 @@ async def bootstrap(request:web.Request)->web.Response:
     p=await _parent(request)
     async with SessionLocal() as db:
         cs=(await db.scalars(select(Child).where(Child.parent_id==p.id).order_by(Child.id))).all();children_payload=await _children_json(request,db,list(cs))
-    return web.json_response({'parent':{'id':p.id,'name':p.display_name,'email':p.email,'email_verified':bool(p.email_verified),'phone':p.phone,'is_owner':is_owner_parent(p) or str(getattr(p,'email','') or '').strip().lower()=='krisriskrisris@gmail.com'},'children':children_payload})
+    return web.json_response({'parent':{'id':p.id,'name':p.display_name,'email':p.email,'email_verified':bool(p.email_verified),'phone':p.phone,'account_status':account_status(p),'is_owner':is_owner_parent(p) or str(getattr(p,'email','') or '').strip().lower()=='krisriskrisris@gmail.com'},'children':children_payload})
 
 
 async def lesson_catalog(request:web.Request)->web.Response:
@@ -600,6 +608,13 @@ async def hero_file(request:web.Request)->web.StreamResponse:
     async with SessionLocal() as db:
         ch=await db.get(Character,chid)
         if not ch or ch.child_id!=cid: raise web.HTTPNotFound()
+        child=await db.get(Child,cid)
+        if not child: raise web.HTTPNotFound()
+        parent=await db.get(Parent,child.parent_id)
+        err=account_access_error(parent)
+        if err:
+            code_err,msg=err
+            raise web.HTTPForbidden(text=json.dumps({'error':msg,'code':code_err}),content_type='application/json')
     path=Path(ch.processed_path or ch.original_path)
     if not path.exists(): raise web.HTTPNotFound()
     return web.FileResponse(path)
@@ -610,7 +625,19 @@ async def hero_preset(request:web.Request)->web.Response:
     except Exception: raise web.HTTPBadRequest(text=json.dumps({'error':'Unknown hero'}),content_type='application/json')
     metadata=preset_character_geometry(catalog)
     async with SessionLocal() as db:
-        ch=Character(child_id=cid,original_path=str(path),processed_path=str(path),status='READY',source='CATALOG',catalog_id=catalog,visual_metadata_json=json.dumps(metadata,ensure_ascii=False),visual_analysis_version=ANALYSIS_VERSION,visual_analysis_status='CONFIRMED');db.add(ch);await db.flush();c2=await db.get(Child,cid);c2.active_character_id=ch.id;await db.commit();await db.refresh(ch)
+        c2=await db.get(Child,cid)
+        # Re-select the exact existing catalog identity. Never match by title or
+        # asset filename (two different cats may have similar labels).
+        current=await db.get(Character,c2.active_character_id) if c2.active_character_id else None
+        ch=current if current and current.child_id==cid and current.source=='CATALOG' and current.catalog_id==catalog and current.status=='READY' else None
+        if ch is None:
+            ch=await db.scalar(select(Character).where(Character.child_id==cid,Character.source=='CATALOG',Character.catalog_id==catalog,Character.status=='READY').order_by(Character.id))
+        if ch is None:
+            ch=Character(child_id=cid,original_path=str(path),processed_path=str(path),status='READY',source='CATALOG',catalog_id=catalog,visual_metadata_json=json.dumps(metadata,ensure_ascii=False),visual_analysis_version=ANALYSIS_VERSION,visual_analysis_status='CONFIRMED')
+            db.add(ch);await db.flush()
+        c2.active_character_id=ch.id
+        await db.commit();await db.refresh(ch)
+        log.info('HERO_SELECTION_SAVED parent=%s child=%s catalog_id=%s character_id=%s asset=%s',p.id,cid,catalog,ch.id,ch.processed_path)
     val=f'hero:{cid}:{ch.id}'; t=signed_media_token(val)
     return web.json_response({'character_id':ch.id,'hero_url':f'{_base(request)}/api/mobile/hero/file/{cid}/{ch.id}?t={t}','hero_metadata':_character_json(ch)})
 
@@ -631,9 +658,26 @@ async def hero_upload(request:web.Request)->web.Response:
                 if not chunk:break
                 f.write(chunk)
     processed=original.with_suffix('.png')
-    try:await asyncio.to_thread(process_character,original,processed)
-    except Exception as exc:raise web.HTTPBadRequest(text=json.dumps({'error':f'Не удалось удалить фон: {exc}'}),content_type='application/json')
-    geometry=await analyze_character_geometry(processed,allow_remote=True);metadata=geometry.payload();analysis_status=geometry_status(geometry)
+    try:
+        await asyncio.to_thread(process_character,original,processed)
+    except Exception as exc:
+        log.warning('PROCESS_CHARACTER_FALLBACK original=%s error=%s',original,exc)
+        try:
+            from PIL import Image, ImageOps
+            with Image.open(original) as src:
+                src=ImageOps.exif_transpose(src).convert('RGBA')
+                src.thumbnail((1200,1200))
+                src.save(processed)
+        except Exception:
+            shutil.copyfile(original,processed)
+    try:
+        geometry=await analyze_character_geometry(processed,allow_remote=True)
+        metadata=geometry.payload()
+        analysis_status=geometry_status(geometry)
+    except Exception as exc:
+        log.warning('CHARACTER_GEOMETRY_ANALYSIS_FAILED original=%s error=%s',original,exc)
+        metadata={}
+        analysis_status='NEEDS_REVIEW'
     # Low-confidence and unusual drawings still proceed to the one-time custom
     # confirmation screen. The movie renderer will use its safe whole-body
     # fallback until the parent confirms canonical anatomy.
@@ -1020,6 +1064,7 @@ async def register_full(request: web.Request) -> web.Response:
                 email_reports_enabled=settings.email_reports_default,
                 onboarding_stage="EMAIL_NOT_VERIFIED",
                 verification_status="UNVERIFIED",
+                account_status=initial_account_status(),
             )
             db.add(parent)
             await db.flush()
@@ -1034,6 +1079,7 @@ async def register_full(request: web.Request) -> web.Response:
             parent.password_hash = hash_password(password)
             parent.email_verified = False
             parent.onboarding_stage = "EMAIL_NOT_VERIFIED"
+            parent.account_status = initial_account_status()
 
         parent.email_verification_code_hash = hash_verification_code(email, code, "verify")
         parent.email_verification_expires_at = expires
@@ -1863,6 +1909,14 @@ async def movie_file(request:web.Request)->web.StreamResponse:
     cid=int(request.match_info['child_id']);filename=request.match_info['filename'];val=f'movie:{cid}:{filename}'
     if not verify_media_token(val,request.query.get('t','')):raise web.HTTPForbidden()
     if '/' in filename or '..' in filename:raise web.HTTPNotFound()
+    async with SessionLocal() as db:
+        child=await db.get(Child,cid)
+        if not child:raise web.HTTPNotFound()
+        parent=await db.get(Parent,child.parent_id)
+        err=account_access_error(parent)
+        if err:
+            code_err,msg=err
+            raise web.HTTPForbidden(text=json.dumps({'error':msg,'code':code_err}),content_type='application/json')
     path=settings.storage_root/'children'/str(cid)/'cartoons'/filename
     if not path.exists():raise web.HTTPNotFound()
     total_size=path.stat().st_size
@@ -1882,17 +1936,21 @@ async def movie_file(request:web.Request)->web.StreamResponse:
             pass
     chunk_size=end-start+1
     status=206 if partial else 200
-    resp=web.StreamResponse(status=status,headers={
+    headers={
         'Content-Type':'video/mp4',
         'Content-Length':str(chunk_size),
-        'Content-Range':f'bytes {start}-{end}/{total_size}' if partial else f'bytes 0-{end}/{total_size}',
         'Accept-Ranges':'bytes',
         'Access-Control-Allow-Origin':'*',
         'Access-Control-Allow-Headers':'Range, Authorization, Content-Type',
         'Access-Control-Expose-Headers':'Content-Range, Content-Length, Accept-Ranges',
         'Cache-Control':'private, max-age=86400',
-    })
+    }
+    if partial:
+        headers['Content-Range']=f'bytes {start}-{end}/{total_size}'
+    resp=web.StreamResponse(status=status,headers=headers)
     await resp.prepare(request)
+    if request.method == 'HEAD':
+        return resp
     with open(path,'rb') as f:
         f.seek(start)
         remaining=chunk_size
@@ -1951,13 +2009,14 @@ async def register(request:web.Request)->web.Response:
         if parent and bool(parent.email_verified):
             raise web.HTTPConflict(text=json.dumps({'error':'Аккаунт с этой почтой уже существует'}),content_type='application/json')
         if parent is None:
-            parent=Parent(email=email,display_name=name,password_hash=hash_password(password),email_verified=False,email_reports_enabled=settings.email_reports_default)
+            parent=Parent(email=email,display_name=name,password_hash=hash_password(password),email_verified=False,email_reports_enabled=settings.email_reports_default,account_status=initial_account_status())
             db.add(parent)
         else:
             parent.email=email
             parent.display_name=name
             parent.password_hash=hash_password(password)
             parent.email_verified=False
+            parent.account_status=initial_account_status()
         parent.email_verification_code_hash=hash_verification_code(email,code,'verify')
         parent.email_verification_expires_at=expires
         await db.commit();await db.refresh(parent)
@@ -1984,8 +2043,13 @@ async def verify_email(request:web.Request)->web.Response:
         children=(await db.scalars(select(Child).where(Child.parent_id==parent.id).order_by(Child.id))).all()
         for ch in children:
             await ensure_free_demo_entitlement(db,parent_id=parent.id,child_id=ch.id)
-        await db.commit();token=issue_session_token(parent.id);children_payload=await _children_json(request,db,list(children))
-        return web.json_response({'token':token,'parent':{'id':parent.id,'name':parent.display_name,'email':parent.email,'email_verified':True,'phone':parent.phone,'is_owner':is_owner_parent(parent)},'children':children_payload})
+        await db.commit()
+        err=account_access_error(parent)
+        if err:
+            code_err,msg=err
+            raise web.HTTPForbidden(text=json.dumps({'error':msg,'code':code_err}),content_type='application/json')
+        token=issue_session_token(parent.id);children_payload=await _children_json(request,db,list(children))
+        return web.json_response({'token':token,'parent':{'id':parent.id,'name':parent.display_name,'email':parent.email,'email_verified':True,'phone':parent.phone,'is_owner':is_owner_parent(parent),'account_status':account_status(parent)},'children':children_payload})
 
 
 async def resend_verification(request:web.Request)->web.Response:
@@ -2011,12 +2075,16 @@ async def login(request:web.Request)->web.Response:
             raise web.HTTPUnauthorized(text=json.dumps({'error':'Неверный email или пароль'}),content_type='application/json')
         if not bool(parent.email_verified):
             raise web.HTTPForbidden(text=json.dumps({'error':'Сначала подтвердите email','code':'EMAIL_NOT_VERIFIED','verification_required':True,'email':email}),content_type='application/json')
+        err=account_access_error(parent)
+        if err:
+            code_err,msg=err
+            raise web.HTTPForbidden(text=json.dumps({'error':msg,'code':code_err}),content_type='application/json')
         children=(await db.scalars(select(Child).where(Child.parent_id==parent.id).order_by(Child.id))).all()
         for ch in children:
             await ensure_free_demo_entitlement(db,parent_id=parent.id,child_id=ch.id)
         await db.commit()
         token=issue_session_token(parent.id);children_payload=await _children_json(request,db,list(children))
-        return web.json_response({'token':token,'parent':{'id':parent.id,'name':parent.display_name,'email':parent.email,'email_verified':True,'phone':parent.phone,'is_owner':is_owner_parent(parent)},'children':children_payload})
+        return web.json_response({'token':token,'parent':{'id':parent.id,'name':parent.display_name,'email':parent.email,'email_verified':True,'phone':parent.phone,'is_owner':is_owner_parent(parent),'account_status':account_status(parent)},'children':children_payload})
 
 
 async def request_password_reset(request:web.Request)->web.Response:
@@ -2272,4 +2340,4 @@ def register_mobile_routes(app:web.Application):
     app.router.add_get('/api/mobile/hero/file/{child_id}/{character_id}',hero_file);app.router.add_post('/api/mobile/child/{child_id}/hero/preset',hero_preset);app.router.add_post('/api/mobile/child/{child_id}/hero/upload',hero_upload);app.router.add_patch('/api/mobile/child/{child_id}/hero/{character_id}/geometry',hero_geometry_confirm)
     app.router.add_get('/api/mobile/child/{child_id}/subscription',subscription_overview);app.router.add_post('/api/mobile/child/{child_id}/promo/validate',mobile_validate_promo);app.router.add_post('/api/mobile/child/{child_id}/subscription/checkout',subscription_checkout);app.router.add_post('/api/mobile/child/{child_id}/subscription/verify',subscription_verify);app.router.add_get('/api/mobile/plans',mobile_list_plans);app.router.add_get('/api/mobile/legal/documents',mobile_get_legal_documents);app.router.add_post('/api/mobile/auth/register-full',register_full);app.router.add_post('/api/mobile/auth/verify-and-onboard',verify_and_onboard);app.router.add_post('/api/mobile/child/{child_id}/subscription/cancel',subscription_cancel);app.router.add_get('/api/mobile/child/{child_id}/payment/history',payment_history);app.router.add_post('/api/mobile/child/{child_id}/subscription/plan-change/preview',subscription_plan_change_preview);app.router.add_post('/api/mobile/child/{child_id}/subscription/plan-change',subscription_plan_change_confirm);app.router.add_delete('/api/mobile/child/{child_id}/subscription/plan-change',subscription_plan_change_cancel)
     app.router.add_post('/api/mobile/session/start',session_start);app.router.add_post('/api/mobile/session/{session_id}/progress',session_progress);app.router.add_post('/api/mobile/session/{session_id}/voice',voice);app.router.add_get('/api/mobile/session/{session_id}/voice/{phrase_id}',current_voice_take);app.router.add_post('/api/mobile/session/{session_id}/interactive',interactive);app.router.add_post('/api/mobile/session/{session_id}/complete',complete);app.router.add_get('/api/mobile/session/{session_id}/movie',movie_status);app.router.add_post('/api/mobile/session/{session_id}/movie/retry',retry_movie)
-    app.router.add_get('/api/mobile/tts',tts);app.router.add_get('/api/mobile/tts.ogg',tts);app.router.add_post('/api/mobile/translate',translate);app.router.add_patch('/api/mobile/child/{child_id}/language',update_child_language);app.router.add_get('/api/mobile/child/{child_id}/movies',movies);app.router.add_get('/api/mobile/movie/{child_id}/{filename}',movie_file)
+    app.router.add_get('/api/mobile/tts',tts);app.router.add_get('/api/mobile/tts.ogg',tts);app.router.add_post('/api/mobile/translate',translate);app.router.add_patch('/api/mobile/child/{child_id}/language',update_child_language);app.router.add_get('/api/mobile/child/{child_id}/movies',movies);app.router.add_route('*','/api/mobile/movie/{child_id}/{filename}',movie_file)

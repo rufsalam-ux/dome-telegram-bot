@@ -57,7 +57,11 @@ async def can_start(child_id: int, lesson_id: str, course_id: str, *, audit: boo
                 if row is not None:
                     await db.commit()
 
+        # Grandfathering: existing registered students keep access to their courses/lessons
         if row is None:
+            has_history = await db.scalar(select(LessonSession.id).where(LessonSession.child_id == int(child_id)).limit(1))
+            if has_history is not None:
+                return True, "GRANDFATHERED_ACCESS", None
             return False, "LOCKED", None
         now = datetime.utcnow()
         if row.expires_at and row.expires_at < now:

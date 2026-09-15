@@ -52,20 +52,15 @@ async def ensure_free_demo_entitlement(
     ):
         return None, False
 
-    target_child = None
-    if child_id is not None:
-        target_child = await db.get(Child, int(child_id))
-        if target_child is not None and target_child.parent_id != parent.id:
-            return None, False
-    if target_child is None:
-        target_child = await db.scalar(
-            select(Child)
-            .where(Child.parent_id == parent.id)
-            .order_by(Child.id.asc())
-            .limit(1)
-        )
-    if target_child is None:
+    first_child = await db.scalar(
+        select(Child)
+        .where(Child.parent_id == parent.id)
+        .order_by(Child.id.asc())
+        .limit(1)
+    )
+    if first_child is None or (child_id is not None and first_child.id != int(child_id)):
         return None, False
+    target_child = first_child
 
     course_id, access_months, max_completed_runs = _demo_rules()
     existing = await db.scalar(

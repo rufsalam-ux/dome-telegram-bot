@@ -335,6 +335,9 @@ async def start_webapp_server():
     app.router.add_post("/webhooks/unipay", unipay_webhook)
     app.router.add_post("/webhooks/unlimit", unlimit_webhook)
     app.router.add_post("/webhooks/paypal", paypal_webhook)
+    async def admin_redirect(_: web.Request) -> web.Response:
+        raise web.HTTPFound("/content-studio")
+    app.router.add_get("/admin", admin_redirect)
     app.router.add_get("/", index)
     app.router.add_get("/games", games_index)
     app.router.add_get("/video-lesson", video_lesson)

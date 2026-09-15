@@ -56,6 +56,8 @@ def _lesson_id(value: Any) -> str:
 
 def _authorized(request: web.Request) -> None:
     _require_enabled()
+    if request.get('studio_owner_authenticated'):
+        return
     expected = settings.content_studio_token.strip()
     if not expected:
         raise web.HTTPServiceUnavailable(
@@ -1178,6 +1180,11 @@ async def admin_update_tariff(request: web.Request) -> web.Response:
 
 
 def register_content_studio_routes(app: web.Application) -> None:
+    from app.webapp.studio_auth import register_studio_auth
+    from app.webapp.content_studio_cms import register_cms_routes
+    register_studio_auth(app)
+    register_cms_routes(app)
+    app.router.add_get("/admin", studio_page)
     app.router.add_get("/content-studio", studio_page)
     app.router.add_get("/content-studio/{filename}", studio_static)
     app.router.add_get("/api/studio/status", studio_status)

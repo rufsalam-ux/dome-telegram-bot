@@ -198,16 +198,25 @@ def test_demo_001_studio_migration_preserves_runtime_step_sequence():
 
 def test_content_studio_ui_has_native_authoring_lifecycle_and_drag_reorder():
     static = Path(__file__).resolve().parents[1] / "app/webapp/static"
-    source = "\n".join((static / name).read_text("utf-8") for name in ("content_studio.html", "content_studio.js", "content_studio.css"))
+    page = (static / "content_studio.html").read_text("utf-8")
+    # The active page deliberately loads admin_panel.js.  content_studio.js is
+    # retained only as an unused legacy artifact and must not define release
+    # behaviour.
+    assert 'src="/content-studio/admin_panel.js' in page
+    assert 'href="/content-studio/content_studio_antigravity_bridge.css"' in page
+    source = "\n".join((static / name).read_text("utf-8") for name in (
+        "content_studio.html", "admin_panel.js", "content_studio.css", "content_studio_antigravity_bridge.css",
+    ))
     for marker in (
-        "DOME Lesson Editor", "+ Добавить слайд", "+ Добавить видео", "data-step-handle", "text/dome-lesson",
-        "replaceStepMedia", "duplicateStep", "deleteStep", "moveStep", "validateCandidate", "Предпросмотр урока",
-        "Восстановить в черновик", "Инструкция для AI", "Фраза на изучаемом языке", "Объяснение на родном языке",
+        "DOME Admin Panel & CMS", "addSlideButton", "addVideoButton", "text/dome", "dragstart",
+        "replaceStepMedia", "duplicateStep", "deleteStep", "moveStep", "validateCand", "previewDialog",
+        "versionDialog", "ai_instruction", "bot_says_target", "bot_says_native",
         "after_answer", "drag_drop", "video/mp4",
-        "Добавить и сохранить",
-        "+ Новый урок", "+ Задание", "Дублировать", "Отключить", "Цель задания",
-        "Изучаемый язык", "Язык объяснения", "Сначала открытый вопрос", "Адаптация уровня",
-        "Обязательный", "Автоматически продолжить после видео", "openLessonDialog", "toggleLesson",
+        "confirmAddStep",
+        "newLessonButton", "addExerciseButton", "duplicate", "toggleLesson", "pedagogical_goal",
+        "lessonTargetLanguage", "lessonExplanationLanguage", "open_question_first", "adaptive_scaffolding",
+        "required", "auto_continue", "openLessonDialog", "toggleLesson",
+        "promoDialog", "existing-media", "mediaLibrary", "courseCoverFile",
     ):
         assert marker in source
     assert "вставьте JSON" not in source.lower()

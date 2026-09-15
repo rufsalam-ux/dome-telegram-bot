@@ -12,8 +12,9 @@
 
   <section id="loginView" class="login card">
     <h1>DOME Admin Panel & CMS</h1>
-    <p>Введите токен Content Studio для доступа.</p>
-    <label>Токен владельца<input id="tokenInput" type="password" autocomplete="off"></label>
+    <p>Войдите с email и паролем аккаунта владельца DOME.</p>
+    <label>Email<input id="ownerEmail" type="email" autocomplete="username"></label>
+    <label>Пароль<input id="ownerPassword" type="password" autocomplete="current-password"></label>
     <button id="loginButton" class="primary">Войти</button>
     <div id="loginError" class="error" role="alert"></div>
   </section>
@@ -21,13 +22,22 @@
   <div id="appView" class="app-layout hidden">
     <header class="admin-topbar">
       <div class="admin-brand">DOME <span>CMS</span></div>
+      <button id="logoutButton" type="button">Выйти</button>
       <nav class="admin-nav">
-        <button class="nav-btn active" data-section="lessons">📚 Обучение (Курсы и Уроки)</button>
-        <button class="nav-btn" data-section="promos">🎟️ Промокоды</button>
+        <button class="nav-btn active" data-section="lessons">📚 Обучение</button>
+        <button class="nav-btn" data-section="media">🖼️ Медиатека</button>
+        <button class="nav-btn" data-section="heroes">🦸 Герои</button>
+        <button class="nav-btn" data-section="animations">🎬 Анимации</button>
+        <button class="nav-btn" data-section="movies">🎥 Мультфильмы</button>
         <button class="nav-btn" data-section="clients" style="background:linear-gradient(135deg,#7df3e1,#4fd1b5);color:#0f0f1e;font-weight:700">👥 Клиенты</button>
         <button class="nav-btn" data-section="tariffs">💰 Тарифы</button>
-        <button class="nav-btn" data-section="users">👥 Польз.</button>
+        <button class="nav-btn" data-section="promos">🎟️ Промокоды</button>
+        <button class="nav-btn" data-section="ai">🤖 AI и Языки</button>
+        <button class="nav-btn" data-section="logs">📋 Журнал</button>
+        <button class="nav-btn" data-section="versions">🕒 Версии</button>
+        <button class="nav-btn" data-section="settings">⚙️ Настройки</button>
         <button class="nav-btn" data-section="dashboard">📊 Сводка</button>
+        <button class="nav-btn" data-section="users" style="display:none">👥 Польз.</button>
       </nav>
       <div id="connectionBadge" class="badge connected">Подключено</div>
     </header>
@@ -354,6 +364,234 @@
       </div>
     </div>
 
+    <!-- SECTION: MEDIA MANAGER -->
+    <div id="sectionMedia" class="app-section hidden">
+      <div class="users-panel" style="flex:1;overflow-y:auto;padding:20px">
+        <div class="users-toolbar" style="justify-content:space-between;flex-wrap:wrap;gap:10px">
+          <h2>🖼️ Центральная медиатека</h2>
+          <div class="toolbar">
+            <input id="mediaSearch" type="search" placeholder="Поиск файлов..." style="min-width:200px">
+            <select id="mediaTypeFilter">
+              <option value="">Все форматы</option>
+              <option value="image">Изображения (PNG, JPG, WebP)</option>
+              <option value="audio">Аудио (MP3, WAV, OGG)</option>
+              <option value="video">Видео (MP4, WebM)</option>
+              <option value="animation">Анимации (JSON, GIF)</option>
+            </select>
+            <label class="primary" style="padding:8px 14px;border-radius:8px;cursor:pointer;display:inline-flex;align-items:center;gap:6px">
+              📤 Загрузить файл
+              <input id="mediaUploadInput" type="file" multiple style="display:none">
+            </label>
+            <button id="mediaRefreshBtn" class="primary">&#x21BB; Обновить</button>
+          </div>
+        </div>
+        <p style="color:#64748B;font-size:13px;margin:8px 0 16px">Все медиафайлы платформы. Система отслеживает использование каждого файла («Used In»), предотвращая случайное удаление.</p>
+        <div id="mediaGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:16px"></div>
+      </div>
+    </div>
+
+    <!-- SECTION: HEROES MANAGER -->
+    <div id="sectionHeroes" class="app-section hidden">
+      <div class="users-panel" style="flex:1;overflow-y:auto;padding:20px">
+        <div class="users-toolbar" style="justify-content:space-between">
+          <h2>🦸 Управление персонажами и героями</h2>
+          <div class="toolbar">
+            <button class="tab-btn active" id="heroTabPresetsBtn" onclick="switchHeroSubTab('presets')">Каталог (Предустановленные)</button>
+            <button class="tab-btn" id="heroTabCustomBtn" onclick="switchHeroSubTab('custom')">Рисунки детей (Custom)</button>
+            <button id="heroRefreshBtn" class="primary" onclick="loadHeroManager()">&#x21BB; Обновить</button>
+          </div>
+        </div>
+        
+        <div id="heroNoticeBothCats" style="background:#EBF3FF;border:1px solid #93C5FD;border-radius:8px;padding:12px 16px;margin:12px 0;font-size:13px;color:#1E40AF">
+          ℹ️ <strong>Внимание:</strong> В каталоге раздельно поддерживаются <strong>Old Gray Cat</strong> (<code>cat</code>) и <strong>New DOME Cat</strong> в синем худи (<code>dome_cat</code>). Оба персонажа независимы и не объединяются.
+        </div>
+
+        <div id="heroSubPresets">
+          <div id="presetHeroesGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px;margin-top:16px"></div>
+        </div>
+
+        <div id="heroSubCustom" class="hidden">
+          <div id="customHeroesGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px;margin-top:16px"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- SECTION: ANIMATIONS LIBRARY -->
+    <div id="sectionAnimations" class="app-section hidden">
+      <div class="users-panel" style="flex:1;overflow-y:auto;padding:20px">
+        <div class="users-toolbar" style="justify-content:space-between">
+          <h2>🎬 Библиотека анимаций и движений</h2>
+          <div class="toolbar">
+            <button id="newAnimationBtn" class="success" onclick="openNewAnimationDialog()">+ Создать новое движение</button>
+            <button id="animRefreshBtn" class="primary" onclick="loadAnimationsManager()">&#x21BB; Обновить</button>
+          </div>
+        </div>
+        <p style="color:#64748B;font-size:13px;margin:8px 0 16px">Все движения персонажей, используемые в интерактивных уроках и мультфильмах. Новые движения сразу становятся доступны в конструкторе.</p>
+        <div id="animationsGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px"></div>
+      </div>
+    </div>
+
+    <!-- SECTION: MOVIE BUILDER -->
+    <div id="sectionMovies" class="app-section hidden">
+      <div class="users-panel" style="flex:1;overflow-y:auto;padding:20px">
+        <div class="users-toolbar" style="justify-content:space-between">
+          <h2>🎥 Конструктор мультфильмов и Генерация</h2>
+          <div class="toolbar">
+            <select id="movieLessonSelect" onchange="loadLessonMovieConfig(this.value)" style="min-width:220px"></select>
+            <button id="publishMovieBtn" class="success" onclick="publishMovieConfig()">🚀 Опубликовать мультфильм</button>
+            <button id="movieRefreshBtn" class="primary" onclick="loadMovieManager()">&#x21BB; Обновить</button>
+          </div>
+        </div>
+        
+        <div style="display:grid;grid-template-columns:1fr 340px;gap:20px;margin-top:16px">
+          <!-- Left: Scenes and timeline -->
+          <div class="card">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+              <h3>Сцены мультфильма урока</h3>
+              <button class="primary small-btn" onclick="addNewMovieScene()">+ Добавить сцену</button>
+            </div>
+            <div id="movieScenesContainer" style="display:flex;flex-direction:column;gap:12px"></div>
+            <div style="margin-top:16px;text-align:right">
+              <button class="primary" onclick="saveMovieConfig()">💾 Сохранить таймлайн</button>
+            </div>
+          </div>
+
+          <!-- Right: Movie generation jobs -->
+          <div class="card">
+            <h3>Очередь генерации мультфильмов</h3>
+            <p style="font-size:12px;color:#64748B;margin-bottom:10px">Статус генерации персональных мультфильмов для учеников.</p>
+            <div id="movieJobsList" style="display:flex;flex-direction:column;gap:8px;max-height:600px;overflow-y:auto"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- SECTION: AI & LANGUAGES -->
+    <div id="sectionAi" class="app-section hidden">
+      <div class="users-panel" style="flex:1;overflow-y:auto;padding:20px">
+        <div class="users-toolbar" style="justify-content:space-between">
+          <h2>🤖 Настройки AI-Тьютора и Языковой Политики</h2>
+          <button class="primary" onclick="saveAiSettings()">💾 Сохранить настройки AI</button>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:20px;margin-top:16px">
+          <div class="card">
+            <h3>🎭 Персона и Инструкции Тьютора</h3>
+            <p style="font-size:12px;color:#64748B;margin-bottom:8px">Определяет тон, характер и правила общения AI с ребёнком.</p>
+            <label style="font-weight:600;font-size:13px">Имя персонажа<input id="aiPersonaName" style="width:100%;margin:4px 0 12px"></label>
+            <label style="font-weight:600;font-size:13px">Характер и стиль<input id="aiPersonaRole" style="width:100%;margin:4px 0 12px"></label>
+            <label style="font-weight:600;font-size:13px">Системный промпт (Психологический тон, похвала, терпение)
+              <textarea id="aiSystemPrompt" rows="8" style="width:100%;font-family:monospace;font-size:13px;padding:8px;border-radius:6px;border:1.5px solid var(--border);margin-top:4px"></textarea>
+            </label>
+          </div>
+
+          <div class="card">
+            <h3>🗣️ Голосовой движок и Провайдеры</h3>
+            <label style="font-weight:600;font-size:13px">Основной TTS провайдер
+              <select id="aiTtsProvider" style="width:100%;margin:4px 0 12px">
+                <option value="cartesia">Cartesia Sonic (сверхбыстрый, <150ms)</option>
+                <option value="elevenlabs">ElevenLabs Turbo v2.5</option>
+                <option value="gemini">Google Gemini Live Speech</option>
+              </select>
+            </label>
+            <label style="font-weight:600;font-size:13px">LLM Модель диалога
+              <select id="aiLlmModel" style="width:100%;margin:4px 0 12px">
+                <option value="gemini-2.0-flash">Gemini 2.0 Flash (Рекомендуется)</option>
+                <option value="gemini-1.5-flash">Gemini 1.5 Flash</option>
+                <option value="gpt-4o-mini">GPT-4o Mini</option>
+              </select>
+            </label>
+            <div class="two">
+              <label style="font-weight:600;font-size:13px">Температура (Креативность)
+                <input id="aiTemperature" type="number" step="0.05" min="0.1" max="1.0" style="width:100%;margin-top:4px">
+              </label>
+              <label style="font-weight:600;font-size:13px">Лимит слов в реплике
+                <input id="aiMaxWords" type="number" min="5" max="50" style="width:100%;margin-top:4px">
+              </label>
+            </div>
+            <h4 style="margin:16px 0 8px">Языковая политика</h4>
+            <label class="check" style="margin-bottom:6px"><input id="aiStrictImmersion" type="checkbox"> Строгое погружение (не переходить на язык объяснения без необходимости)</label>
+            <label class="check"><input id="aiChildSafeFilter" type="checkbox" checked> Детский фильтр безопасности (активен)</label>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- SECTION: LOGS & DIAGNOSTICS -->
+    <div id="sectionLogs" class="app-section hidden">
+      <div class="users-panel" style="flex:1;overflow-y:auto;padding:20px">
+        <div class="users-toolbar" style="justify-content:space-between">
+          <h2>📋 Журнал событий и Диагностика</h2>
+          <div class="toolbar">
+            <select id="logLevelFilter" onchange="loadDiagnosticsLogs()">
+              <option value="ALL">Все уровни</option>
+              <option value="INFO">INFO</option>
+              <option value="WARNING">WARNING</option>
+              <option value="ERROR">ERROR</option>
+            </select>
+            <input id="logSearch" type="search" placeholder="Поиск в логах..." onkeydown="if(event.key==='Enter')loadDiagnosticsLogs()">
+            <button class="primary" onclick="loadDiagnosticsLogs()">&#x21BB; Обновить</button>
+          </div>
+        </div>
+        
+        <!-- Latency Metrics Summary -->
+        <div id="latencyMetricsSummary" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin:16px 0"></div>
+
+        <div class="card" style="margin-top:12px">
+          <h3>Системный журнал (Audit & Runtime Logs)</h3>
+          <pre id="logsOutput" style="background:#0F172A;color:#E2E8F0;padding:14px;border-radius:8px;font-size:12px;font-family:monospace;max-height:480px;overflow-y:auto;white-space:pre-wrap;word-break:break-all"></pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- SECTION: GLOBAL VERSIONS & ROLLBACK -->
+    <div id="sectionVersions" class="app-section hidden">
+      <div class="users-panel" style="flex:1;overflow-y:auto;padding:20px">
+        <div class="users-toolbar" style="justify-content:space-between">
+          <h2>🕒 История версий и Быстрый откат</h2>
+          <button class="primary" onclick="loadGlobalVersions()">&#x21BB; Обновить список</button>
+        </div>
+        <p style="color:#64748B;font-size:13px;margin:8px 0 16px">Резервные копии уроков и курсов. Вы можете восстановить любую версию в один клик без изменения боевой базы данных.</p>
+        <div id="globalVersionsList" style="display:flex;flex-direction:column;gap:10px"></div>
+      </div>
+    </div>
+
+    <!-- SECTION: PLATFORM SETTINGS -->
+    <div id="sectionSettings" class="app-section hidden">
+      <div class="users-panel" style="flex:1;overflow-y:auto;padding:20px">
+        <div class="users-toolbar" style="justify-content:space-between">
+          <h2>⚙️ Настройки платформы и Feature Flags</h2>
+          <button class="primary" onclick="savePlatformSettings()">💾 Сохранить изменения</button>
+        </div>
+        
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:20px;margin-top:16px">
+          <div class="card">
+            <h3>Режим регистрации новых пользователей</h3>
+            <p style="font-size:12px;color:#64748B;margin-bottom:12px">Определяет, как новые родители получают доступ после регистрации в мобильном приложении.</p>
+            <div style="display:flex;flex-direction:column;gap:8px">
+              <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+                <input type="radio" name="platformRegMode" value="AUTO">
+                <div><strong>AUTO</strong> — Свободный доступ (сразу создаётся пробный период)</div>
+              </label>
+              <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+                <input type="radio" name="platformRegMode" value="MANUAL_APPROVAL">
+                <div><strong>MANUAL_APPROVAL</strong> — Ручная активация администратором</div>
+              </label>
+              <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+                <input type="radio" name="platformRegMode" value="INVITE_ONLY">
+                <div><strong>INVITE_ONLY</strong> — Доступ только по промокодам / инвайтам</div>
+              </label>
+            </div>
+          </div>
+
+          <div class="card">
+            <h3>Функциональные флаги (Feature Flags)</h3>
+            <p style="font-size:12px;color:#64748B;margin-bottom:12px">Включение/отключение модулей в мобильном приложении без выпуска нового APK.</p>
+            <div id="featureFlagsList" style="display:flex;flex-direction:column;gap:10px"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- DASHBOARD -->
     <div id="sectionDashboard" class="app-section hidden">
       <div class="dashboard-panel"><h2>Сводка платформы</h2><div id="dashboardContent" class="dashboard-grid"></div></div>
@@ -527,6 +765,24 @@
     </form>
   </dialog>
 
+  <!-- DIALOG: CREATE ANIMATION -->
+  <dialog id="newAnimationDialog">
+    <form method="dialog" class="dialog-card">
+      <header><h2>Создать новое движение</h2><button type="button" class="cancel-btn icon">&times;</button></header>
+      <div>
+        <label>ID движения (англ., например: spin_jump)<input id="animIdInput" required placeholder="spin_jump"></label>
+        <label>Название (для редактора)<input id="animNameInput" required placeholder="Вращение с прыжком"></label>
+        <label>Описание<textarea id="animDescInput" rows="2" placeholder="Персонаж поворачивается и прыгает вверх"></textarea></label>
+        <div class="two">
+          <label>Длительность (сек)<input id="animDurationInput" type="number" step="0.1" value="2.5" required></label>
+          <label>Совместимость с героями<select id="animHeroSelect"><option value="all">Все герои</option><option value="cat">Коты (cat & dome_cat)</option><option value="dragon">Дракон</option><option value="explorer">Исследователь</option></select></label>
+        </div>
+        <label>Действия (JSON массив элементарных шагов)<textarea id="animActionsInput" rows="3" placeholder='[{"action": "turn", "duration": 1.0}, {"action": "jump", "duration": 1.5}]'>[{"action": "turn", "duration": 1.0}, {"action": "jump", "duration": 1.5}]</textarea></label>
+      </div>
+      <footer><button type="button" class="cancel-btn">Отмена</button><button id="saveNewAnimationBtn" value="default" class="primary" onclick="submitNewAnimation()">Сохранить движение</button></footer>
+    </form>
+  </dialog>
+
   <!-- STEP TEMPLATE -->
   <template id="stepTemplate">
     <article class="step-card" draggable="true">
@@ -616,6 +872,6 @@
     </article>
   </template>
 
-  <script src="/content-studio/admin_panel.js?v=4" defer></script>
+  <script src="/content-studio/admin_panel.js?v=6" defer></script>
 </body>
 </html>

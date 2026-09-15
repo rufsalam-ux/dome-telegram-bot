@@ -7,7 +7,8 @@ from app.services.character_geometry import ANALYSIS_VERSION, attach_character_r
 PRESET_CHARACTERS: list[dict] = [
     {"id": "robot", "title": "Робот", "file": "robot.png"},
     {"id": "fox", "title": "Лисёнок", "file": "fox.png"},
-    {"id": "cat", "title": "Кот", "file": "cat.png"},
+    {"id": "cat", "title": "Серый котик", "file": "cat.png"},
+    {"id": "dome_cat", "title": "Кот DOME", "file": "dome_cat.png"},
     {"id": "dragon", "title": "Дракончик", "file": "dragon.png"},
     {"id": "explorer", "title": "Путешественник", "file": "explorer.png"},
     {"id": "star", "title": "Звёздный герой", "file": "star.png"},
@@ -31,6 +32,14 @@ PRESET_RIG_GEOMETRY: dict[str, dict] = {
         "eyeBoundingBoxes": [[.36, .44, .075, .075], [.565, .44, .075, .075]], "mouthBoundingBox": None,
         "frontLimbs": [], "rearLimbs": [[.29, .70, .15, .27], [.56, .70, .15, .27]],
         "leftLegOrRearLimb": [.36, .92], "rightLegOrRearLimb": [.64, .92], "groundAnchor": [.50, .975],
+    },
+    "dome_cat": {
+        # Separate authored asset, never reuse the legacy cat's face/limb rig.
+        # Whole-body motion is safe; uncertain facial/limb cutouts stay disabled.
+        "characterBoundingBox": [0.0, 0.0, 1.0, 1.0], "headPoint": [.52, .32],
+        "headBoundingBox": None, "torsoBoundingBox": None,
+        "eyeBoundingBoxes": [], "mouthBoundingBox": None,
+        "frontLimbs": [], "rearLimbs": [], "groundAnchor": [.52, .98],
     },
     "cat": {
         "characterBoundingBox": [.198, .157, .602, .818], "headPoint": [.50, .48],
@@ -105,7 +114,7 @@ def preset_character_geometry(character_id: str) -> dict:
         **authored,
         "sourceWidth": source_width,
         "sourceHeight": source_height,
-        "visibleAspectRatio": 1.0,
+        "visibleAspectRatio": source_width / source_height if character_id == 'dome_cat' else 1.0,
         "headCenterX": authored["headPoint"][0],
         "headCenterY": authored["headPoint"][1],
         "bodyCenterX": 0.5,
