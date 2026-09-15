@@ -502,16 +502,20 @@ async def cms_list_heroes(request: web.Request) -> web.Response:
 
 async def cms_update_hero(request: web.Request) -> web.Response:
     _require_auth(request)
-    hero_id = request.match_info["hero_id"].strip().lower()
     data = await request.json()
+    hero_id = (request.match_info.get("hero_id") or data.get("hero_id") or "").strip().lower()
+    if not hero_id:
+        raise web.HTTPBadRequest(text=json.dumps({"error": "Укажите hero_id"}), content_type="application/json")
     heroes = _load_heroes_config()
     found = False
     for h in heroes:
         if h["id"] == hero_id:
             found = True
-            for k in ("name", "description", "order", "enabled", "role"):
+            for k in ("name", "description", "order", "enabled", "role", "active", "voice_id"):
                 if k in data:
                     h[k] = data[k]
+            if "active" in data:
+                h["enabled"] = bool(data["active"])
             break
     if not found:
         raise web.HTTPNotFound(text=json.dumps({"error": "Герой не найден"}), content_type="application/json")
@@ -671,7 +675,9 @@ def _movie_config_path(lesson_id: str, is_draft: bool = False) -> Path:
 
 async def cms_get_movie_config(request: web.Request) -> web.Response:
     _require_auth(request)
-    lid = request.match_info["lesson_id"].strip().lower()
+    lid = (request.match_info.get("lesson_id") or request.query.get("lesson_id") or "").strip().lower()
+    if not lid:
+        raise web.HTTPBadRequest(text=json.dumps({"error": "Укажите lesson_id"}), content_type="application/json")
     draft_path = _movie_config_path(lid, is_draft=True)
     live_path = _movie_config_path(lid, is_draft=False)
 
@@ -698,8 +704,10 @@ async def cms_get_movie_config(request: web.Request) -> web.Response:
 
 async def cms_save_movie_config(request: web.Request) -> web.Response:
     _require_auth(request)
-    lid = request.match_info["lesson_id"].strip().lower()
     data = await request.json()
+    lid = (request.match_info.get("lesson_id") or data.get("lesson_id") or "").strip().lower()
+    if not lid:
+        raise web.HTTPBadRequest(text=json.dumps({"error": "Укажите lesson_id"}), content_type="application/json")
     draft_path = _movie_config_path(lid, is_draft=True)
     _atomic_write_json(draft_path, data)
     _audit("MOVIE_CONFIG_DRAFT_SAVED", lid)
@@ -708,7 +716,9 @@ async def cms_save_movie_config(request: web.Request) -> web.Response:
 
 async def cms_publish_movie_config(request: web.Request) -> web.Response:
     _require_auth(request)
-    lid = request.match_info["lesson_id"].strip().lower()
+    lid = (request.match_info.get("lesson_id") or request.query.get("lesson_id") or "").strip().lower()
+    if not lid:
+        raise web.HTTPBadRequest(text=json.dumps({"error": "Укажите lesson_id"}), content_type="application/json")
     draft_path = _movie_config_path(lid, is_draft=True)
     data = _read_json_file(draft_path)
     if not data:
@@ -1024,7 +1034,7 @@ async def cms_get_audit_log(request: web.Request) -> web.Response:
                     pass
         except Exception:
             pass
-    return web.json_response({"ok": True, "events": events, "total": len(events)})
+    return web.json_response({"ok": True, "events": events, "records": events, "total": len(events)})
 
 
 # ===========================================================================
@@ -1036,13 +1046,18 @@ def register_cms_routes(app: web.Application) -> None:
     app.router.add_get("/api/studio/cms/latency", cms_get_latency)
 
     app.router.add_get("/api/studio/cms/media", cms_list_media)
+    app.router.add_post("/api/studio/cms/media", cms_upload_media)
     app.router.add_post("/api/studio/cms/media/upload", cms_upload_media)
+    app.router.add_delete("/api/studio/cms/media", cms_delete_media)
     app.router.add_delete("/api/studio/cms/media/{filename}", cms_delete_media)
 
     app.router.add_get("/api/studio/cms/heroes", cms_list_heroes)
+    app.router.add_post("/api/studio/cms/heroes", cms_update_hero)
     app.router.add_put("/api/studio/cms/heroes/{hero_id}", cms_update_hero)
     app.router.add_get("/api/studio/cms/heroes/custom", cms_list_custom_heroes)
+    app.router.add_get("/api/studio/cms/custom-heroes", cms_list_custom_heroes)
     app.router.add_post("/api/studio/cms/heroes/custom/{character_id}/retry", cms_retry_custom_hero)
+    app.router.add_post("/api/studio/cms/custom-heroes/{character_id}/retry", cms_retry_custom_hero)
 
     app.router.add_get("/api/studio/cms/animations", cms_list_animations)
     app.router.add_post("/api/studio/cms/animations", cms_create_animation)
@@ -1052,16 +1067,24 @@ def register_cms_routes(app: web.Application) -> None:
     app.router.add_get("/api/studio/cms/lessons/{lesson_id}/movie", cms_get_movie_config)
     app.router.add_put("/api/studio/cms/lessons/{lesson_id}/movie", cms_save_movie_config)
     app.router.add_post("/api/studio/cms/lessons/{lesson_id}/movie/publish", cms_publish_movie_config)
+    app.router.add_get("/api/studio/cms/movie-config", cms_get_movie_config)
+    app.router.add_post("/api/studio/cms/movie-config", cms_save_movie_config)
+    app.router.add_post("/api/studio/cms/movie-config/publish", cms_publish_movie_config)
+
     app.router.add_get("/api/studio/cms/movies/jobs", cms_list_movie_jobs)
+    app.router.add_get("/api/studio/cms/movie-jobs", cms_list_movie_jobs)
     app.router.add_post("/api/studio/cms/movies/jobs/{job_id}/retry", cms_retry_movie_job)
+    app.router.add_post("/api/studio/cms/movie-jobs/{job_id}/retry", cms_retry_movie_job)
 
     app.router.add_get("/api/studio/cms/ai-settings", cms_get_ai_settings)
+    app.router.add_post("/api/studio/cms/ai-settings", cms_save_ai_settings)
     app.router.add_put("/api/studio/cms/ai-settings", cms_save_ai_settings)
 
     app.router.add_get("/api/studio/cms/logs", cms_get_logs)
     app.router.add_get("/api/studio/cms/voice-records", cms_list_voice_records)
 
     app.router.add_get("/api/studio/cms/settings", cms_get_settings)
+    app.router.add_post("/api/studio/cms/settings", cms_save_settings)
     app.router.add_put("/api/studio/cms/settings", cms_save_settings)
 
     app.router.add_get("/api/studio/cms/versions", cms_list_all_versions)
