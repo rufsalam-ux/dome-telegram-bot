@@ -1,213 +1,43 @@
 from __future__ import annotations
-import asyncio, base64, binascii, hashlib, json, logging, mimetypes, os, secrets, shutil, tempfile, time
-from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+import asyncio, base64, hashlib, hmac, json, logging, mimetypes, secrets
+from datetime import datetime, timedelta
 from pathlib import Path
 from aiohttp import web
 from sqlalchemy import select, func
-from sqlalchemy.exc import IntegrityError
 from app.core.config import settings
 from app.db.session import SessionLocal
-from app.db.models import Parent,Child,Character,LessonSession,VoiceAttempt,InteractiveResult,HomeworkAssignment,LessonMovie,MovieVoiceSlot,Subscription,LessonEntitlement
-from app.services.mobile_tokens import issue_session_token,verify_session_token,signed_media_token,verify_media_token
-from app.services.lesson_loader import LessonConfigurationError, load_lesson
-from app.services.lesson_access import can_start,complete_session_once,mark_cartoon_generated
-from app.services.qa_access import is_owner_parent
-from app.services.account_access import account_access_error, account_status, initial_account_status
-from app.services.preset_characters import preset_character_geometry,preset_character_path,list_preset_characters
+from app.db.models import Parent,Child,Character,LessonSession,VoiceAttempt,InteractiveResult,HomeworkAssignment,LessonEntitlement
+from app.services.mobile_pairing import issue_token,verify_token,signed_media_token,verify_media_token
+from app.services.lesson_loader import load_lesson
+from app.services.lesson_access import can_start,complete_session_once
+from app.services.preset_characters import preset_character_path,list_preset_characters
 from app.services.character_processor import process_character
-from app.services.character_geometry import ANALYSIS_VERSION,analyze_character_geometry,confirm_character_geometry,geometry_from_json,geometry_status,upgrade_character_geometry_payload
-from app.services.audio_processing import VoiceActivity, analyze_voice_activity, prepare_child_voice
-from app.services.speech_pipeline import SpeechAssessment, assess_speech
-from app.services.lesson_runtime import apply_adaptive_assessment,classify_voice_feedback,complexity_support,correction_for_assessment,no_speech_feedback,voice_attempt_outcome
-from app.services.adaptive_learning import proficiency_band
-from app.services.conversational_tutor import TutorTurn,no_speech_turn
-from app.services.lesson_voice_context import authoritative_voice_context,contextual_assessment_goal,selected_item_turn
-from app.services.cartoon_builder import CartoonBuildError
-from app.services.mobile_lesson_movie import MOBILE_MOVIE_VERSION,MOVIE_STALL_TIMEOUT_SECONDS,MovieContractError,MovieRenderInputs,build_mobile_lesson_movie,ensure_movie_voice_slots,load_movie_contract,movie_take_status,record_movie_voice_slot,required_movie_phrase_ids,resolve_movie_voice_slots,select_movie_voice_takes
+from app.services.audio_processing import prepare_child_voice
+from app.services.speech_pipeline import assess_speech
+from app.services.free_topic_cartoon import build_free_topic_cartoon
 from app.services.email_reports import send_homework_email,_send_with_attachment_sync,send_verification_email,send_password_reset_email
-from app.services.ai_speech import AISpeechError, synthesize_bilingual_speech, translate_text
-from app.services.password_auth import hash_password, hash_verification_code, verify_password, verify_verification_code
-from app.services.standalone_demo_access import ensure_free_demo_entitlement
-from app.services.visual_localization import VisualLocalizationError, localize_embedded_text_image
-from app.services.course_catalog import list_courses
-from app.services.authored_content import lesson_dir as authored_lesson_dir
-from app.services.lesson_progress import lesson_content_version, missing_step_payload, runtime_sequence, runtime_step_ids
-from app.services.subscription_plan_changes import (
-    PlanChangeError,
-    cancel_plan_change,
-    current_plan_snapshot,
-    next_billing_period_start,
-    plan_catalog_for_child,
-    preview_plan_change,
-    schedule_plan_change,
-)
-from app.services.subscription_provider import (
-    SubscriptionProviderError,
-    restore_provider_current_plan,
-    schedule_provider_plan_change,
-)
-from app.services.storage_pressure import RUNTIME_DATABASE_MIN_FREE_BYTES,RUNTIME_STORAGE_RESERVE_BYTES,ensure_runtime_storage_capacity
+from app.services.ai_speech import synthesize_speech, translate_text
+from app.services.password_auth import hash_password, verify_password
 
 log=logging.getLogger('dome.mobile_api')
-MOBILE_LANGUAGES={'ru','en','es','de','fr','it','pt','tr','ar','zh'}
-_movie_tasks:set[asyncio.Task]=set()
-_voice_upload_locks:dict[str,asyncio.Lock]={}
-MOVIE_RETRY_MESSAGE='Мультфильм пока не собрался. Все записи сохранены — попробуйте ещё раз.'
-MOVIE_ACTIVE_STATES={'QUEUED','RUNNING'}
-MOVIE_SUCCESS_STATES={'SUCCEEDED','READY'}
-MOVIE_RETRY_STATES={'FAILED','TIMED_OUT'}
-VOICE_MAX_UPLOAD_BYTES=32*1024*1024
-
-
-def _voice_error(status:int,code:str,message:str,**details)->web.Response:
-    return web.Response(
-        status=status,
-        text=json.dumps({'error':message,'code':code,**details},ensure_ascii=False),
-        content_type='application/json',
-    )
-
-
-def _voice_upload_size_error(size:int)->web.Response|None:
-    if int(size)<=0:return _voice_error(400,'VOICE_EMPTY','Запись не содержит аудио.')
-    if int(size)>VOICE_MAX_UPLOAD_BYTES:return _voice_error(413,'VOICE_TOO_LARGE','Запись слишком длинная. Запишите короткий ответ.')
-    return None
-
-
-def _voice_recording_id(request:web.Request)->str:
-    value=str(request.headers.get('Idempotency-Key') or request.headers.get('X-Idempotency-Key') or '').strip()
-    if not value:return ''
-    if len(value)>160 or any(ch not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:-' for ch in value):
-        raise web.HTTPBadRequest(text=json.dumps({'error':'Invalid recording id','code':'VOICE_RECORDING_ID_INVALID'}),content_type='application/json')
-    return value
-
-
-def _voice_temp_root(session_id:int)->Path:
-    root=Path(tempfile.gettempdir())/'dome-mobile-voice'/str(session_id);root.mkdir(parents=True,exist_ok=True);return root
-
-
-def _write_atomic(path:Path,data:bytes)->None:
-    staging=path.with_name(path.name+'.uploading')
-    with staging.open('wb') as stream:
-        stream.write(data);stream.flush();os.fsync(stream.fileno())
-    os.replace(staging,path)
-
-
-def _copy_atomic(source:Path,destination:Path)->None:
-    destination.parent.mkdir(parents=True,exist_ok=True);staging=destination.with_name(destination.name+'.uploading')
-    try:
-        with source.open('rb') as src,staging.open('wb') as dst:
-            shutil.copyfileobj(src,dst,length=1024*1024);dst.flush();os.fsync(dst.fileno())
-        os.replace(staging,destination)
-    except Exception:
-        try:staging.unlink(missing_ok=True)
-        except OSError:pass
-        raise
-
-
-def _cleanup_voice_temp(request:web.Request)->None:
-    for value in request.get('_voice_temp_paths',[]):
-        try:Path(value).unlink(missing_ok=True)
-        except OSError:pass
-
-
-def _voice_storage_capacity(required_bytes:int)->dict[str,int|bool]:
-    minimum=max(RUNTIME_DATABASE_MIN_FREE_BYTES,int(required_bytes)+RUNTIME_DATABASE_MIN_FREE_BYTES)
-    return ensure_runtime_storage_capacity(
-        max(RUNTIME_STORAGE_RESERVE_BYTES,minimum),
-        minimum_free_bytes=minimum,
-    )
-
-
-def _utcnow() -> datetime:
-    return datetime.now(UTC).replace(tzinfo=None)
 
 def _base(request:web.Request)->str:
-    configured=settings.effective_webapp_base_url
-    if configured:return configured
-    forwarded=str(request.headers.get('X-Forwarded-Proto') or '').split(',',1)[0].strip().lower()
-    scheme=forwarded if forwarded in {'http','https'} else request.scheme
-    return f'{scheme}://{request.host}'
-
-def _movie_public_url(child_id:int,path:Path,base_url:str='')->str:
-    value=f'movie:{child_id}:{path.name}';token=signed_media_token(value,86400*30)
-    base=(base_url or settings.effective_webapp_base_url).rstrip('/')
-    route=f'/api/mobile/movie/{child_id}/{path.name}?t={token}'
-    return f'{base}{route}' if base else route
-
-def _movie_identity_payload(movie:LessonMovie,url:str|None=None)->dict:
-    return {
-        'session_id':movie.lesson_session_id,'run_id':movie.run_number,'run_number':movie.run_number,
-        'job_id':movie.job_id,'attempt_id':movie.attempt_id,'movie_url':url,
-    }
-
-async def _optional_translation(text:str,source_language:str,target_language:str,field:str)->str:
-    """Translate response enrichment without making a saved voice attempt fail."""
-    if not text:return ''
-    if source_language==target_language:return text
-    try:return await translate_text(text,source_language,target_language)
-    except Exception as exc:
-        log.warning('MOBILE_VOICE_OPTIONAL_TRANSLATION_FAILED field=%s source=%s target=%s error=%s',field,source_language,target_language,exc)
-        return ''
-
-
-async def _selected_context_turn(context:dict,target_language:str,native_language:str,allow_follow_up:bool)->TutorTurn|None:
-    """Realize one selected-item response in both languages from one meaning."""
-    selected=context.get('selected_items') or []
-    if not selected:return None
-    item=selected[-1];marker='__DOME_SELECTED_ITEM__'
-    task_type=str(context.get('task_type') or '')
-    if task_type=='animal_compare':
-        reaction_source=f'I heard your idea about {marker}!';follow_source=''
-    else:
-        reaction_source=f'You chose {marker}!';follow_source=f'Why did you choose {marker}?' if allow_follow_up else ''
-    target_label=str(item.get('label_target') or item.get('id') or 'item')
-    native_label=str(item.get('label_native') or item.get('id') or target_label)
-    target_reaction,native_reaction,target_follow,native_follow=await asyncio.gather(
-        _optional_translation(reaction_source,'en',target_language,'selected_reaction_target'),
-        _optional_translation(reaction_source,'en',native_language,'selected_reaction_native'),
-        _optional_translation(follow_source,'en',target_language,'selected_followup_target') if follow_source else asyncio.sleep(0,result=''),
-        _optional_translation(follow_source,'en',native_language,'selected_followup_native') if follow_source else asyncio.sleep(0,result=''),
-    )
-    target_reaction=(target_reaction or reaction_source).replace(marker,target_label)
-    native_reaction=(native_reaction or reaction_source).replace(marker,native_label)
-    target_follow=(target_follow or follow_source).replace(marker,target_label)
-    native_follow=(native_follow or follow_source).replace(marker,native_label)
-    return selected_item_turn(target_reaction,native_reaction,follow_up_target=target_follow,follow_up_native=native_follow,emotion='curious' if target_follow else 'happy')
-
-
-async def _selected_context_model_answer(context:dict,target_language:str)->str:
-    """Return a post-attempt example using only the child's actual selection."""
-    selected=context.get('selected_items') or []
-    if not selected:return ''
-    item=selected[-1];marker='__DOME_SELECTED_ITEM__';task_type=str(context.get('task_type') or '')
-    source=f'{marker} is interesting.' if task_type=='animal_compare' else f'I will take {marker}.'
-    translated=await _optional_translation(source,'en',target_language,'selected_model_answer')
-    return (translated or source).replace(marker,str(item.get('label_target') or item.get('id') or 'item'))
-
-
-def _load_mobile_lesson(lesson_id:str)->dict:
-    try:return load_lesson(lesson_id)
-    except (FileNotFoundError,LessonConfigurationError,KeyError,ValueError) as exc:
-        log.error('MOBILE_LESSON_CONFIGURATION_UNAVAILABLE lesson=%s error=%s',lesson_id,exc)
-        raise web.HTTPServiceUnavailable(text=json.dumps({'error':'Lesson configuration is unavailable','code':'LESSON_CONFIGURATION_UNAVAILABLE'}),content_type='application/json') from exc
+    proto = request.headers.get('X-Forwarded-Proto', request.scheme)
+    host = request.headers.get('X-Forwarded-Host', request.host)
+    if request.headers.get('X-Forwarded-Proto') == 'https' or (getattr(settings, 'public_url', '') or '').startswith('https://'):
+        proto = 'https'
+    return f'{proto}://{host}'
 
 def _bearer(request:web.Request)->str:
     h=request.headers.get('Authorization','')
     return h[7:].strip() if h.lower().startswith('bearer ') else ''
 
 async def _parent(request:web.Request)->Parent:
-    pid=verify_session_token(_bearer(request))
-    if not pid:
-        raise web.HTTPUnauthorized(text=json.dumps({'error':'Mobile session expired','code':'MOBILE_SESSION_INVALID'}),content_type='application/json')
+    pid=verify_token(_bearer(request))
+    if not pid: raise web.HTTPUnauthorized(text=json.dumps({'error':'Mobile session expired'}),content_type='application/json')
     async with SessionLocal() as db:
         p=await db.get(Parent,pid)
-        if not p:
-            raise web.HTTPUnauthorized(text=json.dumps({'error':'Mobile session is no longer valid','code':'MOBILE_SESSION_REVOKED'}),content_type='application/json')
-        err=account_access_error(p)
-        if err:
-            code_err,msg=err
-            raise web.HTTPForbidden(text=json.dumps({'error':msg,'code':code_err}),content_type='application/json')
+        if not p: raise web.HTTPUnauthorized()
         return p
 
 async def _owned_child(parent_id:int, child_id:int)->Child:
@@ -221,386 +51,20 @@ def _hero_url(request:web.Request,c:Child)->str|None:
     val=f'hero:{c.id}:{c.active_character_id}'; t=signed_media_token(val)
     return f'{_base(request)}/api/mobile/hero/file/{c.id}/{c.active_character_id}?t={t}'
 
-def _character_json(character:Character|None)->dict|None:
-    if character is None:return None
-    payload=geometry_from_json(character.visual_metadata_json)
-    if not payload:return None
-    return {**payload,'analysisStatus':character.visual_analysis_status,'analysisVersion':character.visual_analysis_version or payload.get('analysisVersion')}
-
-def _child_json(request:web.Request,c:Child,character:Character|None=None)->dict:
-    return {'id':c.id,'name':c.display_name,'age_years':c.age_years,'native_language':c.native_language,'target_language':c.target_language,'language_level':c.language_level,'working_difficulty':c.working_difficulty,'country':c.country,'gender':c.gender or 'boy','active_character_id':c.active_character_id,'hero_url':_hero_url(request,c),'hero_metadata':_character_json(character)}
-
-async def _ensure_character_geometry(character:Character)->dict:
-    payload=geometry_from_json(character.visual_metadata_json)
-    if payload.get('userConfirmed') is True:
-        upgraded=upgrade_character_geometry_payload(payload)
-        if upgraded!=payload or character.visual_analysis_version!=ANALYSIS_VERSION:
-            character.visual_metadata_json=json.dumps(upgraded,ensure_ascii=False)
-            character.visual_analysis_version=ANALYSIS_VERSION
-            character.visual_analysis_status='CONFIRMED'
-        return upgraded
-    if payload and character.visual_analysis_version==ANALYSIS_VERSION:return payload
-    path=Path(character.processed_path or character.original_path)
-    if not path.exists():return {}
-    if character.catalog_id:
-        payload=preset_character_geometry(character.catalog_id)
-    else:
-        try:payload=(await analyze_character_geometry(path,allow_remote=False)).payload()
-        except Exception as exc:
-            log.warning('CHARACTER_GEOMETRY_BACKFILL_FAILED character_id=%s error=%s',character.id,exc)
-            character.visual_analysis_status='NEEDS_REVIEW'
-            return payload
-    payload=upgrade_character_geometry_payload(payload)
-    character.visual_metadata_json=json.dumps(payload,ensure_ascii=False)
-    character.visual_analysis_version=ANALYSIS_VERSION
-    character.visual_analysis_status=geometry_status(payload)
-    return payload
-
-async def _children_json(request:web.Request,db,children:list[Child])->list[dict]:
-    result=[];changed=False
-    for child in children:
-        character=await db.get(Character,child.active_character_id) if child.active_character_id else None
-        if character and (not geometry_from_json(character.visual_metadata_json) or character.visual_analysis_version!=ANALYSIS_VERSION):
-            await _ensure_character_geometry(character);changed=True
-        result.append(_child_json(request,child,character))
-    if changed:await db.commit()
-    return result
-
-
-async def _mobile_resume_state(db, session_id:int)->tuple[dict,list[str]]:
-    rows=(await db.scalars(select(InteractiveResult).where(InteractiveResult.lesson_session_id==session_id).order_by(InteractiveResult.id))).all()
-    state={}
-    for row in rows:
-        if row.task_type=='pre_slide_video':continue
-        try:state[row.slide_id]=json.loads(row.result_json or '{}')
-        except (TypeError,ValueError,json.JSONDecodeError):continue
-    voices=(await db.scalars(select(VoiceAttempt).where(VoiceAttempt.lesson_session_id==session_id).order_by(VoiceAttempt.id))).all()
-    accepted=[]
-    for row in voices:
-        if movie_take_status(row.status) and row.phrase_id not in accepted:accepted.append(row.phrase_id)
-    return state,accepted
-
-
-async def _mobile_pre_slide_video_state(db,child_id:int,lesson_id:str,current_session_id:int)->dict:
-    rows=(await db.execute(select(InteractiveResult,LessonSession).join(LessonSession,LessonSession.id==InteractiveResult.lesson_session_id).where(LessonSession.child_id==child_id,LessonSession.lesson_id==lesson_id,InteractiveResult.task_type=='pre_slide_video').order_by(InteractiveResult.id))).all()
-    attempt=[];ever=[]
-    for row,session in rows:
-        try:payload=json.loads(row.result_json or '{}')
-        except (TypeError,ValueError,json.JSONDecodeError):continue
-        key=str(payload.get('video_key') or '').strip()
-        # Failed downloads/playback are not views, including historical records
-        # written by older mobile builds with completed=true on failure.
-        if payload.get('outcome')=='failed' or payload.get('completed') is False:continue
-        if not key:continue
-        if key not in ever:ever.append(key)
-        if session.id==current_session_id and key not in attempt:attempt.append(key)
-    return {'attempt':attempt,'ever':ever}
-
-
-def _session_payload(sess:LessonSession,ent,child:Child,lesson_data:dict,*,resumed:bool,interactive_state:dict,recorded_phrases:list[str],pre_slide_video_state:dict|None=None,reset_reason:str|None=None)->dict:
-    step_ids=runtime_step_ids(lesson_data);current_id=str(sess.current_step_id or '')
-    current_index=step_ids.index(current_id) if current_id in step_ids else min(max(int(sess.current_step or 0),0),max(len(step_ids)-1,0))
-    try:runtime=json.loads(sess.runtime_state_json or '{}')
-    except (TypeError,ValueError,json.JSONDecodeError):runtime={}
-    return {
-        'session_id':sess.id,'run_number':int(ent.completed_runs or 0)+1,'lesson_id':sess.lesson_id,
-        'current_step':current_index,'current_step_id':step_ids[current_index] if step_ids else None,
-        'lesson_version':lesson_content_version(lesson_data),'runtime_step_ids':step_ids,
-        'completion_state':str(sess.completion_state or 'ACTIVE'),'resumed':resumed,'session_reset_reason':reset_reason,
-        'completion_recovery':runtime.get('completion_recovery'),
-        'interactive_state':interactive_state,
-        'recorded_phrases':recorded_phrases,'pre_slide_video_state':pre_slide_video_state or {'attempt':[],'ever':[]},'adaptive_profile':{
-            'language_level':child.language_level or 'PRE_A1',
-            'working_difficulty':float(child.working_difficulty or 0.15),
-            'proficiency_band':proficiency_band(float(child.working_difficulty or 0.15)),
-        },
-    }
-
-
-def _bounded_int(value,maximum:int)->int:
-    try:return max(0,min(maximum,int(value or 0)))
-    except (TypeError,ValueError):return 0
+def _child_json(request:web.Request,c:Child)->dict:
+    return {'id':c.id,'name':c.display_name,'age_years':c.age_years,'native_language':c.native_language,'target_language':c.target_language,'language_level':c.language_level,'country':c.country,'active_character_id':c.active_character_id,'hero_url':_hero_url(request,c)}
 
 async def bootstrap(request:web.Request)->web.Response:
     p=await _parent(request)
-    async with SessionLocal() as db:
-        cs=(await db.scalars(select(Child).where(Child.parent_id==p.id).order_by(Child.id))).all();children_payload=await _children_json(request,db,list(cs))
-    return web.json_response({'parent':{'id':p.id,'name':p.display_name,'email':p.email,'email_verified':bool(p.email_verified),'phone':p.phone,'account_status':account_status(p),'is_owner':is_owner_parent(p) or str(getattr(p,'email','') or '').strip().lower()=='krisriskrisris@gmail.com'},'children':children_payload})
-
-
-async def lesson_catalog(request:web.Request)->web.Response:
-    """Return the published server catalog and child-specific access state.
-
-    The APK contains a universal player, not a baked lesson list. Publishing a
-    validated content_v1 lesson therefore changes this response immediately.
-    """
-    from app.services.homework_catalog import load_homework
-
-    p=await _parent(request)
-    try:cid=int(request.match_info['child_id'])
-    except (TypeError,ValueError):raise web.HTTPBadRequest(text=json.dumps({'error':'child_id is required'}),content_type='application/json')
-    await _owned_child(p.id,cid)
-
-    from app.services.qa_access import is_owner_parent
-    is_owner = is_owner_parent(p)
-
-    active_courses = list_courses(for_client=not is_owner)
-    courses_payload = [
-        {
-            'course_id': str(c.course_id),
-            'title': str(c.title),
-            'description': str(c.description or ''),
-            'cover_image': str(c.cover_image or ''),
-            'order': int(getattr(c, 'order', 1) or 1),
-        }
-        for c in active_courses
-    ]
-
-    items=[]
-    for course in active_courses:
-        for lesson_id in course.lesson_ids:
-            try:data=_load_mobile_lesson(str(lesson_id))
-            except web.HTTPException:continue
-            if not is_owner and str(data.get('publication_status') or '').upper()!='PUBLISHED':continue
-            available,reason,entitlement=await can_start(cid,str(lesson_id),str(course.course_id),audit=False)
-            completed_runs = int(entitlement.completed_runs or 0) if entitlement is not None else 0
-            if is_owner:
-                available = True
-                reason = "OWNER_UNLIMITED_ACCESS"
-            
-            async with SessionLocal() as db:
-                resume=await db.scalar(select(LessonSession).where(
-                    LessonSession.child_id==cid,LessonSession.lesson_id==str(lesson_id),LessonSession.status=='IN_PROGRESS',
-                ).order_by(LessonSession.id.desc()))
-                hw_assign=await db.scalar(select(HomeworkAssignment).where(
-                    HomeworkAssignment.child_id==cid,HomeworkAssignment.lesson_id==str(lesson_id),HomeworkAssignment.status=='COMPLETED',
-                ))
-
-            # Homework status
-            hw = load_homework(str(lesson_id))
-            has_hw = bool(hw and hw.enabled and (is_owner or hw.status == 'published') and len(hw.slides) > 0)
-            hw_completed = (hw_assign is not None)
-            hw_avail = False
-            if has_hw:
-                if is_owner or hw.available_policy == 'immediate':
-                    hw_avail = True
-                elif hw.available_policy == 'after_completion':
-                    hw_avail = (completed_runs > 0)
-                else:
-                    hw_avail = True
-
-            items.append({
-                'lesson_id':str(lesson_id),'course_id':str(course.course_id),'course_title':course.title,
-                'title':str(data.get('title') or lesson_id),'description':str(data.get('description') or course.description or ''),
-                'order':int(data.get('order') or 9999),'revision':int(data.get('revision') or data.get('runtime_revision') or 1),
-                'available':bool(available),'access_reason':reason,
-                'completed_runs':completed_runs,
-                'max_completed_runs': 999999 if is_owner else (int(entitlement.max_completed_runs or data.get('max_completed_runs') or 2) if entitlement is not None else int(data.get('max_completed_runs') or 2)),
-                'resume_step':int(resume.current_step or 0) if resume is not None else None,
-                'has_homework': has_hw,
-                'homework_id': hw.homework_id if has_hw else None,
-                'homework_title': hw.title if has_hw else None,
-                'homework_optional': hw.optional if has_hw else True,
-                'homework_available': hw_avail,
-                'homework_completed': hw_completed,
-                'requires_hw_for_next_lesson': False if is_owner else (bool(hw.requires_completion_for_next_lesson) if has_hw else False),
-            })
-    items.sort(key=lambda item:(item['course_title'],item['order'],item['lesson_id']))
-    return web.json_response({'courses': courses_payload, 'lessons': items})
-
-async def create_child(request:web.Request)->web.Response:
-    p=await _parent(request);data=await request.json();name=str(data.get('name') or '').strip()
-    try:age=int(data.get('age_years'))
-    except (TypeError,ValueError):raise web.HTTPBadRequest(text=json.dumps({'error':'Укажите возраст ребёнка'}),content_type='application/json')
-    target=str(data.get('target_language') or '').strip().lower();native=str(data.get('native_language') or '').strip().lower()
-    if not name or len(name)>120:raise web.HTTPBadRequest(text=json.dumps({'error':'Введите имя ребёнка'}),content_type='application/json')
-    if age<2 or age>18:raise web.HTTPBadRequest(text=json.dumps({'error':'Возраст должен быть от 2 до 18 лет'}),content_type='application/json')
-    if target not in MOBILE_LANGUAGES or native not in MOBILE_LANGUAGES:raise web.HTTPBadRequest(text=json.dumps({'error':'Выберите язык из списка'}),content_type='application/json')
-    async with SessionLocal() as db:
-        count=await db.scalar(select(func.count(Child.id)).where(Child.parent_id==p.id))
-        if int(count or 0)>=5:raise web.HTTPConflict(text=json.dumps({'error':'Можно добавить не более 5 детей'}),content_type='application/json')
-        child=Child(parent_id=p.id,display_name=name,age_years=age,target_language=target,native_language=native,gender=str(data.get('gender') or 'boy').lower()[:16])
-        db.add(child);await db.flush()
-        await ensure_free_demo_entitlement(db,parent_id=p.id,child_id=child.id)
-        await db.commit();await db.refresh(child)
-    return web.json_response(_child_json(request,child),status=201)
-
-
-def _date_json(value:datetime|None)->str|None:
-    return value.isoformat() if value else None
-
-
-def _plan_json(plan)->dict:
-    return {
-        'plan_id':plan.plan_id,'version_id':plan.version_id,'title':plan.title,'lessons_per_week':plan.lessons_per_week,
-        'price':plan.price,'currency':plan.currency,'billing_period':plan.billing_period,
-    }
-
-
-async def _subscription_for_child(db,child_id:int,course_id:str)->Subscription|None:
-    return await db.scalar(select(Subscription).where(
-        Subscription.child_id==child_id,Subscription.course_id==course_id,
-    ).order_by(Subscription.id.desc()))
-
-
-def _subscription_json(sub:Subscription|None)->dict|None:
-    if sub is None:return None
-    current=current_plan_snapshot(sub)
-    pending=None
-    if sub.pending_plan_id:
-        pending={
-            'plan_id':sub.pending_plan_id,'lessons_per_week':sub.pending_lessons_per_week,
-            'version_id':sub.pending_plan_version_id,'billing_period':sub.pending_plan_billing_period or 'MONTH',
-            'price':sub.pending_plan_price,'currency':sub.pending_plan_currency or sub.currency,
-            'created_at':_date_json(sub.pending_plan_created_at),
-            'effective_at':_date_json(sub.pending_plan_effective_at),
-            'provider_status':sub.pending_provider_status,
-        }
-    return {
-        'id':sub.id,'course_id':sub.course_id,'status':sub.status,'current_plan':_plan_json(current),
-        'current_period_start':_date_json(sub.current_period_start or sub.started_at),
-        'current_period_end':_date_json(sub.current_period_end),
-        'next_charge_at':_date_json(sub.next_charge_at or sub.current_period_end or next_billing_period_start(sub)),
-        'lessons_allocated':int(sub.lessons_allocated or 0),'lessons_used':int(sub.lessons_used or 0),
-        'pending_plan':pending,'payment_provider':sub.payment_provider,
-    }
-
-
-async def subscription_overview(request:web.Request)->web.Response:
-    p=await _parent(request);cid=int(request.match_info['child_id']);course_id=str(request.query.get('course_id') or 'conversation')
-    await _owned_child(p.id,cid)
-    async with SessionLocal() as db:
-        sub=await _subscription_for_child(db,cid,course_id)
-        plans=await plan_catalog_for_child(db,parent_id=p.id,child_id=cid,course_id=course_id)
-        return web.json_response({'subscription':_subscription_json(sub),'plans':[_plan_json(x) for x in plans]})
-
-
-async def subscription_plan_change_preview(request:web.Request)->web.Response:
-    p=await _parent(request);cid=int(request.match_info['child_id']);data=await request.json();course_id=str(data.get('course_id') or 'conversation');plan_id=str(data.get('plan_id') or '');billing_period=str(data.get('billing_period') or 'MONTH');version_id=str(data.get('version_id') or '')
-    await _owned_child(p.id,cid)
-    async with SessionLocal() as db:
-        sub=await _subscription_for_child(db,cid,course_id)
-        if sub is None:raise web.HTTPConflict(text=json.dumps({'error':'Активная подписка не найдена'}),content_type='application/json')
-        try:preview=await preview_plan_change(db,sub,parent_id=p.id,requested_plan_id=plan_id,requested_billing_period=billing_period,expected_version_id=version_id)
-        except PlanChangeError as exc:raise web.HTTPConflict(text=json.dumps({'error':str(exc)}),content_type='application/json')
-        return web.json_response({
-            'subscription_id':preview.subscription_id,'current_plan':_plan_json(preview.current),
-            'new_plan':_plan_json(preview.requested),'effective_at':_date_json(preview.effective_at),
-            'replaces_pending_plan_id':preview.replaces_pending_plan_id,
-            'notice':'Новый тариф начнёт действовать со следующего оплачиваемого периода.\nДо этой даты действует ваш текущий тариф.',
-        })
-
-
-async def subscription_plan_change_confirm(request:web.Request)->web.Response:
-    p=await _parent(request);cid=int(request.match_info['child_id']);data=await request.json();course_id=str(data.get('course_id') or 'conversation');plan_id=str(data.get('plan_id') or '');billing_period=str(data.get('billing_period') or 'MONTH');version_id=str(data.get('version_id') or '')
-    await _owned_child(p.id,cid)
-    async with SessionLocal() as db:
-        sub=await _subscription_for_child(db,cid,course_id)
-        if sub is None:raise web.HTTPConflict(text=json.dumps({'error':'Активная подписка не найдена'}),content_type='application/json')
-        try:
-            preview=await preview_plan_change(db,sub,parent_id=p.id,requested_plan_id=plan_id,requested_billing_period=billing_period,expected_version_id=version_id)
-            provider=await schedule_provider_plan_change(
-                sub,preview.requested,effective_at=preview.effective_at,
-                base_url=settings.effective_webapp_base_url or _base(request),
-                idempotency_key=f'plan-change:{sub.id}:{preview.requested.version_id}:{int(preview.effective_at.timestamp())}',
-            )
-            event=schedule_plan_change(
-                db,sub,parent_id=p.id,preview=preview,provider_status=provider.status,
-                provider_reference=provider.reference,provider_plan_id=provider.provider_plan_id,
-            )
-            await db.commit();await db.refresh(sub)
-        except (PlanChangeError,SubscriptionProviderError,RuntimeError) as exc:
-            await db.rollback();raise web.HTTPConflict(text=json.dumps({'error':str(exc)}),content_type='application/json')
-        date=preview.effective_at.strftime('%d.%m.%Y')
-        amount=f'{preview.requested.price:.2f} {preview.requested.currency}'
-        message=f'Готово. До {date} действует текущий тариф.\nС {date} начнёт действовать {preview.requested.title}, и автоматически будет списываться {amount} за каждый следующий период, пока тариф не будет изменён или подписка отменена.'
-        return web.json_response({'event':event,'subscription':_subscription_json(sub),'approval_url':provider.approval_url or None,'message':message})
-
-
-async def subscription_plan_change_cancel(request:web.Request)->web.Response:
-    p=await _parent(request);cid=int(request.match_info['child_id']);data=await request.json() if request.can_read_body else {};course_id=str(data.get('course_id') or 'conversation')
-    await _owned_child(p.id,cid)
-    async with SessionLocal() as db:
-        sub=await _subscription_for_child(db,cid,course_id)
-        if sub is None:raise web.HTTPConflict(text=json.dumps({'error':'Активная подписка не найдена'}),content_type='application/json')
-        try:
-            if not sub.pending_plan_id:raise PlanChangeError('Запланированного изменения тарифа нет')
-            effective_at=sub.pending_plan_effective_at or datetime.utcnow()
-            provider=await restore_provider_current_plan(
-                sub,current_plan_snapshot(sub),effective_at=effective_at,
-                base_url=settings.effective_webapp_base_url or _base(request),
-                idempotency_key=f'plan-change-cancel:{sub.id}:{int(effective_at.timestamp())}',
-            )
-            if provider.approval_url:
-                sub.pending_provider_status='CANCEL_PENDING_APPROVAL';sub.pending_provider_reference=provider.reference or None
-            else:cancel_plan_change(db,sub,parent_id=p.id)
-            await db.commit();await db.refresh(sub)
-        except (PlanChangeError,SubscriptionProviderError,RuntimeError) as exc:
-            await db.rollback();raise web.HTTPConflict(text=json.dumps({'error':str(exc)}),content_type='application/json')
-        if provider.approval_url:
-            return web.json_response({'subscription':_subscription_json(sub),'approval_url':provider.approval_url,'message':'Подтвердите отмену смены тарифа в PayPal. До подтверждения запланированное изменение сохраняется.'})
-        return web.json_response({'subscription':_subscription_json(sub),'approval_url':None,'message':'Запланированное изменение тарифа отменено. Текущий тариф остаётся без изменений.'})
+    async with SessionLocal() as db:cs=(await db.scalars(select(Child).where(Child.parent_id==p.id).order_by(Child.id))).all()
+    return web.json_response({'parent':{'id':p.id,'name':p.display_name,'email':p.email,'phone':p.phone},'children':[_child_json(request,c) for c in cs]})
 
 async def lesson(request:web.Request)->web.Response:
-    await _parent(request); lid=request.match_info['lesson_id']; data=_load_mobile_lesson(lid)
+    await _parent(request); lid=request.match_info['lesson_id']; data=load_lesson(lid)
     if not data: raise web.HTTPNotFound(text=json.dumps({'error':'Lesson not found'}),content_type='application/json')
     # Do not leak server paths.
     clean=dict(data); clean.pop('source_materials',None)
-    clean['visual_asset_version']=str(data.get('revision') or data.get('runtime_revision') or 1)
-    clean['lesson_version']=lesson_content_version(data)
-    clean['runtime_step_ids']=runtime_step_ids(data)
     return web.json_response(clean)
-
-
-async def lesson_visual(request:web.Request)->web.StreamResponse:
-    p=await _parent(request);lid=str(request.match_info['lesson_id']);filename=str(request.match_info['filename'])
-    if '/' in lid or '\\' in lid or '..' in lid:raise web.HTTPNotFound()
-    try:cid=int(request.query.get('child_id',''))
-    except (TypeError,ValueError):raise web.HTTPBadRequest(text=json.dumps({'error':'child_id is required'}),content_type='application/json')
-    child=await _owned_child(p.id,cid)
-    if '/' in filename or '\\' in filename or '..' in filename:
-        raise web.HTTPNotFound()
-    data=_load_mobile_lesson(lid)
-    candidates={Path(str(slide.get('image') or '')).name:str(slide.get('image') or '') for slide in data.get('slides',[]) if slide.get('image')}
-    relative=candidates.get(filename)
-    if not relative:raise web.HTTPNotFound()
-    base=((settings.storage_root/'authored-content'/'lessons'/lid) if data.get('content_source')=='persistent' else (settings.content_root/'lessons'/lid)).resolve();source=(base/relative).resolve()
-    if base not in source.parents or not source.exists() or source.suffix.lower() not in {'.png','.jpg','.jpeg','.webp'}:
-        raise web.HTTPNotFound()
-    version=str(request.query.get('version') or data.get('revision') or data.get('runtime_revision') or 1)
-    try:
-        localized=await localize_embedded_text_image(source,settings.storage_root/'lesson-asset-cache',child.target_language or 'ru',asset_version=version,strict=True)
-    except VisualLocalizationError as exc:
-        log.warning('MOBILE_VISUAL_LOCALIZATION_UNAVAILABLE lesson=%s asset=%s language=%s error=%s',lid,filename,child.target_language,exc)
-        raise web.HTTPServiceUnavailable(text=json.dumps({'error':'Localized lesson image is still being prepared','code':'LESSON_VISUAL_UNAVAILABLE'}),content_type='application/json')
-    response=web.FileResponse(localized)
-    response.headers['Cache-Control']='private, max-age=31536000, immutable'
-    return response
-
-
-async def lesson_media(request:web.Request)->web.StreamResponse:
-    """Serve only local media explicitly referenced by the published lesson."""
-
-    await _parent(request);lid=str(request.match_info['lesson_id']);filename=str(request.match_info['filename'])
-    if any(value in lid or value in filename for value in ('/','\\','..')):raise web.HTTPNotFound()
-    data=_load_mobile_lesson(lid);references:dict[str,str]={}
-    for slide in data.get('slides',[]):
-        for item in slide.get('media_sequence') or []:
-            if not isinstance(item,dict):continue
-            source=str(item.get('src') or item.get('url') or '')
-            if source and not source.lower().startswith(('http://','https://')):
-                references[Path(source).name]=source
-        presentation=slide.get('preSlideVideo') or slide.get('pre_slide_video') or {}
-        if isinstance(presentation,dict) and presentation.get('enabled') is not False:
-            source=str(presentation.get('uri') or presentation.get('src') or presentation.get('url') or '')
-            if source and not source.lower().startswith(('http://','https://')):references[Path(source).name]=source
-    relative=references.get(filename)
-    if not relative:raise web.HTTPNotFound()
-    base=((settings.storage_root/'authored-content'/'lessons'/lid) if data.get('content_source')=='persistent' else (settings.content_root/'lessons'/lid)).resolve();path=(base/relative).resolve()
-    if base not in path.parents or not path.exists() or path.suffix.lower() not in {'.png','.jpg','.jpeg','.webp','.gif','.mp4','.m4v','.webm','.mp3','.m4a','.ogg','.wav'}:
-        raise web.HTTPNotFound()
-    response=web.FileResponse(path);response.headers['Cache-Control']='private, max-age=86400'
-    return response
 
 async def hero_file(request:web.Request)->web.StreamResponse:
     cid=int(request.match_info['child_id']); chid=int(request.match_info['character_id']); val=f'hero:{cid}:{chid}'
@@ -608,13 +72,6 @@ async def hero_file(request:web.Request)->web.StreamResponse:
     async with SessionLocal() as db:
         ch=await db.get(Character,chid)
         if not ch or ch.child_id!=cid: raise web.HTTPNotFound()
-        child=await db.get(Child,cid)
-        if not child: raise web.HTTPNotFound()
-        parent=await db.get(Parent,child.parent_id)
-        err=account_access_error(parent)
-        if err:
-            code_err,msg=err
-            raise web.HTTPForbidden(text=json.dumps({'error':msg,'code':code_err}),content_type='application/json')
     path=Path(ch.processed_path or ch.original_path)
     if not path.exists(): raise web.HTTPNotFound()
     return web.FileResponse(path)
@@ -623,23 +80,10 @@ async def hero_preset(request:web.Request)->web.Response:
     p=await _parent(request); cid=int(request.match_info['child_id']); c=await _owned_child(p.id,cid); data=await request.json(); catalog=str(data.get('catalog_id',''))
     try:path=preset_character_path(catalog)
     except Exception: raise web.HTTPBadRequest(text=json.dumps({'error':'Unknown hero'}),content_type='application/json')
-    metadata=preset_character_geometry(catalog)
     async with SessionLocal() as db:
-        c2=await db.get(Child,cid)
-        # Re-select the exact existing catalog identity. Never match by title or
-        # asset filename (two different cats may have similar labels).
-        current=await db.get(Character,c2.active_character_id) if c2.active_character_id else None
-        ch=current if current and current.child_id==cid and current.source=='CATALOG' and current.catalog_id==catalog and current.status=='READY' else None
-        if ch is None:
-            ch=await db.scalar(select(Character).where(Character.child_id==cid,Character.source=='CATALOG',Character.catalog_id==catalog,Character.status=='READY').order_by(Character.id))
-        if ch is None:
-            ch=Character(child_id=cid,original_path=str(path),processed_path=str(path),status='READY',source='CATALOG',catalog_id=catalog,visual_metadata_json=json.dumps(metadata,ensure_ascii=False),visual_analysis_version=ANALYSIS_VERSION,visual_analysis_status='CONFIRMED')
-            db.add(ch);await db.flush()
-        c2.active_character_id=ch.id
-        await db.commit();await db.refresh(ch)
-        log.info('HERO_SELECTION_SAVED parent=%s child=%s catalog_id=%s character_id=%s asset=%s',p.id,cid,catalog,ch.id,ch.processed_path)
+        ch=Character(child_id=cid,original_path=str(path),processed_path=str(path),status='READY',source='CATALOG',catalog_id=catalog);db.add(ch);await db.flush();c2=await db.get(Child,cid);c2.active_character_id=ch.id;await db.commit();await db.refresh(ch)
     val=f'hero:{cid}:{ch.id}'; t=signed_media_token(val)
-    return web.json_response({'character_id':ch.id,'hero_url':f'{_base(request)}/api/mobile/hero/file/{cid}/{ch.id}?t={t}','hero_metadata':_character_json(ch)})
+    return web.json_response({'character_id':ch.id,'hero_url':f'{_base(request)}/api/mobile/hero/file/{cid}/{ch.id}?t={t}'})
 
 async def hero_upload(request:web.Request)->web.Response:
     p=await _parent(request);cid=int(request.match_info['child_id']);await _owned_child(p.id,cid)
@@ -658,687 +102,24 @@ async def hero_upload(request:web.Request)->web.Response:
                 if not chunk:break
                 f.write(chunk)
     processed=original.with_suffix('.png')
-    try:
-        await asyncio.to_thread(process_character,original,processed)
-    except Exception as exc:
-        log.warning('PROCESS_CHARACTER_FALLBACK original=%s error=%s',original,exc)
-        try:
-            from PIL import Image, ImageOps
-            with Image.open(original) as src:
-                src=ImageOps.exif_transpose(src).convert('RGBA')
-                src.thumbnail((1200,1200))
-                src.save(processed)
-        except Exception:
-            shutil.copyfile(original,processed)
-    try:
-        geometry=await analyze_character_geometry(processed,allow_remote=True)
-        metadata=geometry.payload()
-        analysis_status=geometry_status(geometry)
-    except Exception as exc:
-        log.warning('CHARACTER_GEOMETRY_ANALYSIS_FAILED original=%s error=%s',original,exc)
-        metadata={}
-        analysis_status='NEEDS_REVIEW'
-    # Low-confidence and unusual drawings still proceed to the one-time custom
-    # confirmation screen. The movie renderer will use its safe whole-body
-    # fallback until the parent confirms canonical anatomy.
+    try:await asyncio.to_thread(process_character,original,processed)
+    except Exception as exc:raise web.HTTPBadRequest(text=json.dumps({'error':f'Не удалось удалить фон: {exc}'}),content_type='application/json')
     async with SessionLocal() as db:
-        ch=Character(child_id=cid,original_path=str(original),processed_path=str(processed),status='READY',source='CHILD_DRAWING',visual_metadata_json=json.dumps(metadata,ensure_ascii=False),visual_analysis_version=ANALYSIS_VERSION,visual_analysis_status=analysis_status);db.add(ch);await db.flush();c=await db.get(Child,cid);c.active_character_id=ch.id;await db.commit();await db.refresh(ch)
+        ch=Character(child_id=cid,original_path=str(original),processed_path=str(processed),status='READY',source='CHILD_DRAWING');db.add(ch);await db.flush();c=await db.get(Child,cid);c.active_character_id=ch.id;await db.commit();await db.refresh(ch)
     val=f'hero:{cid}:{ch.id}';t=signed_media_token(val)
-    return web.json_response({'character_id':ch.id,'hero_url':f'{_base(request)}/api/mobile/hero/file/{cid}/{ch.id}?t={t}','hero_metadata':_character_json(ch)})
-
-async def hero_geometry_confirm(request:web.Request)->web.Response:
-    p=await _parent(request);cid=int(request.match_info['child_id']);character_id=int(request.match_info['character_id']);await _owned_child(p.id,cid)
-    data=await request.json()
-    async with SessionLocal() as db:
-        character=await db.get(Character,character_id)
-        if not character or character.child_id!=cid:raise web.HTTPNotFound(text=json.dumps({'error':'Hero not found'}),content_type='application/json')
-        current=geometry_from_json(character.visual_metadata_json)
-        try:confirmed=confirm_character_geometry(current,data)
-        except ValueError as exc:raise web.HTTPBadRequest(text=json.dumps({'error':str(exc)}),content_type='application/json')
-        character.visual_metadata_json=json.dumps(confirmed,ensure_ascii=False)
-        character.visual_analysis_version=ANALYSIS_VERSION
-        character.visual_analysis_status='CONFIRMED'
-        await db.commit();await db.refresh(character)
-    log.info('CHARACTER_GEOMETRY_CONFIRMED parent_id=%s child_id=%s character_id=%s facing=%s',p.id,cid,character_id,confirmed.get('facingDirection'))
-    return web.json_response({'ok':True,'character_id':character_id,'hero_metadata':_character_json(character)})
-
-
-
-async def mobile_validate_promo(request: web.Request) -> web.Response:
-    p = await _parent(request)
-    cid = int(request.match_info['child_id'])
-    await _owned_child(p.id, cid)
-    data = await request.json()
-    code = str(data.get('code') or '').strip()
-    plan_id = str(data.get('plan_id') or 'weekly1')
-    course_id = str(data.get('course_id') or 'conversation')
-    price = float(data.get('price') or 0.0)
-
-    billing_period_promo = str(data.get('billing_period') or 'MONTH').upper()
-    if price <= 0:
-        _MONTHLY_P = {'weekly1': 39.0, 'weekly2': 69.0, 'weekly3': 99.0, 'weekly4': 129.0,
-                       'start': 39.0, 'smart': 69.0, 'plus': 99.0, 'max': 129.0}
-        _ANNUAL_P  = {'weekly1': 399.0, 'weekly2': 699.0, 'weekly3': 999.0, 'weekly4': 1299.0,
-                      'start': 399.0, 'smart': 699.0, 'plus': 999.0, 'max': 1299.0}
-        price = _ANNUAL_P.get(plan_id, 399.0) if billing_period_promo == 'YEAR' else _MONTHLY_P.get(plan_id, 39.0)
-
-    from app.services.promo_codes import validate_promo_code
-    async with SessionLocal() as db:
-        res = await validate_promo_code(
-            db,
-            code=code,
-            parent_id=p.id,
-            child_id=cid,
-            plan_id=plan_id,
-            course_id=course_id,
-            original_price=price,
-        )
-        return web.json_response(res.to_dict())
-
-
-async def subscription_checkout(request: web.Request) -> web.Response:
-    p = await _parent(request)
-    cid = int(request.match_info['child_id'])
-    child = await _owned_child(p.id, cid)
-    data = await request.json()
-    plan_id = str(data.get('plan_id') or 'weekly1')
-    billing_period = str(data.get('billing_period') or 'MONTH').upper()
-    course_id = str(data.get('course_id') or getattr(child, 'course_id', None) or 'conversation')
-    promo_code = str(data.get('promo_code') or '').strip()
-    provider_name = str(data.get('provider') or 'paypal').lower()
-
-    plan_freq_map = {'weekly1': 1, 'weekly2': 2, 'weekly3': 3, 'weekly4': 4,
-                      'start': 1, 'smart': 2, 'plus': 3, 'max': 4}
-    freq = plan_freq_map.get(plan_id, 1)
-    _MONTHLY_PRICES = {'weekly1': 39.0, 'weekly2': 69.0, 'weekly3': 99.0, 'weekly4': 129.0,
-                        'start': 39.0, 'smart': 69.0, 'plus': 99.0, 'max': 129.0}
-    _ANNUAL_PRICES  = {'weekly1': 399.0, 'weekly2': 699.0, 'weekly3': 999.0, 'weekly4': 1299.0,
-                       'start': 399.0, 'smart': 699.0, 'plus': 999.0, 'max': 1299.0}
-    # For YEAR billing: PayPal charges the full annual price once per year
-    # lesson allowance remains monthly (4/8/12/16 per month)
-    base_price = _ANNUAL_PRICES.get(plan_id, 399.0) if billing_period == 'YEAR' else _MONTHLY_PRICES.get(plan_id, 39.0)
-    monthly_reference_price = _MONTHLY_PRICES.get(plan_id, 39.0)  # lesson-frequency reference
-    effective_price = base_price
-    promo_result = None
-
-    async with SessionLocal() as db:
-        # OWNER account bypass: unlimited access without fake payment records (Stage 10)
-        if str(p.account_role or "").upper() == "OWNER":
-            return web.json_response({
-                'ok': True,
-                'is_owner': True,
-                'message': 'Аккаунт OWNER: постоянный неограниченный доступ к занятиям активен.',
-                'checkout_url': '',
-                'provider': 'owner_bypass',
-                'status': 'ACTIVE',
-            })
-
-        if promo_code:
-            from app.services.promo_codes import validate_promo_code
-            promo_result = await validate_promo_code(
-                db, code=promo_code, parent_id=p.id, child_id=cid,
-                plan_id=plan_id, course_id=course_id, original_price=base_price
-            )
-            if promo_result.valid:
-                effective_price = promo_result.final_price
-
-        from app.services.payment_provider import get_payment_provider
-        provider = get_payment_provider(provider_name)
-        if not provider.is_configured():
-            return web.json_response({
-                'ok': False,
-                'configured': False,
-                'provider': provider_name,
-                'error': 'PROVIDER_NOT_CONFIGURED',
-                'message': 'Провайдер PayPal Sandbox находится в режиме настройки. Укажите PAYPAL_CLIENT_ID и PAYPAL_CLIENT_SECRET в переменных окружения backend.',
-            }, status=200)
-
-        app_base = settings.effective_webapp_base_url or _base(request)
-        success_url = f"{app_base.rstrip('/')}/payment/success?child_id={cid}&course_id={course_id}&plan_id={plan_id}"
-        cancel_url = f"{app_base.rstrip('/')}/payment/cancel?child_id={cid}&course_id={course_id}"
-
-        checkout_res = await provider.create_subscription_checkout(
-            child_id=cid,
-            course_id=course_id,
-            plan_id=plan_id,
-            plan_version_id=f"v77-{plan_id}-{billing_period.lower()}-{effective_price:.2f}",
-            lessons_per_week=freq,
-            monthly_price=effective_price,  # for YEAR: this is the annual charge amount
-            currency="EUR",
-            billing_period=billing_period,
-            success_url=success_url,
-            cancel_url=cancel_url,
-            promo_code=promo_code,
-            idempotency_key=f"checkout:{cid}:{course_id}:{plan_id}:{int(datetime.utcnow().timestamp())}",
-        )
-
-        if not checkout_res.ok:
-            return web.json_response({
-                'ok': False,
-                'error': checkout_res.error or 'CHECKOUT_FAILED',
-                'message': checkout_res.message,
-                'configured': checkout_res.configured,
-            }, status=400 if checkout_res.configured else 200)
-
-        sub = await _subscription_for_child(db, cid, course_id)
-        if sub is None:
-            sub = Subscription(
-                child_id=cid,
-                course_id=course_id,
-                plan_id=plan_id,
-                current_plan_id=plan_id,
-                current_plan_version_id=f"v77-{plan_id}-{billing_period.lower()}-{effective_price:.2f}",
-                current_plan_price=effective_price,
-                billing_period=billing_period,
-                provider_plan_id=checkout_res.provider_plan_id or None,
-                lessons_per_week=freq,
-                monthly_price=monthly_reference_price,
-                currency="EUR",
-                status="PENDING",
-                test_mode=False,
-                payment_provider=provider_name,
-                provider_subscription_id=checkout_res.subscription_id or None,
-                started_at=datetime.utcnow(),
-            )
-            db.add(sub)
-        else:
-            sub.pending_plan_id = plan_id
-            sub.pending_plan_price = effective_price
-            sub.pending_plan_billing_period = billing_period
-            sub.pending_provider_reference = checkout_res.subscription_id or None
-            sub.pending_provider_status = "APPROVAL_PENDING"
-            if checkout_res.subscription_id and not sub.provider_subscription_id:
-                sub.provider_subscription_id = checkout_res.subscription_id
-
-        await db.commit()
-        await db.refresh(sub)
-
-        return web.json_response({
-            'ok': True,
-            'checkout_url': checkout_res.checkout_url,
-            'subscription_id': checkout_res.subscription_id,
-            'provider': provider_name,
-            'plan_id': plan_id,
-            'billing_period': billing_period,
-            'lessons_per_month': freq * 4,
-            'monthly_reference_price': monthly_reference_price,
-            'original_price': base_price,
-            'effective_price': effective_price,
-            'currency': 'EUR',
-            'promo_applied': bool(promo_result and promo_result.valid),
-            'promo_details': promo_result.to_dict() if promo_result else None,
-        })
-
-
-async def subscription_verify(request: web.Request) -> web.Response:
-    p = await _parent(request)
-    cid = int(request.match_info['child_id'])
-    child = await _owned_child(p.id, cid)
-    data = await request.json() if request.can_read_body else {}
-    course_id = str(data.get('course_id') or getattr(child, 'course_id', None) or 'conversation')
-    sub_id_req = str(data.get('subscription_id') or '').strip()
-    promo_code = str(data.get('promo_code') or '').strip()
-
-    async with SessionLocal() as db:
-        if str(p.account_role or "").upper() == "OWNER":
-            return web.json_response({
-                'ok': True,
-                'status': 'ACTIVE',
-                'active': True,
-                'is_owner': True,
-                'message': 'OWNER доступ активен',
-            })
-
-        sub = await _subscription_for_child(db, cid, course_id)
-        target_sub_id = sub_id_req or (sub.provider_subscription_id if sub else '')
-        if not target_sub_id and sub and sub.pending_provider_reference:
-            target_sub_id = sub.pending_provider_reference
-
-        from app.services.payment_provider import get_payment_provider
-        provider = get_payment_provider(sub.payment_provider if sub else 'paypal')
-        is_active = False
-
-        if provider.is_configured() and target_sub_id:
-            v_res = await provider.verify_subscription(target_sub_id)
-            if v_res.active or v_res.status in {'ACTIVE', 'APPROVED'}:
-                is_active = True
-                if sub:
-                    sub.status = 'ACTIVE'
-                    if not sub.provider_subscription_id:
-                        sub.provider_subscription_id = target_sub_id
-                    from app.db.models import CourseEnrollment
-                    enroll = await db.scalar(select(CourseEnrollment).where(
-                        CourseEnrollment.child_id == cid,
-                        CourseEnrollment.course_id == course_id,
-                    ).order_by(CourseEnrollment.id.desc()))
-                    if enroll is None:
-                        enroll = CourseEnrollment(
-                            child_id=cid,
-                            course_id=course_id,
-                            status='ACTIVE',
-                            access_source='PAYPAL',
-                            payment_reference=target_sub_id,
-                        )
-                        db.add(enroll)
-                    else:
-                        enroll.status = 'ACTIVE'
-
-                    if promo_code:
-                        from app.services.promo_codes import record_promo_usage
-                        await record_promo_usage(
-                            db,
-                            code=promo_code,
-                            parent_id=p.id,
-                            child_id=cid,
-                            plan_id=sub.current_plan_id or sub.plan_id,
-                            original_price=sub.current_plan_price or sub.monthly_price,
-                            final_price=sub.current_plan_price or sub.monthly_price,
-                            payment_reference=target_sub_id,
-                        )
-
-                    await db.commit()
-                    await db.refresh(sub)
-
-                    from app.services.subscription_release import release_due_lessons
-                    await release_due_lessons(cid, course_id)
-
-        elif sub and sub.status == 'ACTIVE':
-            is_active = True
-
-        return web.json_response({
-            'ok': True,
-            'active': is_active,
-            'status': sub.status if sub else ('ACTIVE' if is_active else 'PENDING'),
-            'subscription': _subscription_json(sub) if sub else None,
-        })
-
-
-async def payment_history(request: web.Request) -> web.Response:
-    p = await _parent(request)
-    cid = int(request.match_info['child_id'])
-    await _owned_child(p.id, cid)
-    from app.db.models import PromoCodeUsage
-    async with SessionLocal() as db:
-        subs = (await db.scalars(
-            select(Subscription).where(Subscription.child_id == cid).order_by(Subscription.id.desc())
-        )).all()
-        usages = (await db.scalars(
-            select(PromoCodeUsage).where(PromoCodeUsage.child_id == cid).order_by(PromoCodeUsage.used_at.desc())
-        )).all()
-        return web.json_response({
-            'subscriptions': [_subscription_json(s) for s in subs],
-            'promo_usages': [
-                {
-                    'id': u.id,
-                    'plan_id': u.plan_id,
-                    'original_price': u.original_price,
-                    'final_price': u.final_price,
-                    'discount_amount': u.discount_amount,
-                    'payment_reference': u.payment_reference,
-                    'used_at': u.used_at.isoformat() if u.used_at else None,
-                }
-                for u in usages
-            ],
-        })
-
-
-
-
-# ── ONBOARDING, LEGAL CONSENTS, TARIFFS & CANCELLATION ────────────────────
-async def mobile_list_plans(request: web.Request) -> web.Response:
-    from app.services.tariff_plans import get_active_tariffs
-    async with SessionLocal() as db:
-        plans = await get_active_tariffs(db)
-        return web.json_response({"plans": plans})
-
-
-async def mobile_get_legal_documents(request: web.Request) -> web.Response:
-    from app.services.consents import get_legal_documents
-    locale = str(request.query.get("locale") or "ru")
-    docs = get_legal_documents(locale)
-    return web.json_response({"documents": docs})
-
-
-async def register_full(request: web.Request) -> web.Response:
-    data = await request.json()
-    parent_data = data.get("parent") or {}
-    child_data = data.get("child") or {}
-    consents = data.get("consents") or []
-    selected_plan = data.get("selected_plan") or {}
-
-    email = _normalize_email(parent_data.get("email"))
-    password = str(parent_data.get("password") or "")
-    first_name = str(parent_data.get("first_name") or "").strip()
-    last_name = str(parent_data.get("last_name") or "").strip()
-    phone = str(parent_data.get("phone") or "").strip() or None
-    country = str(parent_data.get("country") or "").strip() or None
-    pref_lang = str(parent_data.get("preferred_language") or "ru").strip().lower()
-
-    child_name = str(child_data.get("display_name") or child_data.get("name") or "").strip()
-    child_age = int(child_data.get("age_years") or 6)
-    child_native = str(child_data.get("native_language") or "ru").strip().lower()
-    child_target = str(child_data.get("target_language") or "ru").strip().lower()
-
-    if not first_name:
-        raise web.HTTPBadRequest(text=json.dumps({"error": "Введите имя родителя"}), content_type="application/json")
-    if not _valid_email(email):
-        raise web.HTTPBadRequest(text=json.dumps({"error": "Введите корректный email"}), content_type="application/json")
-    if len(password) < 8:
-        raise web.HTTPBadRequest(text=json.dumps({"error": "Пароль должен содержать минимум 8 символов"}), content_type="application/json")
-    if not child_name:
-        raise web.HTTPBadRequest(text=json.dumps({"error": "Введите имя ребёнка"}), content_type="application/json")
-
-    # Validate mandatory legal consents
-    from app.services.consents import MANDATORY_DOCUMENTS, record_user_consents
-    accepted_types = {str(c.get("document_type")).upper() for c in consents if c.get("accepted")}
-    missing_docs = [doc for doc in MANDATORY_DOCUMENTS if doc not in accepted_types]
-    if missing_docs:
-        raise web.HTTPBadRequest(text=json.dumps({
-            "error": "Необходимо принять все обязательные документы для продолжения.",
-            "missing_documents": missing_docs,
-        }), content_type="application/json")
-
-    code = _new_email_code()
-    expires = _utcnow() + timedelta(minutes=15)
-
-    ip_addr = request.remote or request.headers.get("X-Forwarded-For")
-    user_agent = request.headers.get("User-Agent")
-
-    async with SessionLocal() as db:
-        parent = await _parent_by_email(db, email)
-        if parent and bool(parent.email_verified):
-            raise web.HTTPConflict(text=json.dumps({"error": "Аккаунт с этой почтой уже существует"}), content_type="application/json")
-
-        display_name = f"{first_name} {last_name}".strip()
-        if parent is None:
-            parent = Parent(
-                email=email,
-                display_name=display_name,
-                first_name=first_name,
-                last_name=last_name,
-                phone=phone,
-                country=country,
-                preferred_language=pref_lang,
-                password_hash=hash_password(password),
-                email_verified=False,
-                email_reports_enabled=settings.email_reports_default,
-                onboarding_stage="EMAIL_NOT_VERIFIED",
-                verification_status="UNVERIFIED",
-                account_status=initial_account_status(),
-            )
-            db.add(parent)
-            await db.flush()
-        else:
-            parent.email = email
-            parent.display_name = display_name
-            parent.first_name = first_name
-            parent.last_name = last_name
-            parent.phone = phone
-            parent.country = country
-            parent.preferred_language = pref_lang
-            parent.password_hash = hash_password(password)
-            parent.email_verified = False
-            parent.onboarding_stage = "EMAIL_NOT_VERIFIED"
-            parent.account_status = initial_account_status()
-
-        parent.email_verification_code_hash = hash_verification_code(email, code, "verify")
-        parent.email_verification_expires_at = expires
-
-        # Create or update child
-        child = await db.scalar(select(Child).where(Child.parent_id == parent.id).limit(1))
-        if child is None:
-            child = Child(
-                parent_id=parent.id,
-                display_name=child_name,
-                age_years=child_age,
-                native_language=child_native,
-                target_language=child_target,
-            )
-            db.add(child)
-            await db.flush()
-        else:
-            child.display_name = child_name
-            child.age_years = child_age
-            child.native_language = child_native
-            child.target_language = child_target
-
-        parent.active_child_id = child.id
-
-        # Record versioned consents
-        await record_user_consents(
-            db,
-            parent_id=parent.id,
-            consents=consents,
-            ip_address=ip_addr,
-            user_agent=user_agent,
-            locale=pref_lang,
-        )
-
-        # Store selected plan info if provided
-        plan_id = str(selected_plan.get("plan_id") or "smart").lower()
-        billing_period = str(selected_plan.get("billing_period") or "MONTH").upper()
-        legacy_map = {"start": "weekly1", "smart": "weekly2", "plus": "weekly3", "max": "weekly4"}
-        plan_code = legacy_map.get(plan_id, plan_id)
-
-        freq_map = {"weekly1": 1, "weekly2": 2, "weekly3": 3, "weekly4": 4}
-        price_map_m = {"weekly1": 39.0, "weekly2": 69.0, "weekly3": 99.0, "weekly4": 129.0}
-        price_map_y = {"weekly1": 399.0, "weekly2": 699.0, "weekly3": 999.0, "weekly4": 1299.0}
-        eff_price = price_map_y.get(plan_code, 699.0) if billing_period == "YEAR" else price_map_m.get(plan_code, 69.0)
-
-        existing_sub = await _subscription_for_child(db, child.id, "conversation")
-        if existing_sub is None:
-            new_sub = Subscription(
-                child_id=child.id,
-                course_id="conversation",
-                plan_id=plan_code,
-                current_plan_id=plan_code,
-                current_plan_version_id=f"v77-{plan_code}-{billing_period.lower()}-{eff_price:.2f}",
-                current_plan_price=eff_price,
-                billing_period=billing_period,
-                lessons_per_week=freq_map.get(plan_code, 2),
-                monthly_price=price_map_m.get(plan_code, 69.0),
-                currency="EUR",
-                status="REGISTERED",
-                test_mode=False,
-                payment_provider="paypal",
-                started_at=_utcnow(),
-            )
-            db.add(new_sub)
-
-        await db.commit()
-
-    try:
-        await send_verification_email(email, code, 15)
-    except Exception as exc:
-        log.exception("Verification email failed during full registration: %s", exc)
-
-    return web.json_response({
-        "ok": True,
-        "verification_required": True,
-        "email": email,
-        "message": f"Код подтверждения отправлен на {email}. Введите его для завершения регистрации.",
-    })
-
-
-async def verify_and_onboard(request: web.Request) -> web.Response:
-    data = await request.json()
-    email = _normalize_email(data.get("email"))
-    code = str(data.get("code") or "").strip()
-
-    if not _valid_email(email):
-        raise web.HTTPBadRequest(text=json.dumps({"error": "Введите корректный email"}), content_type="application/json")
-    if len(code) != 6 or not code.isdigit():
-        raise web.HTTPBadRequest(text=json.dumps({"error": "Код должен состоять из 6 цифр"}), content_type="application/json")
-
-    async with SessionLocal() as db:
-        parent = await _parent_by_email(db, email)
-        if not parent or not parent.email_verification_code_hash:
-            raise web.HTTPBadRequest(text=json.dumps({"error": "Неверный код подтверждения"}), content_type="application/json")
-        if not parent.email_verification_expires_at or parent.email_verification_expires_at < _utcnow():
-            raise web.HTTPBadRequest(text=json.dumps({"error": "Срок действия кода истёк. Запросите новый код."}), content_type="application/json")
-        if not verify_verification_code(email, code, "verify", parent.email_verification_code_hash):
-            raise web.HTTPBadRequest(text=json.dumps({"error": "Неверный код подтверждения"}), content_type="application/json")
-
-        parent.email_verified = True
-        parent.verification_status = "EMAIL_CONFIRMED"
-        parent.onboarding_stage = "VERIFIED"
-        parent.email_verification_code_hash = None
-        parent.email_verification_expires_at = None
-
-        children = list(await db.scalars(select(Child).where(Child.parent_id == parent.id).order_by(Child.id.asc())))
-        await db.commit()
-        await db.refresh(parent)
-
-        token = create_parent_session(parent.id)
-        return web.json_response({
-            "ok": True,
-            "token": token,
-            "parent": _parent_json(parent),
-            "children": [_child_json(c) for c in children],
-            "active_child_id": parent.active_child_id,
-        })
-
-
-async def subscription_cancel(request: web.Request) -> web.Response:
-    p = await _parent(request)
-    cid = int(request.match_info["child_id"])
-    await _owned_child(p.id, cid)
-    data = await request.json() if request.can_read_body else {}
-    course_id = str(data.get("course_id") or "conversation")
-
-    async with SessionLocal() as db:
-        sub = await _subscription_for_child(db, cid, course_id)
-        if sub is None:
-            raise web.HTTPNotFound(text=json.dumps({"error": "Активная подписка не найдена"}), content_type="application/json")
-
-        sub.status = "CANCELLED"
-        sub.ended_at = _utcnow()
-        sub.pending_plan_id = None
-        sub.pending_provider_status = "CANCELLED"
-
-        # Record audit event
-        from app.db.models import SubscriptionAuditEvent
-        audit = SubscriptionAuditEvent(
-            subscription_id=sub.id,
-            action="SUBSCRIPTION_CANCELLED_BY_USER",
-            actor=f"parent:{p.id}",
-            details_json=json.dumps({"course_id": course_id, "child_id": cid, "ended_at": sub.ended_at.isoformat()}),
-        )
-        db.add(audit)
-
-        await db.commit()
-        await db.refresh(sub)
-
-        return web.json_response({
-            "ok": True,
-            "status": "CANCELLED",
-            "message": "Подписка отменена. Будущие автопродления отключены. Доступ остаётся активным до конца текущего периода.",
-            "subscription": _subscription_json(sub),
-        })
-
+    return web.json_response({'character_id':ch.id,'hero_url':f'{_base(request)}/api/mobile/hero/file/{cid}/{ch.id}?t={t}'})
 
 async def session_start(request:web.Request)->web.Response:
-    p=await _parent(request);data=await request.json();cid=int(data.get('child_id'));lid=str(data.get('lesson_id') or 'demo_001');c=await _owned_child(p.id,cid);lesson_data=_load_mobile_lesson(lid);course=str(lesson_data.get('course_id') or 'conversation')
-    version=lesson_content_version(lesson_data);step_ids=runtime_step_ids(lesson_data)
-    # Access is checked read-only before the capacity gate so production logs
-    # always distinguish entitlement/progress failures from storage pressure.
-    # The QA authorization audit is committed only after write capacity is safe.
-    ok,reason,ent=await can_start(cid,lid,course,audit=False)
-    async with SessionLocal() as snapshot_db:
-        latest=await snapshot_db.scalar(select(LessonSession).where(LessonSession.child_id==cid,LessonSession.lesson_id==lid).order_by(LessonSession.id.desc()))
-    log.info('MOBILE_LESSON_OPEN_ACCESS parent=%s child=%s lesson=%s course=%s allowed=%s reason=%s entitlement=%s entitlement_status=%s completed_runs=%s max_completed_runs=%s expires_at=%s latest_session=%s latest_status=%s latest_step=%s latest_step_id=%s latest_version=%s published_version=%s',p.id,cid,lid,course,ok,reason,getattr(ent,'id',None),getattr(ent,'status',None),getattr(ent,'completed_runs',None),getattr(ent,'max_completed_runs',None),getattr(ent,'expires_at',None),getattr(latest,'id',None),getattr(latest,'status',None),getattr(latest,'current_step',None),getattr(latest,'current_step_id',None),getattr(latest,'lesson_version',None),version)
-    # Explicit OWNER bypass: must come BEFORE the 403 gate.
-    # is_owner_parent() already does this inside can_start, but an explicit
-    # check here protects against any future refactor that might reorder logic.
-    _is_owner = is_owner_parent(p) or str(getattr(p,'email','') or '').strip().lower()=='krisriskrisris@gmail.com'
-    if _is_owner:
-        ok = True
-        reason = 'OWNER_UNLIMITED_ACCESS'
+    p=await _parent(request);data=await request.json();cid=int(data.get('child_id'));lid=str(data.get('lesson_id') or 'demo_001');c=await _owned_child(p.id,cid);lesson_data=load_lesson(lid);course=str(lesson_data.get('course_id') or 'conversation')
+    ok,reason,ent=await can_start(cid,lid,course)
+    if not ok and p.telegram_user_id in settings.admin_ids and reason=='LOCKED':
+        async with SessionLocal() as db:
+            ent=LessonEntitlement(child_id=cid,lesson_id=lid,course_id=course,max_completed_runs=2,completed_runs=0,source='ADMIN_TEST',status='ACTIVE');db.add(ent);await db.commit()
+        ok=True;reason='ADMIN_TEST'
     if not ok: raise web.HTTPForbidden(text=json.dumps({'error':f'Урок недоступен: {reason}'}),content_type='application/json')
-    capacity=await asyncio.to_thread(ensure_runtime_storage_capacity)
-    log.info('MOBILE_LESSON_OPEN_PRECHECK parent=%s child=%s lesson=%s course=%s published=%s version=%s steps=%s storage_before=%s storage_after=%s storage_target=%s storage_minimum=%s storage_target_met=%s storage_ready=%s',p.id,cid,lid,course,lesson_data.get('publication_status'),version,len(step_ids),capacity['before'],capacity['after'],capacity['target'],capacity.get('minimum'),capacity.get('target_met'),capacity['ready'])
-    if not capacity['ready']:
-        raise web.HTTPServiceUnavailable(text=json.dumps({'error':'Сервер временно освобождает место. Попробуйте открыть урок ещё раз.','code':'SERVER_STORAGE_PRESSURE'}),content_type='application/json')
-    if reason=='QA_RUN_LIMIT_BYPASS':
-        ok,reason,ent=await can_start(cid,lid,course,audit=True)
-        if not ok: raise web.HTTPForbidden(text=json.dumps({'error':f'Урок недоступен: {reason}'}),content_type='application/json')
-    reset_reason=None
     async with SessionLocal() as db:
-        # Owner access is server-side, never a client-side synthetic session.
-        # Persisting this lightweight entitlement gives progress/completion
-        # payloads a real run counter without consuming a normal allowance.
-        if _is_owner:
-            owner_entitlement=await db.scalar(select(LessonEntitlement).where(
-                LessonEntitlement.child_id==cid,
-                LessonEntitlement.lesson_id==lid,
-                LessonEntitlement.course_id==course,
-            ).order_by(LessonEntitlement.id.desc()))
-            if owner_entitlement is None:
-                owner_entitlement=LessonEntitlement(
-                    child_id=cid,lesson_id=lid,course_id=course,
-                    source='OWNER_ACCESS',status='ACTIVE',
-                    completed_runs=0,max_completed_runs=999999,
-                )
-                db.add(owner_entitlement)
-                await db.flush()
-            else:
-                owner_entitlement.status='ACTIVE'
-                owner_entitlement.max_completed_runs=max(999999,int(owner_entitlement.max_completed_runs or 0))
-            ent=owner_entitlement
-        existing=await db.scalar(select(LessonSession).where(LessonSession.child_id==cid,LessonSession.lesson_id==lid,LessonSession.status=='IN_PROGRESS').order_by(LessonSession.id.desc()))
-        if existing and str(existing.lesson_version or '')!=version:
-            # Never attach positional progress from an older authored route to a
-            # new one.  The old session and all child answers stay auditable;
-            # the new content starts in a clean session.
-            try:runtime=json.loads(existing.runtime_state_json or '{}')
-            except (TypeError,ValueError,json.JSONDecodeError):runtime={}
-            runtime['superseded']={'reason':'LESSON_VERSION_CHANGED','old_version':str(existing.lesson_version or 'legacy-positional'),'new_version':version}
-            existing.runtime_state_json=json.dumps(runtime,ensure_ascii=False);existing.status='SUPERSEDED';existing.completion_state='SUPERSEDED'
-            reset_reason='LESSON_VERSION_CHANGED';log.warning('MOBILE_SESSION_VERSION_RESET old_session=%s lesson=%s old_version=%s new_version=%s',existing.id,lid,existing.lesson_version or 'legacy-positional',version);await db.commit();existing=None
-        if existing:
-            if not existing.current_step_id or existing.current_step_id not in step_ids:
-                existing.current_step=max(0,min(int(existing.current_step or 0),max(len(step_ids)-1,0)))
-                existing.current_step_id=step_ids[existing.current_step] if step_ids else None
-            else:existing.current_step=step_ids.index(existing.current_step_id)
-            existing.lesson_version=version
-            await ensure_movie_voice_slots(db,existing.id,lesson_data);await db.commit()
-            interactive_state,recorded_phrases=await _mobile_resume_state(db,existing.id)
-            video_state=await _mobile_pre_slide_video_state(db,cid,lid,existing.id)
-            log.info('MOBILE_SESSION_RESUMED session=%s lesson=%s version=%s step_id=%s step_index=%s',existing.id,lid,version,existing.current_step_id,existing.current_step)
-            return web.json_response(_session_payload(existing,ent,c,lesson_data,resumed=True,interactive_state=interactive_state,recorded_phrases=recorded_phrases,pre_slide_video_state=video_state))
-        sess=LessonSession(child_id=cid,lesson_id=lid,current_step=0,current_step_id=step_ids[0] if step_ids else None,lesson_version=version,completion_state='ACTIVE',status='IN_PROGRESS',level_at_start=c.language_level or 'PRE_A1',lesson_revision=int(lesson_data.get('revision') or 1),runtime_state_json=json.dumps({'source':'mobile','lesson_version':version},ensure_ascii=False));db.add(sess);await db.flush();await ensure_movie_voice_slots(db,sess.id,lesson_data);await db.commit();await db.refresh(sess)
-        video_state=await _mobile_pre_slide_video_state(db,cid,lid,sess.id)
-    log.info('MOBILE_SESSION_STARTED session=%s lesson=%s version=%s reset_reason=%s',sess.id,lid,version,reset_reason)
-    return web.json_response(_session_payload(sess,ent,c,lesson_data,resumed=False,interactive_state={},recorded_phrases=[],pre_slide_video_state=video_state,reset_reason=reset_reason))
-
-async def session_progress(request:web.Request)->web.Response:
-    p=await _parent(request);sid=int(request.match_info['session_id']);data=await request.json()
-    async with SessionLocal() as db:
-        sess=await db.get(LessonSession,sid);c=await db.get(Child,sess.child_id) if sess else None
-        if not sess:raise web.HTTPNotFound()
-        if not c or c.parent_id!=p.id:raise web.HTTPForbidden()
-        lesson_data=_load_mobile_lesson(sess.lesson_id);version=lesson_content_version(lesson_data);step_ids=runtime_step_ids(lesson_data)
-        requested_version=str(data.get('lesson_version') or version)
-        if requested_version!=version or str(sess.lesson_version or '')!=version:
-            raise web.HTTPConflict(text=json.dumps({'error':'Структура урока изменилась. Откройте урок заново.','code':'LESSON_VERSION_CHANGED','lesson_version':version},ensure_ascii=False),content_type='application/json')
-        requested_id=str(data.get('current_step_id') or '').strip()
-        if requested_id:
-            if requested_id not in step_ids:raise web.HTTPBadRequest(text=json.dumps({'error':'current_step_id is outside the lesson'}),content_type='application/json')
-            current_step=step_ids.index(requested_id)
-        else:
-            try:current_step=int(data.get('current_step'))
-            except (TypeError,ValueError):raise web.HTTPBadRequest(text=json.dumps({'error':'current_step/current_step_id is required'}),content_type='application/json')
-            if current_step<0 or current_step>=max(len(step_ids),1):raise web.HTTPBadRequest(text=json.dumps({'error':'current_step is outside the runtime lesson route'}),content_type='application/json')
-            requested_id=step_ids[current_step]
-        if current_step<int(sess.current_step or 0):
-            try:runtime=json.loads(sess.runtime_state_json or '{}')
-            except (TypeError,ValueError,json.JSONDecodeError):runtime={}
-            recovery_id=str((runtime.get('completion_recovery') or {}).get('step_id') or '')
-            if requested_id!=recovery_id:
-                raise web.HTTPConflict(text=json.dumps({'error':'Прогресс урока не может неожиданно вернуться назад.','code':'LESSON_BACKWARD_PROGRESS_BLOCKED'},ensure_ascii=False),content_type='application/json')
-        sess.current_step=current_step;sess.current_step_id=requested_id;sess.lesson_version=version;await db.commit()
-    log.info('MOBILE_PROGRESS_SAVED session=%s lesson_version=%s step_id=%s step_index=%s',sid,version,requested_id,current_step)
-    return web.json_response({'ok':True,'session_id':sid,'current_step':current_step,'current_step_id':requested_id,'lesson_version':version})
+        sess=LessonSession(child_id=cid,lesson_id=lid,current_step=0,status='IN_PROGRESS',level_at_start=c.language_level or 'PRE_A1',lesson_revision=int(lesson_data.get('revision') or 1),runtime_state_json=json.dumps({'source':'mobile'},ensure_ascii=False));db.add(sess);await db.commit();await db.refresh(sess)
+    return web.json_response({'session_id':sess.id,'run_number':int(ent.completed_runs or 0)+1,'lesson_id':lid})
 
 def _slide(lesson_data:dict,slide_id:str)->dict:
     return next((x for x in lesson_data.get('slides',[]) if x.get('slide_id')==slide_id),{})
@@ -1347,284 +128,49 @@ def _phrase(lesson_data:dict,pid:str|None)->dict:
     return next((x for x in lesson_data.get('required_phrases',[]) if x.get('phrase_id')==pid),{}) if pid else {}
 
 async def voice(request:web.Request)->web.Response:
-    """Serialize and replay one native recording id without consuming its body twice."""
-
-    sid=int(request.match_info['session_id']);recording_id=_voice_recording_id(request)
-    lock_key=f'{sid}:{recording_id}' if recording_id else ''
-    lock=_voice_upload_locks.setdefault(lock_key,asyncio.Lock()) if lock_key else None
-    try:
-        if lock is None:return await _voice_impl(request)
-        async with lock:
-            async with SessionLocal() as db:
-                existing=await db.scalar(select(VoiceAttempt).where(
-                    VoiceAttempt.lesson_session_id==sid,
-                    VoiceAttempt.client_recording_id==recording_id,
-                ))
-                if existing and existing.response_json:
-                    path=Path(str(existing.audio_path or ''))
-                    if path.is_file() and path.stat().st_size>0:
-                        payload=json.loads(existing.response_json);payload['idempotent_replay']=True
-                        log.info('MOBILE_VOICE_IDEMPOTENT_REPLAY session=%s recording_id=%s attempt_id=%s path=%s bytes=%s',sid,recording_id,existing.id,path,existing.audio_size_bytes or path.stat().st_size)
-                        return web.json_response(payload)
-                    log.error('MOBILE_VOICE_ACK_FILE_MISSING session=%s recording_id=%s attempt_id=%s path=%s',sid,recording_id,existing.id,path)
-                    return _voice_error(409,'VOICE_ACK_FILE_MISSING','Сохранённая запись временно недоступна. Повторите отправку.')
-            return await _voice_impl(request)
-    finally:
-        _cleanup_voice_temp(request)
-
-
-async def _voice_impl(request:web.Request)->web.Response:
-    started=time.perf_counter();p=await _parent(request);sid=int(request.match_info['session_id'])
+    p=await _parent(request);sid=int(request.match_info['session_id'])
     async with SessionLocal() as db:
         sess=await db.get(LessonSession,sid)
         if not sess:raise web.HTTPNotFound()
         c=await db.get(Child,sess.child_id)
         if not c or c.parent_id!=p.id:raise web.HTTPForbidden()
-    fields={};raw=None;audio_mime_type='audio/mp4';recording_id=_voice_recording_id(request)
-    root=settings.storage_root/'children'/str(c.id)/'mobile-voice'/str(sid)
-    incoming_root=_voice_temp_root(sid)
-    request['_voice_temp_paths']=[]
+    fields={};raw=None
+    root=settings.storage_root/'children'/str(c.id)/'mobile-voice'/str(sid);root.mkdir(parents=True,exist_ok=True)
     if request.content_type.startswith('application/json'):
         data=await request.json();payload=str(data.get('audio_base64') or '')
-        if not payload:return _voice_error(400,'VOICE_EMPTY','Запись не содержит аудио.')
-        raw=incoming_root/f'voice_{secrets.token_hex(6)}.m4a';request['_voice_temp_paths'].append(str(raw));request['_voice_temp_paths'].append(str(raw)+'.uploading')
-        try:decoded=base64.b64decode(payload,validate=True);_write_atomic(raw,decoded)
-        except (ValueError,binascii.Error):return _voice_error(400,'VOICE_INVALID_BASE64','Формат записи не распознан.')
-        except OSError as exc:
-            log.exception('MOBILE_VOICE_TEMP_WRITE_FAILED session=%s recording_id=%s',sid,recording_id or '-')
-            return _voice_error(503,'VOICE_TEMP_WRITE_FAILED','Запись сохранена на телефоне. Попробуйте отправить её ещё раз.',retryable=True,detail=str(exc)[:160])
-        fields={'slide_id':str(data.get('slide_id') or ''),'prompt':str(data.get('prompt') or ''),'phrase_id':data.get('phrase_id'),'conversation_turn':data.get('conversation_turn',0),'runtime_context':data.get('runtime_context') or {},'retake':bool(data.get('retake'))}
+        if not payload:raise web.HTTPBadRequest(text=json.dumps({'error':'No audio received'}),content_type='application/json')
+        raw=root/f'voice_{secrets.token_hex(6)}.m4a'
+        try:raw.write_bytes(base64.b64decode(payload,validate=True))
+        except Exception:raise web.HTTPBadRequest(text=json.dumps({'error':'Invalid audio_base64'}),content_type='application/json')
+        fields={'slide_id':str(data.get('slide_id') or ''),'prompt':str(data.get('prompt') or ''),'phrase_id':data.get('phrase_id')}
     else:
         reader=await request.multipart()
         while True:
             part=await reader.next()
             if part is None:break
             if part.name=='audio':
-                audio_mime_type=str(part.headers.get('Content-Type') or 'audio/mp4').split(';',1)[0].strip()[:80] or 'audio/mp4'
-                raw=incoming_root/f'voice_{secrets.token_hex(6)}.m4a';staging=raw.with_name(raw.name+'.uploading');request['_voice_temp_paths'].extend([str(raw),str(staging)])
-                try:
-                    with staging.open('wb') as f:
-                        while True:
-                            chunk=await part.read_chunk()
-                            if not chunk:break
-                            f.write(chunk)
-                            if f.tell()>VOICE_MAX_UPLOAD_BYTES:return _voice_error(413,'VOICE_TOO_LARGE','Запись слишком длинная. Запишите короткий ответ.')
-                        f.flush();os.fsync(f.fileno())
-                    os.replace(staging,raw)
-                except OSError as exc:
-                    log.exception('MOBILE_VOICE_TEMP_WRITE_FAILED session=%s recording_id=%s',sid,recording_id or '-')
-                    return _voice_error(503,'VOICE_TEMP_WRITE_FAILED','Запись сохранена на телефоне. Попробуйте отправить её ещё раз.',retryable=True,detail=str(exc)[:160])
+                raw=root/f'voice_{secrets.token_hex(6)}.m4a'
+                with raw.open('wb') as f:
+                    while True:
+                        chunk=await part.read_chunk()
+                        if not chunk:break
+                        f.write(chunk)
             else:fields[part.name]=await part.text()
-    if raw is None:return _voice_error(400,'VOICE_EMPTY','Запись не содержит аудио.')
-    upload_size=raw.stat().st_size if raw.exists() else 0
-    size_error=_voice_upload_size_error(upload_size)
-    if size_error is not None:return size_error
-    storage_report=_voice_storage_capacity(upload_size)
-    if not bool(storage_report.get('ready')):
-        log.error('MOBILE_VOICE_STORAGE_FULL session=%s recording_id=%s bytes=%s before=%s after=%s minimum=%s',sid,recording_id or '-',upload_size,storage_report.get('before'),storage_report.get('after'),storage_report.get('minimum'))
-        return _voice_error(507,'VOICE_STORAGE_FULL','Запись сохранена на телефоне. Сейчас её не удалось отправить — попробуйте ещё раз.',retryable=True,recording_id=recording_id)
-    log.info('MOBILE_VOICE_UPLOAD_RECEIVED session=%s child=%s recording_id=%s bytes=%s mime=%s temp_path=%s storage_free=%s',sid,c.id,recording_id or '-',upload_size,audio_mime_type,raw,storage_report.get('after'))
-    uploaded=time.perf_counter()
-    slide_id=fields.get('slide_id','');prompt=fields.get('prompt','');pid=fields.get('phrase_id') or None;retake_mode=fields.get('retake') is True or str(fields.get('retake') or '').lower() in {'1','true','yes'}
-    try:conversation_turn=max(0,int(fields.get('conversation_turn') or 0))
-    except (TypeError,ValueError):conversation_turn=0
-    lesson_data=_load_mobile_lesson(sess.lesson_id);sl=_slide(lesson_data,slide_id);ph=_phrase(lesson_data,pid or sl.get('required_phrase_id'))
-    client_context=fields.get('runtime_context') or {}
-    if isinstance(client_context,str):
-        try:client_context=json.loads(client_context)
-        except (TypeError,ValueError,json.JSONDecodeError):client_context={}
-    runtime_context=authoritative_voice_context(sl,client_context,c.target_language or 'ru',c.native_language or 'ru')
-    required_movie_slide=bool(sl.get('requiredForMovie') is True or sl.get('required_for_movie') is True)
-    audio_received=raw.stat().st_size>=1000
-    if not audio_received:
-        activity=VoiceActivity(0.0,0.0,0.0,None,None,False,'TOO_SHORT')
-    else:
-        activity=await asyncio.to_thread(analyze_voice_activity,raw)
-    wav=raw.with_suffix('.wav');request['_voice_temp_paths'].append(str(wav));max_sec=None
-    if activity.has_speech:
-        try:await asyncio.to_thread(prepare_child_voice,raw,wav,max_sec)
-        except Exception as exc:
-            log.exception('MOBILE_VOICE_PREPARE_FAILED session=%s recording_id=%s bytes=%s mime=%s temp_path=%s',sid,recording_id or '-',upload_size,audio_mime_type,raw)
-            return _voice_error(422,'VOICE_AUDIO_PREPARE_FAILED','Не удалось подготовить запись. Она сохранена на телефоне — попробуйте отправить ещё раз.',retryable=True,recording_id=recording_id,detail=str(exc)[:240])
-    else:wav=raw
-    prepared=time.perf_counter()
-    storage_phrase_id=str(pid or sl.get('required_phrase_id') or slide_id)
+    if raw is None:raise web.HTTPBadRequest(text=json.dumps({'error':'No audio received'}),content_type='application/json')
+    slide_id=fields.get('slide_id','');prompt=fields.get('prompt','');pid=fields.get('phrase_id') or None
+    lesson_data=load_lesson(sess.lesson_id);sl=_slide(lesson_data,slide_id);ph=_phrase(lesson_data,pid or sl.get('required_phrase_id'))
+    if raw.stat().st_size<1000:raise web.HTTPBadRequest(text=json.dumps({'error':'Запись слишком короткая или пустая'}),content_type='application/json')
+    wav=raw.with_suffix('.wav');max_sec=5 if (pid or sl.get('required_phrase_id')) else 60
+    try:await asyncio.to_thread(prepare_child_voice,raw,wav,max_sec)
+    except Exception as exc:raise web.HTTPBadRequest(text=json.dumps({'error':f'Не удалось обработать запись: {exc}'}),content_type='application/json')
     async with SessionLocal() as db:
-        n=(await db.scalar(select(func.count(VoiceAttempt.id)).where(VoiceAttempt.lesson_session_id==sid,VoiceAttempt.phrase_id==storage_phrase_id))) or 0
-    attempt_number=int(n)+1;max_attempts=max(1,int(sl.get('max_attempts') or 3))
-    authored_goal=str(sl.get('task_goal') or ph.get('target_text') or sl.get('question') or sl.get('bot_says_target') or '')
-    # A client-rendered prompt may be localized or stale, but it must never
-    # replace the published speech act. Only an active follow-up or an
-    # authoritative selected-item task needs the exact current client prompt.
-    contextual_prompt=prompt if conversation_turn>0 or runtime_context.get('selected_items') else (
-        f'{authored_goal}\nCurrent localized wording shown to the child: {prompt}' if prompt and prompt.strip()!=authored_goal.strip() else authored_goal
-    )
-    goal=contextual_assessment_goal(contextual_prompt or authored_goal,runtime_context)
-    context_follow_up=bool(runtime_context.get('selected_items')) and str(sl.get('follow_up_policy') or '')=='optional'
-    accepted_meaning=ph.get('accepted_meaning') or sl.get('accepted_intents') or sl.get('accepted_meaning') or []
-    if str(runtime_context.get('selection_policy') or '')=='child_choice' and runtime_context.get('selected_items'):
-        accepted_meaning=list(dict.fromkeys([
-            *accepted_meaning,
-            *[str(item.get('label_target') or '') for item in runtime_context['selected_items']],
-            *[str(item.get('label_native') or '') for item in runtime_context['selected_items']],
-            'the child freely chose one or more visible selected items',
-        ]))
-    log.info('MOBILE_VOICE_CONTEXT session=%s slide=%s task=%s visible=%s selected=%s removed=%s policy=%s',sid,slide_id,runtime_context.get('task_type'),[item.get('id') for item in runtime_context.get('visible_items') or []],[item.get('id') for item in runtime_context.get('selected_items') or []],[item.get('id') for item in runtime_context.get('removed_items') or []],runtime_context.get('selection_policy'))
-    required_movie_phrase=required_movie_slide and storage_phrase_id==str(sl.get('required_phrase_id') or storage_phrase_id)
-    if activity.has_speech:
-        try:current_runtime=json.loads(sess.runtime_state_json or '{}')
-        except (TypeError,ValueError,json.JSONDecodeError):current_runtime={}
-        dialogue_hist=current_runtime.get('dialogue_history') or []
-        assessment=await assess_speech(
-            wav,c.target_language or 'ru',c.native_language or 'ru',goal,
-            accepted_meaning,attempt_number,
-            c.display_name,c.gender or 'boy',c.working_difficulty,c.language_level or 'PRE_A1',
-            allow_follow_up=(bool(sl.get('allow_ai_followup')) and not bool(sl.get('suppress_ai_followup'))) or context_follow_up,
-            max_follow_ups=max(1 if context_follow_up else 0,int(sl.get('max_ai_followups') or 0)),
-            follow_up_count=conversation_turn,
-            conversation_goal=str(sl.get('conversation_goal') or goal),
-            runtime_context=runtime_context,
-            pedagogical_intent=str(sl.get('pedagogical_intent') or sl.get('interaction_intent') or 'answer_question'),
-            pedagogical_instruction=str(sl.get('ai_instruction') or sl.get('tutor_instruction') or ''),
-            target_meaning=str(sl.get('target_meaning') or authored_goal),
-            model_examples=[str(value) for value in (sl.get('model_examples') or [ph.get('simplified_text') or ph.get('target_text') or '']) if str(value).strip()],
-            scaffold_stage='independent_attempt' if attempt_number<=1 else ('semantic_hint' if attempt_number==2 else 'model_support'),
-            open_question_first=sl.get('open_question_first') is not False,
-            examples_allowed=sl.get('examples_allowed') is not False,
-            dialogue_history=dialogue_hist,
-        )
-    else:
-        assessment=SpeechAssessment(status='NO_SPEECH')
-    assessed=time.perf_counter()
-    feedback_state=classify_voice_feedback(audio_received=audio_received,has_speech=activity.has_speech,transcript=assessment.transcript,confidence=assessment.confidence,status=assessment.status,semantic_match=assessment.semantic_match)
-    outcome=voice_attempt_outcome(str(assessment.status or 'TECHNICAL_UNCERTAINTY'),attempt_number,max_attempts)
-    movie_take_accepted=False
-    if required_movie_phrase:
-        if not activity.has_speech:
-            # A required movie line can never advance on silence, regardless of
-            # how many attempts were made.
-            outcome=replace(outcome,status='NO_SPEECH',accepted=False,advance_allowed=False,needs_retry=True)
-        elif outcome.accepted:
-            movie_take_accepted=True
-        elif outcome.advance_allowed:
-            # Real speech remains the child's recording even when ASR cannot
-            # confidently grade its meaning after the authored retry ladder.
-            outcome=replace(outcome,status='MOVIE_USABLE_WITH_SUPPORT',accepted=False,advance_allowed=True,needs_retry=False)
-            movie_take_accepted=True
-    status=outcome.status;accepted=outcome.accepted
-    simple_example=str(ph.get('simplified_text') or sl.get('simplified_text') or ph.get('target_text') or goal);richer_example=str(ph.get('richer_model_text') or sl.get('richer_model_text') or '')
-    authored_example=richer_example if richer_example and str(c.language_level or '').upper()!='PRE_A1' and float(c.working_difficulty or 0)>=.45 else simple_example
-    correction_target=correction_for_assessment(accepted=accepted,semantic_match=assessment.semantic_match,attempt_number=attempt_number,ai_correction=assessment.corrected_target,authored_example=authored_example,goal=goal)
-    if not accepted and runtime_context.get('selected_items') and not (assessment.status=='WRONG_LANGUAGE' and str(assessment.corrected_target or '').strip()):
-        correction_target=await _selected_context_model_answer(runtime_context,c.target_language or 'ru')
+        n=(await db.scalar(select(func.count(VoiceAttempt.id)).where(VoiceAttempt.lesson_session_id==sid,VoiceAttempt.phrase_id==(pid or slide_id)))) or 0
+    assessment=await assess_speech(wav,c.target_language or 'ru',c.native_language or 'ru',prompt or sl.get('question') or sl.get('bot_says_target') or '',ph.get('accepted_meaning') or [],int(n)+1,c.display_name,c.working_difficulty)
+    async with SessionLocal() as db:
+        va=VoiceAttempt(lesson_session_id=sid,phrase_id=pid or slide_id,attempt_number=int(n)+1,audio_path=str(wav),status=assessment.status,transcript=assessment.transcript,detected_language=assessment.detected_language,confidence=assessment.confidence,grammar_errors=json.dumps(assessment.grammar_errors,ensure_ascii=False),pronunciation_errors=json.dumps(assessment.pronunciation_errors,ensure_ascii=False),semantic_match=assessment.semantic_match);db.add(va);await db.commit()
     feedback=assessment.feedback_native or assessment.response_native or assessment.response_target
-    tutor_turn=assessment.tutor_turn
-    if tutor_turn and not accepted and correction_target:
-        tutor_turn=replace(tutor_turn,correction_target=correction_target,model_answer_target=correction_target)
-    if accepted and runtime_context.get('selected_items'):
-        contextual_turn=await _selected_context_turn(runtime_context,c.target_language or 'ru',c.native_language or 'ru',context_follow_up and conversation_turn<1)
-        if contextual_turn:tutor_turn=contextual_turn
-    if feedback_state in {'NO_AUDIO','NO_SPEECH'}:
-        feedback,_legacy_example=no_speech_feedback(attempt_number,max_attempts,correction_target)
-        retry_ru = ('Запись не сохранилась. Нажми на микрофон и попробуй ещё раз.' if feedback_state=='NO_AUDIO' else 'Я тебя не услышала. Попробуй ещё раз.') if required_movie_phrase or attempt_number < max_attempts else 'Я тебя не услышала. Пойдём дальше, а попытку отметим как пропущенную.'
-        # The client prompt is the exact active card/follow-up question and is
-        # already in the target language.  Falling back to a slide-level hint
-        # here used to explain Q1 while the child was answering Q2/Q3.
-        native_hint_source = str(prompt or '').strip() or str(sl.get('bot_explains_native') or sl.get('question') or '')
-        native_hint_source_language = (c.target_language or 'ru') if str(prompt or '').strip() else 'ru'
-        example_ru = correction_target if attempt_number > 1 and attempt_number < max_attempts else ''
-        target_retry,native_hint,model_answer=await asyncio.gather(
-            translate_text(retry_ru,'ru',c.target_language or 'ru'),
-            translate_text(native_hint_source,native_hint_source_language,c.native_language or 'ru') if native_hint_source else asyncio.sleep(0,result=''),
-            translate_text(example_ru,'ru',c.target_language or 'ru') if example_ru else asyncio.sleep(0,result=''),
-        )
-        tutor_turn=no_speech_turn(attempt_number,max(max_attempts,attempt_number+1) if required_movie_phrase else max_attempts,target_retry=target_retry,native_hint=native_hint,model_answer=model_answer)
-        correction_target=model_answer
-    elif feedback_state in {'ASR_FAILED','ANSWER_UNCLEAR'} and not accepted:
-        unclear_ru='Я услышала твой голос, но не разобрала слова. Скажи ещё раз чуть медленнее.'
-        target_retry,native_hint=await asyncio.gather(
-            translate_text(unclear_ru,'ru',c.target_language or 'ru'),
-            translate_text(unclear_ru,'ru',c.native_language or 'ru'),
-        )
-        model_answer=correction_target if attempt_number>1 else ''
-        tutor_turn=TutorTurn(reaction_target=target_retry,native_hint=native_hint,model_answer_target=model_answer,emotion='encouraging',complete=False,reason=feedback_state.lower())
-        feedback=native_hint
-    target_response=str(tutor_turn.reaction_target if tutor_turn else assessment.response_target or '')
-    follow_up_question=str(tutor_turn.follow_up_target if tutor_turn else '')
-    model_phrase=str((tutor_turn.model_answer_target or tutor_turn.correction_target) if tutor_turn else correction_target or '')
-    helper_translation=follow_up_translation=model_translation=child_phrase_translation=''
-    if (c.native_language or 'ru')!=(c.target_language or 'ru'):
-        helper_translation,follow_up_translation,model_translation,child_phrase_translation=await asyncio.gather(
-            _optional_translation(target_response,c.target_language or 'ru',c.native_language or 'ru','target_response'),
-            _optional_translation(follow_up_question,c.target_language or 'ru',c.native_language or 'ru','follow_up_question'),
-            _optional_translation(model_phrase,c.target_language or 'ru',c.native_language or 'ru','model_phrase'),
-            _optional_translation(assessment.transcript,c.target_language or 'ru',c.native_language or 'ru','child_phrase') if accepted else asyncio.sleep(0,result=''),
-        )
-    if tutor_turn and feedback_state not in {'NO_AUDIO','NO_SPEECH'}:
-        tutor_turn=replace(
-            tutor_turn,
-            reaction_native=helper_translation or (target_response if (c.native_language or 'ru')==(c.target_language or 'ru') else ''),
-            native_hint=follow_up_translation or model_translation,
-        )
-        feedback=tutor_turn.reaction_native or (model_translation if not accepted else '') or feedback
-    durable_name=(f"voice_{hashlib.sha256(recording_id.encode()).hexdigest()[:20]}.m4a" if recording_id else f'voice_{secrets.token_hex(10)}.m4a')
-    durable_path=root/durable_name
-    try:_copy_atomic(raw,durable_path)
-    except OSError as exc:
-        log.exception('MOBILE_VOICE_DURABLE_WRITE_FAILED session=%s recording_id=%s source=%s destination=%s bytes=%s',sid,recording_id or '-',raw,durable_path,upload_size)
-        return _voice_error(507,'VOICE_STORAGE_FULL','Запись сохранена на телефоне. Сейчас её не удалось отправить — попробуйте ещё раз.',retryable=True,recording_id=recording_id,detail=str(exc)[:160])
-    response_payload:dict={}
-    try:
-        async with SessionLocal() as db:
-            db_child=await db.get(Child,c.id)
-            va=VoiceAttempt(lesson_session_id=sid,phrase_id=storage_phrase_id,attempt_number=attempt_number,audio_path=str(durable_path),client_recording_id=recording_id or None,audio_size_bytes=upload_size,audio_mime_type=audio_mime_type,status=status,transcript=assessment.transcript,detected_language=assessment.detected_language,confidence=assessment.confidence,grammar_errors=json.dumps(assessment.grammar_errors,ensure_ascii=False),pronunciation_errors=json.dumps(assessment.pronunciation_errors,ensure_ascii=False),semantic_match=assessment.semantic_match);db.add(va);await db.flush();await record_movie_voice_slot(db,sid,storage_phrase_id,va,lesson_data)
-            adaptive_signals={
-                'response_latency_ms':_bounded_int(client_context.get('response_latency_ms'),120_000) if isinstance(client_context,dict) else 0,
-                'hints_used':_bounded_int(client_context.get('hints_used'),5) if isinstance(client_context,dict) else 0,
-                'open_question':bool(client_context.get('open_question')) if isinstance(client_context,dict) else False,
-                'used_native_language':bool(assessment.detected_language and c.native_language and c.target_language and assessment.detected_language==c.native_language and c.native_language!=c.target_language),
-            }
-            if retake_mode:
-                working_difficulty=float(db_child.working_difficulty or 0.15);language_level=db_child.language_level or 'PRE_A1'
-            else:
-                working_difficulty,language_level=apply_adaptive_assessment(db_child,va,assessment,adaptive_signals)
-            try:runtime=json.loads(sess.runtime_state_json or '{}')
-            except (TypeError,ValueError,json.JSONDecodeError):runtime={}
-            runtime['adaptive_profile']={'working_difficulty':working_difficulty,'language_level':language_level,'proficiency_band':proficiency_band(working_difficulty),'answers_count':int(db_child.answers_count or 0)}
-            hist=runtime.get('dialogue_history') or []
-            if assessment.transcript:
-                hist.append({'role':'child','text':assessment.transcript,'slide_id':slide_id})
-            if target_response:
-                hist.append({'role':'tutor','text':target_response,'slide_id':slide_id})
-            runtime['dialogue_history']=hist[-6:]
-            db_session=await db.get(LessonSession,sid);db_session.runtime_state_json=json.dumps(runtime,ensure_ascii=False)
-            response_payload={'status':status,'feedback_state':feedback_state,'accepted':accepted,'movie_take_accepted':movie_take_accepted,'retake':retake_mode,'retake_replaced':retake_mode and (accepted or movie_take_accepted),'advance_allowed':outcome.advance_allowed,'needs_retry':outcome.needs_retry,'attempt_number':attempt_number,'max_attempts':max_attempts,'transcript':assessment.transcript,'task_goal':goal,'task_goal_source':'active_follow_up' if conversation_turn else 'authored_lesson','accepted_intents':accepted_meaning,'target_meaning':sl.get('target_meaning') or authored_goal,'model_examples':sl.get('model_examples') or [simple_example],'target_response':target_response,'helper_translation':helper_translation,'follow_up_question':follow_up_question,'follow_up_translation':follow_up_translation,'model_phrase':model_phrase,'model_translation':model_translation,'child_phrase_target':assessment.transcript if accepted else '','child_phrase_translation':child_phrase_translation,'feedback':feedback,'feedback_source_language':c.native_language or 'ru','correction_target':correction_target if not accepted else '','correction_source_language':c.target_language or 'ru','response_target':assessment.response_target,'response_native':tutor_turn.reaction_native if tutor_turn else '','semantic_match':assessment.semantic_match,'semantic_response':{'task_type':runtime_context.get('task_type'),'selection_policy':runtime_context.get('selection_policy'),'selected_item_ids':[item.get('id') for item in runtime_context.get('selected_items') or []],'reaction_target':target_response,'reaction_native':helper_translation,'follow_up_target':follow_up_question,'follow_up_native':follow_up_translation},'runtime_context':runtime_context,'tutor_turn':tutor_turn.payload() if tutor_turn else None,'voice_activity':{'reason':activity.reason,'duration_seconds':activity.duration_seconds,'speech_seconds':activity.speech_seconds,'speech_ratio':activity.speech_ratio,'mean_volume_db':activity.mean_volume_db,'max_volume_db':activity.max_volume_db},'adaptive_profile':{'working_difficulty':working_difficulty,'language_level':language_level,'support':complexity_support(working_difficulty)},'client_recording_id':recording_id or None,'audio_size_bytes':upload_size,'audio_mime_type':audio_mime_type,'idempotent_replay':False}
-            va.response_json=json.dumps(response_payload,ensure_ascii=False)
-            await db.commit()
-    except Exception as exc:
-        try:durable_path.unlink(missing_ok=True)
-        except OSError:pass
-        log.exception('MOBILE_VOICE_ATOMIC_SAVE_FAILED session=%s recording_id=%s path=%s bytes=%s',sid,recording_id or '-',durable_path,upload_size)
-        return _voice_error(503,'VOICE_SAVE_FAILED','Запись сохранена на телефоне. Сейчас её не удалось отправить — попробуйте ещё раз.',retryable=True,recording_id=recording_id,detail=str(exc)[:160])
-    saved=time.perf_counter()
-    log.info('MOBILE_VOICE_SAVE_SUCCESS session=%s child=%s slide=%s phrase=%s recording_id=%s path=%s bytes=%s mime=%s db_attempt=%s movie_take=%s',sid,c.id,slide_id,storage_phrase_id,recording_id or '-',durable_path,upload_size,audio_mime_type,attempt_number,movie_take_accepted)
-    log.info('MOBILE_VOICE_LATENCY session=%s slide=%s phrase=%s upload_ms=%d prepare_ms=%d assess_ms=%d save_ms=%d total_ms=%d attempt=%d status=%s activity=%s speech_ms=%d retake=%s',sid,slide_id,storage_phrase_id,round((uploaded-started)*1000),round((prepared-uploaded)*1000),round((assessed-prepared)*1000),round((saved-assessed)*1000),round((saved-started)*1000),attempt_number,status,activity.reason,round(activity.speech_seconds*1000),retake_mode)
-    return web.json_response(response_payload)
-
-
-async def current_voice_take(request:web.Request)->web.StreamResponse:
-    p=await _parent(request);sid=int(request.match_info['session_id']);phrase_id=str(request.match_info.get('phrase_id') or '')
-    async with SessionLocal() as db:
-        sess=await db.get(LessonSession,sid);child=await db.get(Child,sess.child_id) if sess else None
-        if not sess or not child or child.parent_id!=p.id:raise web.HTTPForbidden()
-        slot=await db.scalar(select(MovieVoiceSlot).where(MovieVoiceSlot.lesson_session_id==sid,MovieVoiceSlot.required_voice_id==phrase_id))
-        attempts=[] if slot and slot.audio_path else (await db.scalars(select(VoiceAttempt).where(VoiceAttempt.lesson_session_id==sid,VoiceAttempt.phrase_id==phrase_id).order_by(VoiceAttempt.id.desc()))).all()
-        attempt=next((row for row in attempts if movie_take_status(row.status)),None)
-    path=Path(str((slot.audio_path if slot else None) or (attempt.audio_path if attempt else '') or ''))
-    if not path or not path.is_file() or path.stat().st_size<=0:raise web.HTTPNotFound(text=json.dumps({'error':'Сохранённая запись не найдена','code':'VOICE_TAKE_NOT_FOUND'},ensure_ascii=False),content_type='application/json')
-    try:path.resolve().relative_to(settings.storage_root.resolve())
-    except ValueError:raise web.HTTPForbidden()
-    response=web.FileResponse(path);response.content_type={'.wav':'audio/wav','.m4a':'audio/mp4','.ogg':'audio/ogg','.mp3':'audio/mpeg'}.get(path.suffix.lower(),'application/octet-stream');response.headers['Content-Disposition']=f'inline; filename="child-take{path.suffix.lower()}"';response.headers['Cache-Control']='private, no-store';return response
+    task_ok = str(assessment.status or '').startswith('ACCEPTED') or bool(assessment.transcript)
+    return web.json_response({'status':assessment.status,'transcript':assessment.transcript,'feedback':feedback,'response_target':assessment.response_target,'response_native':assessment.response_native,'semantic_match':assessment.semantic_match,'task_complete':task_ok})
 
 async def interactive(request:web.Request)->web.Response:
     p=await _parent(request);sid=int(request.match_info['session_id']);data=await request.json()
@@ -1633,6 +179,12 @@ async def interactive(request:web.Request)->web.Response:
         if not sess or not c or c.parent_id!=p.id:raise web.HTTPForbidden()
         row=InteractiveResult(lesson_session_id=sid,slide_id=str(data.get('slide_id') or ''),task_type=str(data.get('task_type') or 'choice'),result_json=json.dumps(data.get('result') or {},ensure_ascii=False),score=1.0);db.add(row);await db.commit()
     return web.json_response({'ok':True})
+
+async def _mobile_token_ok(request:web.Request)->bool:
+    tok=_bearer(request) or str(request.query.get('token') or '')
+    pid=verify_token(tok)
+    if not pid:return False
+    async with SessionLocal() as db:return bool(await db.get(Parent,pid))
 
 async def translate(request:web.Request)->web.Response:
     await _parent(request);data=await request.json();text=str(data.get('text') or '')[:2000];source=str(data.get('source_language') or 'ru');target=str(data.get('target_language') or 'ru')
@@ -1645,222 +197,57 @@ async def update_child_language(request:web.Request)->web.Response:
     p=await _parent(request);cid=int(request.match_info['child_id']);await _owned_child(p.id,cid);data=await request.json();target=str(data.get('target_language') or '').strip().lower();native=str(data.get('native_language') or '').strip().lower();supported={'ru','en','es','de','fr','it','pt','tr','ar','zh'}
     if target not in supported or native not in supported:raise web.HTTPBadRequest(text=json.dumps({'error':'Unsupported language'}),content_type='application/json')
     async with SessionLocal() as db:
-        c=await db.get(Child,cid);c.target_language=target;c.native_language=native
-        if data.get('gender'):c.gender=str(data.get('gender')).lower()[:16]
-        await db.commit();await db.refresh(c);character=await db.get(Character,c.active_character_id) if c.active_character_id else None
-        if character:await _ensure_character_geometry(character);await db.commit()
-    return web.json_response(_child_json(request,c,character))
+        c=await db.get(Child,cid);c.target_language=target;c.native_language=native;await db.commit();await db.refresh(c)
+    return web.json_response(_child_json(request,c))
 
 async def tts(request:web.Request)->web.StreamResponse:
-    started=time.perf_counter();await _parent(request)
-    text=str(request.query.get('text',''))[:1000];native_text=str(request.query.get('native_text',''))[:1000];source=str(request.query.get('source_language','ru'));native_source=str(request.query.get('native_source_language',source));target=str(request.query.get('target_language','ru'));native=str(request.query.get('native_language','ru'));style=str(request.query.get('style','warm'))[:32]
+    if not await _mobile_token_ok(request):raise web.HTTPUnauthorized()
+    text=str(request.query.get('text',''))[:1000];native_text=str(request.query.get('native_text',''))[:1000];source=str(request.query.get('source_language','ru'));target=str(request.query.get('target_language','ru'));native=str(request.query.get('native_language','ru'))
     if not text and not native_text:raise web.HTTPBadRequest()
     try:
         spoken_target=await translate_text(text,source,target) if text else ''
-        spoken_native=await translate_text(native_text,native_source,native) if native_text else ''
+        spoken_native=await translate_text(native_text,source,native) if native_text else ''
     except Exception as exc:raise web.HTTPServiceUnavailable(text=f'Translation unavailable: {exc}')
-    translated=time.perf_counter()
-    if native==target and spoken_native==spoken_target:spoken_native=''
-    try:
-        path=await synthesize_bilingual_speech(spoken_target,target,spoken_native,native,settings.storage_root/'tts-cache-mobile','mobile',style)
-    except (AISpeechError,OSError) as exc:
-        detail=str(exc)
-        code='TTS_STORAGE_UNAVAILABLE' if 'No space left on device' in detail or getattr(exc,'errno',None)==28 else 'TTS_GENERATION_UNAVAILABLE'
-        log.exception('MOBILE_TTS_FAILED code=%s target=%s native=%s',code,target,native)
-        raise web.HTTPServiceUnavailable(
-            text=json.dumps({'error':'Голос ведущей временно недоступен. Можно продолжить без него.','code':code},ensure_ascii=False),
-            content_type='application/json',
-        )
+    combined=spoken_target
+    if spoken_native and (native!=target or spoken_native!=spoken_target):combined=(combined+'\n\n'+spoken_native).strip()
+    path=await synthesize_speech(combined,target,settings.storage_root/'tts-cache-mobile','mobile')
     if not path:raise web.HTTPServiceUnavailable(text='TTS unavailable')
-    ready=time.perf_counter();content_type={'.ogg':'audio/ogg','.opus':'audio/ogg','.mp3':'audio/mpeg','.wav':'audio/wav','.m4a':'audio/mp4','.aac':'audio/aac'}.get(path.suffix.lower()) or mimetypes.guess_type(path.name)[0] or 'application/octet-stream';log.info('MOBILE_TTS_LATENCY source=%s target=%s translate_ms=%d synth_or_cache_ms=%d total_ms=%d',source,target,round((translated-started)*1000),round((ready-translated)*1000),round((ready-started)*1000));log.info('MOBILE_TTS_RESPONSE target=%s native=%s content_type=%s bytes=%s path_suffix=%s',target,native,content_type,path.stat().st_size,path.suffix.lower())
-    response=web.FileResponse(path);response.content_type=content_type;response.headers['Content-Disposition']=f'inline; filename="dome-tutor{path.suffix.lower()}"';response.headers['Cache-Control']='private, max-age=604800';return response
+    return web.FileResponse(path)
 
-
-def _spawn_movie_task(coro)->asyncio.Task:
-    task=asyncio.create_task(coro,name='dome-mobile-movie-render')
-    _movie_tasks.add(task);task.add_done_callback(_movie_tasks.discard)
-    return task
-
-
-def _queue_movie_row(movie:LessonMovie,output:Path)->tuple[str,str]:
-    now=_utcnow();job_id=movie.job_id or secrets.token_hex(16);attempt_id=secrets.token_hex(16)
-    movie.job_id=job_id;movie.attempt_id=attempt_id;movie.movie_version=MOBILE_MOVIE_VERSION;movie.status='QUEUED';movie.stage='VALIDATING_RECORDINGS';movie.progress=2
-    movie.strategy=None;movie.error=None;movie.error_code=None;movie.error_message=None;movie.output_path=str(output)
-    movie.attempt_count=int(movie.attempt_count or 0)+1;movie.started_at=now;movie.heartbeat_at=now;movie.finished_at=None
-    return job_id,attempt_id
-
-
-async def _update_movie_progress(movie_id:int,job_id:str,attempt_id:str,stage:str,progress:int,strategy:str|None=None)->None:
-    async with SessionLocal() as db:
-        movie=await db.get(LessonMovie,movie_id)
-        if not movie or movie.job_id!=job_id or movie.attempt_id!=attempt_id or movie.status not in MOVIE_ACTIVE_STATES:return
-        movie.status='RUNNING';movie.stage=stage;movie.progress=max(int(movie.progress or 0),max(0,min(99,int(progress))))
-        movie.heartbeat_at=_utcnow()
-        if strategy:movie.strategy=strategy
-        await db.commit()
-
-
-async def _expire_stalled_movie(db,movie:LessonMovie)->bool:
-    if movie.status not in MOVIE_ACTIVE_STATES:return False
-    last=movie.heartbeat_at or movie.started_at or movie.updated_at or movie.created_at
-    if not last or (_utcnow()-last).total_seconds()<=MOVIE_STALL_TIMEOUT_SECONDS:return False
-    movie.status='TIMED_OUT';movie.error_code='MOVIE_JOB_TIMED_OUT';movie.error_message=MOVIE_RETRY_MESSAGE
-    movie.error=f'No movie progress heartbeat for more than {MOVIE_STALL_TIMEOUT_SECONDS}s';movie.finished_at=_utcnow()
-    await db.commit();return True
-
-
-def _movie_failure(exc:Exception)->tuple[str,str,str,str]:
-    if isinstance(exc,CartoonBuildError):
-        return exc.code,exc.stage,MOVIE_RETRY_MESSAGE,exc.technical_message
-    if isinstance(exc,MovieContractError):
-        return 'MOVIE_CONTRACT_INVALID','VALIDATING_RECORDINGS',MOVIE_RETRY_MESSAGE,str(exc)
-    return 'MOVIE_RENDER_FAILED','FINALIZING',MOVIE_RETRY_MESSAGE,f'{type(exc).__name__}: {exc}'
-
-
-async def _render_mobile_movie_job(movie_id:int,job_id:str,attempt_id:str,inputs:MovieRenderInputs,child_id:int,lesson_id:str,course_id:str,parent_email:str|None,email_enabled:bool,run_no:int,lesson_title:str)->None:
-    try:
-        await _update_movie_progress(movie_id,job_id,attempt_id,'VALIDATING_RECORDINGS',5)
-        async with SessionLocal() as db:
-            movie=await db.get(LessonMovie,movie_id);session_id=movie.lesson_session_id if movie else 0
-            if not movie or movie.job_id!=job_id or movie.attempt_id!=attempt_id:return
-            voices=(await db.scalars(select(VoiceAttempt).where(VoiceAttempt.lesson_session_id==session_id).order_by(VoiceAttempt.id))).all()
-            lesson_for_movie={**_load_mobile_lesson(lesson_id),'timeline':inputs.timeline}
-            resolved,diagnostics=await resolve_movie_voice_slots(db,session_id,voices,lesson_for_movie,inputs.target_language,settings.storage_root/'tts-cache-mobile');await db.commit()
-        loop=asyncio.get_running_loop()
-        def progress(stage:str,value:int,strategy:str)->None:
-            future=asyncio.run_coroutine_threadsafe(_update_movie_progress(movie_id,job_id,attempt_id,stage,value,strategy),loop)
-            try:future.result(timeout=5)
-            except Exception as progress_exc:log.warning('MOBILE_MOVIE_PROGRESS_UPDATE_FAILED job=%s stage=%s error=%s',job_id,stage,progress_exc)
-        inputs=replace(inputs,audio_by_phrase=resolved,progress_callback=progress)
-        log.info('MOBILE_MOVIE_VOICE_DIAGNOSTICS session=%s slots=%s',session_id,diagnostics)
-        log.info('MOVIE_AUDIO_READY session=%s job=%s attempt=%s recordings=%s slots=%s',session_id,job_id,attempt_id,len(resolved),len(diagnostics))
-        log.info('MOVIE_RENDER_STARTED session=%s job=%s attempt=%s output=%s',session_id,job_id,attempt_id,inputs.output)
-        await asyncio.to_thread(build_mobile_lesson_movie,inputs)
-        if not inputs.output.exists() or inputs.output.stat().st_size<10_000:
-            raise CartoonBuildError(code='MOVIE_OUTPUT_MISSING',stage='FINALIZING',technical_message=f'published movie is missing or empty: {inputs.output}')
-        committed=False
-        async with SessionLocal() as db:
-            movie=await db.get(LessonMovie,movie_id)
-            if movie and movie.job_id==job_id and movie.attempt_id==attempt_id and movie.status in MOVIE_ACTIVE_STATES:
-                movie.status='SUCCEEDED';movie.stage='READY';movie.progress=100;movie.output_path=str(inputs.output);movie.error=None;movie.error_code=None;movie.error_message=None;movie.finished_at=_utcnow();movie.heartbeat_at=_utcnow();await db.commit();committed=True
-            elif not movie or movie.job_id!=job_id or movie.attempt_id!=attempt_id:return
-        if not committed:return
-        output_size=inputs.output.stat().st_size;movie_url=_movie_public_url(child_id,inputs.output)
-        log.info('MOVIE_RENDER_SUCCESS session=%s job=%s attempt=%s bytes=%s output=%s',session_id,job_id,attempt_id,output_size,inputs.output)
-        log.info('MOVIE_FILE_EXISTS session_id=%s run_id=%s attempt_id=%s job_id=%s movie_url=%s exists=true bytes=%s',session_id,run_no,attempt_id,job_id,movie_url,output_size)
-        log.info('MOVIE_PUBLISHED session_id=%s run_id=%s attempt_id=%s job_id=%s movie_url=%s',session_id,run_no,attempt_id,job_id,movie_url)
-        log.info('MOVIE_URL_SAVED session_id=%s run_id=%s attempt_id=%s job_id=%s movie_url=%s',session_id,run_no,attempt_id,job_id,movie_url)
-        log.info('MOVIE_STATUS_READY session_id=%s run_id=%s attempt_id=%s job_id=%s movie_url=%s',session_id,run_no,attempt_id,job_id,movie_url)
-        await mark_cartoon_generated(child_id,lesson_id,course_id)
-        if email_enabled and parent_email:
-            subject=f'DOME — мультфильм после прохождения {run_no}: {lesson_title}'
-            body=f'Прохождение {run_no} завершено. Персональный мультфильм прикреплён к письму.'
-            try:
-                await asyncio.to_thread(_send_with_attachment_sync,parent_email,subject,body,str(inputs.output))
-                log.info('MOVIE_EMAIL_DELIVERED session_id=%s run_id=%s attempt_id=%s job_id=%s movie_url=%s',session_id,run_no,attempt_id,job_id,movie_url)
-            except Exception as exc:log.warning('Mobile movie email failed: %s',exc)
-    except Exception as exc:
-        code,stage,safe_message,technical=_movie_failure(exc)
-        log.exception('MOVIE_RENDER_FAILED session_id=%s run_id=%s job_id=%s attempt_id=%s code=%s stage=%s detail=%s',session_id if 'session_id' in locals() else 0,run_no,job_id,attempt_id,code,stage,technical)
-        async with SessionLocal() as db:
-            movie=await db.get(LessonMovie,movie_id)
-            if movie and movie.job_id==job_id and movie.attempt_id==attempt_id and movie.status in MOVIE_ACTIVE_STATES:
-                movie.status='TIMED_OUT' if code in {'MOVIE_RENDER_TIMED_OUT','MOVIE_JOB_TIMED_OUT'} else 'FAILED';movie.stage=stage;movie.error=technical[:4000];movie.error_code=code;movie.error_message=safe_message;movie.finished_at=_utcnow();movie.heartbeat_at=_utcnow();await db.commit()
-
-async def complete(request:web.Request,movie_build_trigger:str='complete')->web.Response:
+async def complete(request:web.Request)->web.Response:
     p=await _parent(request);sid=int(request.match_info['session_id'])
-    log.info('MOVIE_BUILD_REQUEST session=%s trigger=%s parent=%s',sid,movie_build_trigger,p.id)
-    log.info('MOVIE_BUILD_REQUESTED session=%s trigger=%s parent=%s',sid,movie_build_trigger,p.id)
     async with SessionLocal() as db:
         sess=await db.get(LessonSession,sid)
         if not sess:raise web.HTTPNotFound()
         c=await db.get(Child,sess.child_id);par=await db.get(Parent,c.parent_id) if c else None
         if not c or c.parent_id!=p.id:raise web.HTTPForbidden()
-    lesson_data=_load_mobile_lesson(sess.lesson_id);course=str(lesson_data.get('course_id') or 'conversation');version=lesson_content_version(lesson_data);step_ids=runtime_step_ids(lesson_data)
-    if str(sess.lesson_version or '')!=version:
-        log.warning('MOBILE_COMPLETION_VERSION_REJECTED session=%s stored=%s current=%s',sid,sess.lesson_version or 'legacy-positional',version)
-        raise web.HTTPConflict(text=json.dumps({'error':'Структура урока изменилась. Откройте урок заново.','code':'LESSON_VERSION_CHANGED','lesson_version':version},ensure_ascii=False),content_type='application/json')
-    movie_contract=None;movie_contract_error=None
-    if lesson_data.get('cartoon_base') or lesson_data.get('cartoon_base_manifest'):
-        try:movie_contract=load_movie_contract(sess.lesson_id,lesson_data)
-        except MovieContractError as exc:
-            movie_contract_error=exc;log.exception('MOBILE_MOVIE_CONTRACT_INVALID lesson=%s',sess.lesson_id)
-    movie_lesson_data={**lesson_data,'timeline':movie_contract.timeline} if movie_contract else lesson_data
+    lesson_data=load_lesson(sess.lesson_id);course=str(lesson_data.get('course_id') or 'conversation')
+    ent,new=await complete_session_once(session_id=sid,child_id=c.id,lesson_id=sess.lesson_id,course_id=course,final_step=len(lesson_data.get('slides',[])))
+    if not new:
+        run_no=int(ent.completed_runs or 0)
+    else: run_no=int(ent.completed_runs or 0)
     async with SessionLocal() as db:
         voices=(await db.scalars(select(VoiceAttempt).where(VoiceAttempt.lesson_session_id==sid).order_by(VoiceAttempt.id))).all();char=await db.get(Character,c.active_character_id) if c.active_character_id else None
-        if char:await _ensure_character_geometry(char)
-        slots=await ensure_movie_voice_slots(db,sid,movie_lesson_data);await db.commit()
-    audio_by_phrase,missing_exact=select_movie_voice_takes(voices,movie_lesson_data)
-    required_ids=required_movie_phrase_ids(movie_lesson_data) if movie_contract else []
-    log.info('MOVIE_RECORDING_INVENTORY session=%s recordings=%s required_slots=%s available_slots=%s missing_slots=%s',sid,len(voices),required_ids,sorted(audio_by_phrase),missing_exact)
-    if movie_contract and missing_exact:
-        missing_steps=missing_step_payload(movie_lesson_data,missing_exact);target=missing_steps[0] if missing_steps else None
-        async with SessionLocal() as db:
-            db_session=await db.get(LessonSession,sid)
-            try:runtime=json.loads(db_session.runtime_state_json or '{}') if db_session else {}
-            except (TypeError,ValueError,json.JSONDecodeError):runtime={}
-            if db_session:
-                recovery={'phrase_ids':missing_exact,'return_to':'COMPLETE',**(target or {})};runtime['completion_recovery']=recovery
-                db_session.runtime_state_json=json.dumps(runtime,ensure_ascii=False);db_session.completion_state='RECOVERY_REQUIRED'
-                if target and target['step_id'] in step_ids:
-                    db_session.current_step_id=target['step_id'];db_session.current_step=step_ids.index(target['step_id'])
-                await db.commit()
-        log.warning('MOBILE_COMPLETION_RECOVERY_REQUIRED session=%s missing=%s target=%s',sid,missing_exact,target)
-        raise web.HTTPConflict(text=json.dumps({'error':'Нужно записать обязательную реплику для мультфильма.','code':'REQUIRED_MOVIE_RECORDINGS_MISSING','missing_phrase_ids':missing_exact,'missing_steps':missing_steps,'lesson_version':version,'return_to':'COMPLETE'},ensure_ascii=False),content_type='application/json')
-    recovery_allowed=str(sess.completion_state or '')=='RECOVERY_REQUIRED'
-    if sess.status!='COMPLETED' and not recovery_allowed and step_ids and str(sess.current_step_id or '')!=step_ids[-1]:
-        raise web.HTTPConflict(text=json.dumps({'error':'Сначала завершите текущий шаг урока.','code':'LESSON_SEQUENCE_INCOMPLETE','current_step_id':sess.current_step_id,'final_step_id':step_ids[-1]},ensure_ascii=False),content_type='application/json')
-    if sess.status!='COMPLETED':
-        async with SessionLocal() as db:
-            db_session=await db.get(LessonSession,sid)
-            if db_session:db_session.completion_state='COMPLETING';await db.commit()
-    ent,new=await complete_session_once(session_id=sid,child_id=c.id,lesson_id=sess.lesson_id,course_id=course,final_step=len(lesson_data.get('slides',[])))
-    run_no=int(ent.completed_runs or 0)
-    hero_path=Path(char.processed_path or char.original_path) if char else preset_character_path('explorer')
-    voice_diagnostics=[]
-    for slot in slots:
-        try:detail=json.loads(slot.diagnostics_json or '{}')
-        except (TypeError,ValueError,json.JSONDecodeError):detail={}
-        voice_diagnostics.append({'required_voice_id':slot.required_voice_id,'status':slot.status,**detail})
-    movie_url=None;movie_configured=movie_contract is not None;movie_status='QUEUED' if movie_configured else ('FAILED' if movie_contract_error else 'NOT_CONFIGURED')
-    out=settings.storage_root/'children'/str(c.id)/'cartoons'/f'mobile_{sess.lesson_id}_session{sid}.mp4';out.parent.mkdir(parents=True,exist_ok=True)
-    should_render=False;movie_id=None;job_id=None;attempt_id=None;movie_stage='IDLE';movie_progress=0;movie_error_code=None
-    if movie_configured and hero_path.exists():
-        log.info('MOVIE_ASSETS_READY session=%s base=%s timeline=%s',sid,movie_contract.base_video,len(movie_contract.timeline))
-        log.info('MOVIE_AVATAR_READY session=%s hero=%s geometry=%s',sid,hero_path,'confirmed' if char and geometry_from_json(char.visual_metadata_json).get('userConfirmed') is True else ('preset' if not char else 'available'))
-        async with SessionLocal() as db:
-            movie=await db.scalar(select(LessonMovie).where(LessonMovie.lesson_session_id==sid))
-            if movie is None:
-                movie=LessonMovie(lesson_session_id=sid,child_id=c.id,lesson_id=sess.lesson_id,run_number=run_no,status='IDLE',output_path=str(out));job_id,attempt_id=_queue_movie_row(movie,out);db.add(movie)
-                try:await db.commit();await db.refresh(movie);should_render=True
-                except IntegrityError:
-                    await db.rollback();job_id=None;attempt_id=None;movie=await db.scalar(select(LessonMovie).where(LessonMovie.lesson_session_id==sid))
-                    if movie and movie.status in MOVIE_RETRY_STATES|{'IDLE'}:
-                        job_id,attempt_id=_queue_movie_row(movie,out);await db.commit();should_render=True
-            elif movie.status in MOVIE_SUCCESS_STATES and movie.output_path and Path(movie.output_path).exists():
-                out=Path(movie.output_path);movie_status='SUCCEEDED'
-            elif movie.status in MOVIE_SUCCESS_STATES:
-                movie.error='Persisted movie artifact is missing';movie.error_code='MOVIE_OUTPUT_MISSING';movie.error_message=MOVIE_RETRY_MESSAGE
-                job_id,attempt_id=_queue_movie_row(movie,out);await db.commit();should_render=True
-            elif movie.status in MOVIE_RETRY_STATES or movie.status=='IDLE':
-                job_id,attempt_id=_queue_movie_row(movie,out);await db.commit();should_render=True
-            elif movie.status in MOVIE_ACTIVE_STATES:
-                await _expire_stalled_movie(db,movie)
-                if movie.status=='TIMED_OUT':job_id,attempt_id=_queue_movie_row(movie,out);await db.commit();should_render=True
-            movie_id=movie.id if movie else None
-            if movie:
-                job_id=job_id or movie.job_id;attempt_id=attempt_id or movie.attempt_id;movie_status=movie.status;movie_stage=movie.stage or 'IDLE';movie_progress=int(movie.progress or 0);movie_error_code=movie.error_code
-        if should_render:
-            lesson_dir=movie_contract.lesson_dir
-            inputs=MovieRenderInputs(base_video=movie_contract.base_video,character=hero_path,audio_by_phrase=audio_by_phrase,timeline=movie_contract.timeline,output=out,lesson_dir=lesson_dir,target_language=c.target_language or 'ru',approved_phrase_ids=movie_contract.approved_phrase_ids,required_phrase_ids=tuple(required_ids),expected_base_sha256=movie_contract.expected_base_sha256,require_all_phrase_audio=bool(movie_contract.audio_policy.get('require_exact_child_recording',True)),character_metadata=geometry_from_json(char.visual_metadata_json) if char else preset_character_geometry('explorer'))
-            log.info('MOVIE_BUILD_STARTED session=%s job=%s attempt=%s movie_version=%s',sid,job_id,attempt_id,MOBILE_MOVIE_VERSION)
-            _spawn_movie_task(_render_mobile_movie_job(movie_id,job_id,attempt_id,inputs,c.id,sess.lesson_id,course,par.email if par else None,bool(par and par.email_reports_enabled),run_no,str(lesson_data.get('title') or sess.lesson_id)))
-            movie_status='QUEUED';movie_stage='VALIDATING_RECORDINGS';movie_progress=max(2,movie_progress)
-        if movie_status in MOVIE_SUCCESS_STATES and out.exists():
-            await mark_cartoon_generated(c.id,sess.lesson_id,course)
-            movie_url=_movie_public_url(c.id,out,_base(request))
-    elif movie_configured:
-        movie_status='FAILED';movie_stage='LOADING_AVATAR';movie_error_code='MOVIE_AVATAR_MISSING'
+    accepted=[Path(v.audio_path) for v in voices if str(v.status).startswith('ACCEPTED') and Path(v.audio_path).exists()]
+    movie_url=None
+    if char and accepted:
+        char_path=Path(char.processed_path or char.original_path);base=Path(settings.content_root)/'lessons'/sess.lesson_id
+        backgrounds=[]
+        for sl in lesson_data.get('slides',[]):
+            rel=sl.get('image')
+            if rel:
+                q=base/rel
+                if q.exists():backgrounds.append(q)
+        out=settings.storage_root/'children'/str(c.id)/'cartoons'/f'mobile_{sess.lesson_id}_run{run_no}.mp4';out.parent.mkdir(parents=True,exist_ok=True)
+        try:
+            await asyncio.to_thread(build_free_topic_cartoon,backgrounds[:10],char_path,accepted[:10],[],out,75,None,9)
+            val=f'movie:{c.id}:{out.name}';mt=signed_media_token(val,86400*30);movie_url=f'{_base(request)}/api/mobile/movie/{c.id}/{out.name}?t={mt}'
+            if par and par.email_reports_enabled and par.email:
+                subject=f'DOME — мультфильм после прохождения {run_no}: {lesson_data.get("title") or sess.lesson_id}'
+                body=f'{c.display_name} завершил(а) прохождение {run_no}. Персональный мультфильм прикреплён к письму.'
+                try:await asyncio.to_thread(_send_with_attachment_sync,par.email,subject,body,str(out))
+                except Exception as exc:log.warning('Mobile movie email failed: %s',exc)
+        except Exception as exc:log.exception('Mobile cartoon failed: %s',exc)
     homework_sent=False
     if run_no==1:
         hw=lesson_data.get('homework') or {};body=str(hw.get('instruction_ru') or 'Нарисуй место, куда ты хотел бы отправиться, и назови три вещи, которые возьмёшь с собой.')
@@ -1871,118 +258,62 @@ async def complete(request:web.Request,movie_build_trigger:str='complete')->web.
         if homework_sent and par and par.email_reports_enabled and par.email:
             try:await send_homework_email(par.email,c.display_name,lesson_data.get('title') or sess.lesson_id,body,None)
             except Exception as exc:log.warning('Mobile homework email failed: %s',exc)
-    return web.json_response({'ok':True,'session_id':sid,'run_id':run_no,'run_number':run_no,'movie_url':movie_url,'movie_status':movie_status,'movie_job_id':job_id,'movie_attempt_id':attempt_id,'movie_stage':movie_stage,'movie_progress':movie_progress,'movie_error_code':movie_error_code,'missing_voice_phrases':missing_exact,'missing_exact_voice_phrases':missing_exact,'movie_voice_diagnostics':voice_diagnostics,'hero_fallback_used':not bool(char),'homework_sent':homework_sent,'completed_runs':ent.completed_runs,'max_runs':ent.max_completed_runs})
-
-
-async def movie_status(request:web.Request)->web.Response:
-    p=await _parent(request);sid=int(request.match_info['session_id'])
-    async with SessionLocal() as db:
-        sess=await db.get(LessonSession,sid);c=await db.get(Child,sess.child_id) if sess else None
-        if not sess or not c or c.parent_id!=p.id:raise web.HTTPForbidden()
-        movie=await db.scalar(select(LessonMovie).where(LessonMovie.lesson_session_id==sid));slots=(await db.scalars(select(MovieVoiceSlot).where(MovieVoiceSlot.lesson_session_id==sid).order_by(MovieVoiceSlot.id))).all()
-        if movie:await _expire_stalled_movie(db,movie)
-    if not movie:
-        log.info('MOVIE_STATUS_RESPONSE session_id=%s run_id=None attempt_id=None job_id=None movie_url=None status=NOT_CREATED',sid)
-        return web.json_response({'session_id':sid,'run_id':None,'run_number':None,'status':'NOT_CREATED','url':None,'movie_url':None})
-    url=None;path=Path(movie.output_path) if movie.output_path else None
-    if movie.status in MOVIE_SUCCESS_STATES and path and path.exists():
-        url=_movie_public_url(c.id,path,_base(request))
-    diagnostics=[]
-    for slot in slots:
-        try:detail=json.loads(slot.diagnostics_json or '{}')
-        except (TypeError,ValueError,json.JSONDecodeError):detail={}
-        diagnostics.append({'required_voice_id':slot.required_voice_id,'status':slot.status,**detail})
-    failed=movie.status in MOVIE_RETRY_STATES
-    identity=_movie_identity_payload(movie,url)
-    log.info('MOVIE_STATUS_RESPONSE session_id=%s run_id=%s attempt_id=%s job_id=%s movie_url=%s status=%s stage=%s',identity['session_id'],identity['run_id'],identity['attempt_id'],identity['job_id'],url,movie.status,movie.stage)
-    if movie.status in MOVIE_SUCCESS_STATES and url:
-        log.info('MOVIE_STATUS_READY session_id=%s run_id=%s attempt_id=%s job_id=%s movie_url=%s',identity['session_id'],identity['run_id'],identity['attempt_id'],identity['job_id'],url)
-    return web.json_response({**identity,'status':movie.status,'job_id':movie.job_id,'attempt_id':movie.attempt_id,'movie_version':movie.movie_version,'stage':movie.stage,'progress':int(movie.progress or 0),'strategy':movie.strategy,'url':url,'error':movie.error_message or (MOVIE_RETRY_MESSAGE if failed else None),'error_code':movie.error_code,'error_message':movie.error_message if failed else None,'can_retry':failed,'attempt_count':int(movie.attempt_count or 0),'voice_diagnostics':diagnostics})
-
-
-async def retry_movie(request:web.Request)->web.Response:
-    """Idempotent in-process retry using the completed attempt's saved voices."""
-    log.info('MOVIE_RETRY_STARTED session=%s',request.match_info.get('session_id'))
-    return await complete(request,'retry')
+    return web.json_response({'ok':True,'run_number':run_no,'movie_url':movie_url,'homework_sent':homework_sent,'completed_runs':ent.completed_runs,'max_runs':ent.max_completed_runs})
 
 async def movie_file(request:web.Request)->web.StreamResponse:
+    if request.method == 'OPTIONS':
+        return web.Response(headers={
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
+            'Access-Control-Allow-Headers': 'Range, Content-Type, Authorization, Accept',
+            'Access-Control-Max-Age': '86400',
+        })
     cid=int(request.match_info['child_id']);filename=request.match_info['filename'];val=f'movie:{cid}:{filename}'
     if not verify_media_token(val,request.query.get('t','')):raise web.HTTPForbidden()
     if '/' in filename or '..' in filename:raise web.HTTPNotFound()
-    async with SessionLocal() as db:
-        child=await db.get(Child,cid)
-        if not child:raise web.HTTPNotFound()
-        parent=await db.get(Parent,child.parent_id)
-        err=account_access_error(parent)
-        if err:
-            code_err,msg=err
-            raise web.HTTPForbidden(text=json.dumps({'error':msg,'code':code_err}),content_type='application/json')
     path=settings.storage_root/'children'/str(cid)/'cartoons'/filename
     if not path.exists():raise web.HTTPNotFound()
-    total_size=path.stat().st_size
-    range_header=request.headers.get('Range','')
-    # Parse Range header
-    start=0;end=total_size-1;partial=False
-    if range_header and range_header.startswith('bytes='):
-        try:
-            ranges=range_header[6:].split(',')[0].strip()
-            s,_,e=ranges.partition('-')
-            start=int(s) if s else 0
-            end=int(e) if e else total_size-1
-            if start>end or start>=total_size:raise web.HTTPRequestRangeNotSatisfiable(headers={'Content-Range':f'bytes */{total_size}'})
-            end=min(end,total_size-1)
-            partial=True
-        except (ValueError,TypeError):
-            pass
-    chunk_size=end-start+1
-    status=206 if partial else 200
-    headers={
-        'Content-Type':'video/mp4',
-        'Content-Length':str(chunk_size),
-        'Accept-Ranges':'bytes',
-        'Access-Control-Allow-Origin':'*',
-        'Access-Control-Allow-Headers':'Range, Authorization, Content-Type',
-        'Access-Control-Expose-Headers':'Content-Range, Content-Length, Accept-Ranges',
-        'Cache-Control':'private, max-age=86400',
+    headers = {
+        'Accept-Ranges': 'bytes',
+        'Content-Type': 'video/mp4',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Expose-Headers': 'Content-Range, Content-Length, Accept-Ranges',
+        'Cache-Control': 'public, max-age=86400',
     }
-    if partial:
-        headers['Content-Range']=f'bytes {start}-{end}/{total_size}'
-    resp=web.StreamResponse(status=status,headers=headers)
-    await resp.prepare(request)
-    if request.method == 'HEAD':
-        return resp
-    with open(path,'rb') as f:
-        f.seek(start)
-        remaining=chunk_size
-        buf_size=256*1024
-        while remaining>0:
-            data=f.read(min(buf_size,remaining))
-            if not data:break
-            await resp.write(data)
-            remaining-=len(data)
-    await resp.write_eof()
-    return resp
+    return web.FileResponse(path, headers=headers)
+
+async def child_homework_list(request:web.Request)->web.Response:
+    p=await _parent(request);cid=int(request.match_info['child_id']);await _owned_child(p.id,cid)
+    async with SessionLocal() as db:
+        rows=(await db.scalars(select(HomeworkAssignment).where(HomeworkAssignment.child_id==cid).order_by(HomeworkAssignment.id.desc()))).all()
+        items=[{'id':r.id,'childId':str(r.child_id),'lessonId':r.lesson_id,'title':r.title,'instruction':r.body,'status':'completed' if r.status=='COMPLETED' else 'new','createdAt':r.created_at.isoformat() if r.created_at else ''} for r in rows]
+    return web.json_response({'homework':items})
+
+async def child_homework_submit(request:web.Request)->web.Response:
+    p=await _parent(request);cid=int(request.match_info['child_id']);hid=int(request.match_info['homework_id']);await _owned_child(p.id,cid)
+    async with SessionLocal() as db:
+        hw=await db.get(HomeworkAssignment,hid)
+        if not hw or hw.child_id!=cid:raise web.HTTPNotFound()
+        hw.status='COMPLETED'
+        await db.commit()
+    return web.json_response({'ok':True,'status':'COMPLETED'})
 
 async def movies(request:web.Request)->web.Response:
-    p=await _parent(request);cid=int(request.match_info['child_id']);await _owned_child(p.id,cid);items=[]
-    async with SessionLocal() as db:
-        rows=(await db.scalars(select(LessonMovie).where(LessonMovie.child_id==cid).order_by(LessonMovie.id.desc()))).all()
-    for movie in rows:
-        path=Path(movie.output_path) if movie.output_path else None;url=None
-        if movie.status in MOVIE_SUCCESS_STATES and path and path.exists():
-            url=_movie_public_url(cid,path,_base(request))
-        identity=_movie_identity_payload(movie,url)
-        log.info('MOVIE_STATUS_RESPONSE session_id=%s run_id=%s attempt_id=%s job_id=%s movie_url=%s status=%s stage=%s source=library',identity['session_id'],identity['run_id'],identity['attempt_id'],identity['job_id'],url,movie.status,movie.stage)
-        items.append({**identity,'filename':path.name if path else None,'title':f'{movie.lesson_id} · прохождение {movie.run_number}','created_at':movie.created_at.isoformat() if movie.created_at else '','url':url,'status':movie.status,'job_id':movie.job_id,'attempt_id':movie.attempt_id,'stage':movie.stage,'progress':int(movie.progress or 0),'error_code':movie.error_code,'error_message':movie.error_message,'can_retry':movie.status in MOVIE_RETRY_STATES})
+    p=await _parent(request);cid=int(request.match_info['child_id']);await _owned_child(p.id,cid);root=settings.storage_root/'children'/str(cid)/'cartoons';items=[]
+    if root.exists():
+        for path in sorted(root.glob('mobile_*.mp4'),key=lambda x:x.stat().st_mtime,reverse=True):
+            val=f'movie:{cid}:{path.name}';t=signed_media_token(val,86400*30);items.append({'filename':path.name,'title':path.stem.replace('_',' '),'created_at':datetime.fromtimestamp(path.stat().st_mtime).isoformat(),'url':f'{_base(request)}/api/mobile/movie/{cid}/{path.name}?t={t}'})
     return web.json_response({'movies':items})
 
 
-def _normalize_email(value: object) -> str:
-    return str(value or '').strip().lower()
+def _auth_secret() -> bytes:
+    raw=(settings.consent_hash_secret or settings.bot_token or 'DOME-AUTH-CHANGE-ME').encode('utf-8')
+    return hashlib.sha256(raw+b'|email-auth-v1').digest()
 
 
-async def _parent_by_email(db, email: str) -> Parent | None:
-    return await db.scalar(select(Parent).where(func.lower(Parent.email) == email))
+def _email_code_hash(email:str, code:str, purpose:str)->str:
+    payload=f'{purpose}|{email.strip().lower()}|{code}'.encode('utf-8')
+    return hmac.new(_auth_secret(),payload,hashlib.sha256).hexdigest()
 
 
 def _new_email_code()->str:
@@ -1997,27 +328,25 @@ def _valid_email(email:str)->bool:
 
 async def register(request:web.Request)->web.Response:
     data=await request.json()
-    email=_normalize_email(data.get('email'))
+    email=str(data.get('email') or '').strip().lower()
     password=str(data.get('password') or '')
     name=str(data.get('name') or '').strip()
     if not name:raise web.HTTPBadRequest(text=json.dumps({'error':'Введите имя'}),content_type='application/json')
     if not _valid_email(email):raise web.HTTPBadRequest(text=json.dumps({'error':'Введите корректный email'}),content_type='application/json')
     if len(password)<8:raise web.HTTPBadRequest(text=json.dumps({'error':'Пароль должен содержать минимум 8 символов'}),content_type='application/json')
-    code=_new_email_code();expires=_utcnow()+timedelta(minutes=10)
+    code=_new_email_code();expires=datetime.utcnow()+timedelta(minutes=10)
     async with SessionLocal() as db:
-        parent=await _parent_by_email(db,email)
+        parent=await db.scalar(select(Parent).where(Parent.email==email))
         if parent and bool(parent.email_verified):
             raise web.HTTPConflict(text=json.dumps({'error':'Аккаунт с этой почтой уже существует'}),content_type='application/json')
         if parent is None:
-            parent=Parent(email=email,display_name=name,password_hash=hash_password(password),email_verified=False,email_reports_enabled=settings.email_reports_default,account_status=initial_account_status())
+            parent=Parent(email=email,display_name=name,password_hash=hash_password(password),email_verified=False,email_reports_enabled=settings.email_reports_default)
             db.add(parent)
         else:
-            parent.email=email
             parent.display_name=name
             parent.password_hash=hash_password(password)
             parent.email_verified=False
-            parent.account_status=initial_account_status()
-        parent.email_verification_code_hash=hash_verification_code(email,code,'verify')
+        parent.email_verification_code_hash=_email_code_hash(email,code,'verify')
         parent.email_verification_expires_at=expires
         await db.commit();await db.refresh(parent)
     try:await send_verification_email(email,code,10)
@@ -2028,38 +357,27 @@ async def register(request:web.Request)->web.Response:
 
 
 async def verify_email(request:web.Request)->web.Response:
-    data=await request.json();email=_normalize_email(data.get('email'));code=str(data.get('code') or '').strip()
-    if not _valid_email(email):raise web.HTTPBadRequest(text=json.dumps({'error':'Введите корректный email'}),content_type='application/json')
-    if len(code)!=6 or not code.isdigit():raise web.HTTPBadRequest(text=json.dumps({'error':'Код должен состоять из 6 цифр'}),content_type='application/json')
+    data=await request.json();email=str(data.get('email') or '').strip().lower();code=str(data.get('code') or '').strip()
+    if not email or not code:raise web.HTTPBadRequest(text=json.dumps({'error':'Введите email и код'}),content_type='application/json')
     async with SessionLocal() as db:
-        parent=await _parent_by_email(db,email)
-        if not parent or not parent.email_verification_code_hash:
-            raise web.HTTPBadRequest(text=json.dumps({'error':'Неверный код подтверждения'}),content_type='application/json')
-        if not parent.email_verification_expires_at or parent.email_verification_expires_at<_utcnow():
-            raise web.HTTPBadRequest(text=json.dumps({'error':'Срок действия кода истёк. Отправьте новый код.'}),content_type='application/json')
-        if not verify_verification_code(email,code,parent.email_verification_code_hash,'verify'):
-            raise web.HTTPBadRequest(text=json.dumps({'error':'Неверный код подтверждения'}),content_type='application/json')
+        parent=await db.scalar(select(Parent).where(Parent.email==email))
+        expected=_email_code_hash(email,code,'verify')
+        expired=not parent or not parent.email_verification_expires_at or parent.email_verification_expires_at<datetime.utcnow()
+        bad=not parent or not parent.email_verification_code_hash or not hmac.compare_digest(parent.email_verification_code_hash,expected)
+        if expired or bad:raise web.HTTPBadRequest(text=json.dumps({'error':'Код неверный или истёк'}),content_type='application/json')
         parent.email_verified=True;parent.email_verification_code_hash=None;parent.email_verification_expires_at=None
         children=(await db.scalars(select(Child).where(Child.parent_id==parent.id).order_by(Child.id))).all()
-        for ch in children:
-            await ensure_free_demo_entitlement(db,parent_id=parent.id,child_id=ch.id)
-        await db.commit()
-        err=account_access_error(parent)
-        if err:
-            code_err,msg=err
-            raise web.HTTPForbidden(text=json.dumps({'error':msg,'code':code_err}),content_type='application/json')
-        token=issue_session_token(parent.id);children_payload=await _children_json(request,db,list(children))
-        return web.json_response({'token':token,'parent':{'id':parent.id,'name':parent.display_name,'email':parent.email,'email_verified':True,'phone':parent.phone,'is_owner':is_owner_parent(parent),'account_status':account_status(parent)},'children':children_payload})
+        await db.commit();token=issue_token(parent.id)
+        return web.json_response({'token':token,'parent':{'id':parent.id,'name':parent.display_name,'email':parent.email,'phone':parent.phone},'children':[_child_json(request,c) for c in children]})
 
 
 async def resend_verification(request:web.Request)->web.Response:
-    data=await request.json();email=_normalize_email(data.get('email'))
-    if not _valid_email(email):raise web.HTTPBadRequest(text=json.dumps({'error':'Введите корректный email'}),content_type='application/json')
+    data=await request.json();email=str(data.get('email') or '').strip().lower()
     async with SessionLocal() as db:
-        parent=await _parent_by_email(db,email)
+        parent=await db.scalar(select(Parent).where(Parent.email==email))
         if not parent:raise web.HTTPNotFound(text=json.dumps({'error':'Аккаунт не найден'}),content_type='application/json')
         if parent.email_verified:return web.json_response({'ok':True,'already_verified':True})
-        code=_new_email_code();parent.email_verification_code_hash=hash_verification_code(email,code,'verify');parent.email_verification_expires_at=_utcnow()+timedelta(minutes=10);await db.commit()
+        code=_new_email_code();parent.email_verification_code_hash=_email_code_hash(email,code,'verify');parent.email_verification_expires_at=datetime.utcnow()+timedelta(minutes=10);await db.commit()
     try:await send_verification_email(email,code,10)
     except Exception as exc:
         log.exception('Verification resend failed: %s',exc)
@@ -2068,32 +386,24 @@ async def resend_verification(request:web.Request)->web.Response:
 
 
 async def login(request:web.Request)->web.Response:
-    data=await request.json();email=_normalize_email(data.get('email'));password=str(data.get('password') or '')
+    data=await request.json();email=str(data.get('email') or '').strip().lower();password=str(data.get('password') or '')
     async with SessionLocal() as db:
-        parent=await _parent_by_email(db,email)
+        parent=await db.scalar(select(Parent).where(Parent.email==email))
         if not parent or not parent.password_hash or not verify_password(password,parent.password_hash):
             raise web.HTTPUnauthorized(text=json.dumps({'error':'Неверный email или пароль'}),content_type='application/json')
         if not bool(parent.email_verified):
             raise web.HTTPForbidden(text=json.dumps({'error':'Сначала подтвердите email','code':'EMAIL_NOT_VERIFIED','verification_required':True,'email':email}),content_type='application/json')
-        err=account_access_error(parent)
-        if err:
-            code_err,msg=err
-            raise web.HTTPForbidden(text=json.dumps({'error':msg,'code':code_err}),content_type='application/json')
-        children=(await db.scalars(select(Child).where(Child.parent_id==parent.id).order_by(Child.id))).all()
-        for ch in children:
-            await ensure_free_demo_entitlement(db,parent_id=parent.id,child_id=ch.id)
-        await db.commit()
-        token=issue_session_token(parent.id);children_payload=await _children_json(request,db,list(children))
-        return web.json_response({'token':token,'parent':{'id':parent.id,'name':parent.display_name,'email':parent.email,'email_verified':True,'phone':parent.phone,'is_owner':is_owner_parent(parent),'account_status':account_status(parent)},'children':children_payload})
+        children=(await db.scalars(select(Child).where(Child.parent_id==parent.id).order_by(Child.id))).all();token=issue_token(parent.id)
+        return web.json_response({'token':token,'parent':{'id':parent.id,'name':parent.display_name,'email':parent.email,'phone':parent.phone},'children':[_child_json(request,c) for c in children]})
 
 
 async def request_password_reset(request:web.Request)->web.Response:
-    data=await request.json();email=_normalize_email(data.get('email'))
+    data=await request.json();email=str(data.get('email') or '').strip().lower()
     code=None
     async with SessionLocal() as db:
-        parent=await _parent_by_email(db,email)
+        parent=await db.scalar(select(Parent).where(Parent.email==email))
         if parent:
-            code=_new_email_code();parent.email_verification_code_hash=hash_verification_code(email,code,'reset');parent.email_verification_expires_at=_utcnow()+timedelta(minutes=10);await db.commit()
+            code=_new_email_code();parent.email_verification_code_hash=_email_code_hash(email,code,'reset');parent.email_verification_expires_at=datetime.utcnow()+timedelta(minutes=10);await db.commit()
     if code:
         try:await send_password_reset_email(email,code,10)
         except Exception as exc:log.exception('Password reset email failed: %s',exc)
@@ -2101,243 +411,19 @@ async def request_password_reset(request:web.Request)->web.Response:
 
 
 async def confirm_password_reset(request:web.Request)->web.Response:
-    data=await request.json();email=_normalize_email(data.get('email'));code=str(data.get('code') or '').strip();password=str(data.get('password') or '')
+    data=await request.json();email=str(data.get('email') or '').strip().lower();code=str(data.get('code') or '').strip();password=str(data.get('password') or '')
     if len(password)<8:raise web.HTTPBadRequest(text=json.dumps({'error':'Пароль должен содержать минимум 8 символов'}),content_type='application/json')
     async with SessionLocal() as db:
-        parent=await _parent_by_email(db,email)
-        expired=not parent or not parent.email_verification_expires_at or parent.email_verification_expires_at<_utcnow()
-        bad=not parent or not parent.email_verification_code_hash or not verify_verification_code(email,code,parent.email_verification_code_hash,'reset')
+        parent=await db.scalar(select(Parent).where(Parent.email==email));expected=_email_code_hash(email,code,'reset')
+        expired=not parent or not parent.email_verification_expires_at or parent.email_verification_expires_at<datetime.utcnow()
+        bad=not parent or not parent.email_verification_code_hash or not hmac.compare_digest(parent.email_verification_code_hash,expected)
         if expired or bad:raise web.HTTPBadRequest(text=json.dumps({'error':'Код неверный или истёк'}),content_type='application/json')
         parent.password_hash=hash_password(password);parent.email_verified=True;parent.email_verification_code_hash=None;parent.email_verification_expires_at=None;await db.commit()
     return web.json_response({'ok':True})
 
-
-async def mobile_get_homework(request:web.Request)->web.Response:
-    from app.services.homework_catalog import load_homework
-    lid = str(request.match_info['lesson_id']).strip().lower()
-    hw = load_homework(lid)
-    return web.json_response({'ok': True, 'homework': hw.model_dump()})
-
-async def mobile_submit_homework(request:web.Request)->web.Response:
-    p = await _parent(request)
-    cid = int(request.match_info['child_id'])
-    lid = str(request.match_info['lesson_id']).strip().lower()
-    await _owned_child(p.id, cid)
-    data = await request.json() if request.can_read_body else {}
-    from app.services.homework_catalog import load_homework
-    hw = load_homework(lid)
-    
-    async with SessionLocal() as db:
-        existing = await db.scalar(select(HomeworkAssignment).where(
-            HomeworkAssignment.child_id == cid,
-            HomeworkAssignment.lesson_id == lid,
-        ))
-        now = datetime.utcnow()
-        if existing:
-            existing.status = 'COMPLETED'
-            existing.completed_at = now
-            existing.body = json.dumps(data, ensure_ascii=False)
-        else:
-            db.add(HomeworkAssignment(
-                child_id=cid,
-                lesson_id=lid,
-                title=hw.title,
-                body=json.dumps(data, ensure_ascii=False),
-                duration_minutes=hw.duration_minutes,
-                status='COMPLETED',
-                optional=hw.optional,
-                created_at=now,
-                completed_at=now,
-            ))
-        await db.commit()
-    return web.json_response({'ok': True, 'completed': True, 'lesson_id': lid})
-
-
-async def child_progress(request: web.Request) -> web.Response:
-    from app.services.course_catalog import list_courses
-    from app.services.homework_catalog import load_homework
-    from app.services.qa_access import is_owner_parent
-
-    p = await _parent(request)
-    cid = int(request.match_info['child_id'])
-    child = await _owned_child(p.id, cid)
-    is_owner = is_owner_parent(p)
-
-    courses = list_courses(for_client=not is_owner)
-
-    async with SessionLocal() as db:
-        # All completed/in-progress sessions for this child
-        sessions = (await db.scalars(
-            select(LessonSession)
-            .where(LessonSession.child_id == cid)
-            .order_by(LessonSession.created_at.asc())
-        )).all()
-
-        # All completed homeworks for this child
-        homeworks = (await db.scalars(
-            select(HomeworkAssignment)
-            .where(HomeworkAssignment.child_id == cid)
-        )).all()
-
-        # All entitlements for this child
-        entitlements = (await db.scalars(
-            select(LessonEntitlement)
-            .where(LessonEntitlement.child_id == cid)
-        )).all()
-
-        # Voice attempts for scores
-        session_ids = [s.id for s in sessions]
-        voices = []
-        if session_ids:
-            voices = (await db.scalars(
-                select(VoiceAttempt)
-                .where(VoiceAttempt.lesson_session_id.in_(session_ids))
-            )).all()
-
-    # Map entitlements by (course_id, lesson_id)
-    ent_map = {(e.course_id, e.lesson_id): e for e in entitlements}
-    hw_map = {h.lesson_id: h for h in homeworks}
-
-    # Total completed sessions count & completed session dates
-    completed_sessions = [s for s in sessions if s.status == 'COMPLETED']
-    activity_dates = sorted(list({
-        (s.completed_at or s.created_at).strftime('%Y-%m-%d')
-        for s in completed_sessions if (s.completed_at or s.created_at)
-    }))
-
-    # Calculate streak (consecutive days ending today or yesterday)
-    streak = 0
-    if activity_dates:
-        today = datetime.utcnow().date()
-        date_set = {datetime.strptime(d, '%Y-%m-%d').date() for d in activity_dates}
-        check_date = today
-        if check_date not in date_set:
-            check_date = today - timedelta(days=1)
-        while check_date in date_set:
-            streak += 1
-            check_date -= timedelta(days=1)
-
-    # Average scores if available
-    avg_scores = {}
-    if voices:
-        scored_v = [v for v in voices if v.fluency_score is not None]
-        if scored_v:
-            avg_scores['fluency'] = round(sum(v.fluency_score for v in scored_v) / len(scored_v), 2)
-        scored_p = [v for v in voices if v.pronunciation_score is not None]
-        if scored_p:
-            avg_scores['pronunciation'] = round(sum(v.pronunciation_score for v in scored_p) / len(scored_p), 2)
-
-    total_lessons_catalog = 0
-    total_lessons_completed_unique = 0
-
-    course_stats = []
-    for c in courses:
-        c_lessons = []
-        c_completed_unique = 0
-        all_lids = list(c.lesson_ids)
-        
-        # Determine status of each lesson in this course
-        found_current = False
-        for lid in all_lids:
-            try:
-                ldata = _load_mobile_lesson(lid)
-            except Exception:
-                ldata = {}
-            ltitle = ldata.get('title') or lid
-            
-            ent = ent_map.get((c.course_id, lid))
-            # Number of times this child completed this lesson
-            lesson_sessions = [s for s in completed_sessions if s.lesson_id == lid]
-            comp_count = max(len(lesson_sessions), int(ent.completed_runs or 0) if ent else 0)
-            
-            is_comp = comp_count > 0
-            if is_comp:
-                c_completed_unique += 1
-                status = 'COMPLETED'  # Пройден
-            elif not found_current:
-                status = 'CURRENT'    # Текущий
-                found_current = True
-            else:
-                status = 'NEXT'       # Следующий
-
-            hw_record = hw_map.get(lid)
-            hw_def = load_homework(lid)
-            has_hw = bool(hw_def and hw_def.enabled and len(hw_def.slides) > 0)
-            hw_done = bool(hw_record and hw_record.status == 'COMPLETED')
-
-            # Last date of lesson
-            last_date = None
-            if lesson_sessions:
-                dt = lesson_sessions[-1].completed_at or lesson_sessions[-1].created_at
-                if dt:
-                    last_date = dt.strftime('%d.%m.%Y')
-
-            c_lessons.append({
-                'lesson_id': lid,
-                'title': ltitle,
-                'status': status,
-                'completions_count': comp_count,
-                'last_completed_at': last_date,
-                'has_homework': has_hw,
-                'homework_completed': hw_done,
-            })
-
-        total_cnt = len(all_lids)
-        total_lessons_catalog += total_cnt
-        total_lessons_completed_unique += c_completed_unique
-        pct = round((c_completed_unique / total_cnt * 100) if total_cnt > 0 else 0)
-
-        course_stats.append({
-            'course_id': c.course_id,
-            'title': c.title,
-            'description': c.description or '',
-            'total_lessons': total_cnt,
-            'completed_lessons': c_completed_unique,
-            'progress_percent': pct,
-            'lessons': c_lessons,
-        })
-
-    total_homeworks_done = len([h for h in homeworks if h.status == 'COMPLETED'])
-    total_pct = round((total_lessons_completed_unique / total_lessons_catalog * 100) if total_lessons_catalog > 0 else 0)
-
-    return web.json_response({
-        'ok': True,
-        'child': {
-            'id': cid,
-            'name': child.display_name,
-            'target_language': child.target_language or 'ru',
-            'native_language': child.native_language or 'ru',
-            'language_level': child.language_level or 'PRE_A1',
-        },
-        'summary': {
-            'total_sessions_count': len(completed_sessions),
-            'unique_lessons_completed': total_lessons_completed_unique,
-            'total_lessons_catalog': total_lessons_catalog,
-            'overall_progress_percent': total_pct,
-            'homeworks_completed_count': total_homeworks_done,
-            'current_streak_days': streak,
-            'activity_dates': activity_dates,
-            'scores': avg_scores,
-        },
-        'courses': course_stats,
-    })
-
-
-async def mobile_courses(request: web.Request) -> web.Response:
-    from app.services.course_catalog import list_courses
-    from app.services.qa_access import is_owner_parent
-    is_owner = False
-    try:
-        p = await _parent(request)
-        is_owner = is_owner_parent(p)
-    except Exception:
-        pass
-    courses = list_courses(for_client=not is_owner)
-    return web.json_response({'ok': True, 'courses': [c.model_dump() for c in courses]})
-
 def register_mobile_routes(app:web.Application):
-    app.router.add_post('/api/mobile/register',register);app.router.add_post('/api/mobile/verify-email',verify_email);app.router.add_post('/api/mobile/resend-verification',resend_verification);app.router.add_post('/api/mobile/login',login);app.router.add_post('/api/mobile/password-reset/request',request_password_reset);app.router.add_post('/api/mobile/password-reset/confirm',confirm_password_reset);app.router.add_get('/api/mobile/bootstrap',bootstrap);app.router.add_post('/api/mobile/children',create_child);app.router.add_get('/api/mobile/child/{child_id}/lessons',lesson_catalog);app.router.add_get('/api/mobile/child/{child_id}/progress',child_progress);app.router.add_get('/api/mobile/lesson/{lesson_id}/visual/{filename}',lesson_visual);app.router.add_get('/api/mobile/lesson/{lesson_id}/media/{filename}',lesson_media);app.router.add_get('/api/mobile/lesson/{lesson_id}',lesson);app.router.add_get('/api/mobile/lesson/{lesson_id}/homework',mobile_get_homework);app.router.add_get('/api/mobile/courses',mobile_courses);app.router.add_post('/api/mobile/child/{child_id}/homework/{lesson_id}/submit',mobile_submit_homework)
-    app.router.add_get('/api/mobile/hero/file/{child_id}/{character_id}',hero_file);app.router.add_post('/api/mobile/child/{child_id}/hero/preset',hero_preset);app.router.add_post('/api/mobile/child/{child_id}/hero/upload',hero_upload);app.router.add_patch('/api/mobile/child/{child_id}/hero/{character_id}/geometry',hero_geometry_confirm)
-    app.router.add_get('/api/mobile/child/{child_id}/subscription',subscription_overview);app.router.add_post('/api/mobile/child/{child_id}/promo/validate',mobile_validate_promo);app.router.add_post('/api/mobile/child/{child_id}/subscription/checkout',subscription_checkout);app.router.add_post('/api/mobile/child/{child_id}/subscription/verify',subscription_verify);app.router.add_get('/api/mobile/plans',mobile_list_plans);app.router.add_get('/api/mobile/legal/documents',mobile_get_legal_documents);app.router.add_post('/api/mobile/auth/register-full',register_full);app.router.add_post('/api/mobile/auth/verify-and-onboard',verify_and_onboard);app.router.add_post('/api/mobile/child/{child_id}/subscription/cancel',subscription_cancel);app.router.add_get('/api/mobile/child/{child_id}/payment/history',payment_history);app.router.add_post('/api/mobile/child/{child_id}/subscription/plan-change/preview',subscription_plan_change_preview);app.router.add_post('/api/mobile/child/{child_id}/subscription/plan-change',subscription_plan_change_confirm);app.router.add_delete('/api/mobile/child/{child_id}/subscription/plan-change',subscription_plan_change_cancel)
-    app.router.add_post('/api/mobile/session/start',session_start);app.router.add_post('/api/mobile/session/{session_id}/progress',session_progress);app.router.add_post('/api/mobile/session/{session_id}/voice',voice);app.router.add_get('/api/mobile/session/{session_id}/voice/{phrase_id}',current_voice_take);app.router.add_post('/api/mobile/session/{session_id}/interactive',interactive);app.router.add_post('/api/mobile/session/{session_id}/complete',complete);app.router.add_get('/api/mobile/session/{session_id}/movie',movie_status);app.router.add_post('/api/mobile/session/{session_id}/movie/retry',retry_movie)
-    app.router.add_get('/api/mobile/tts',tts);app.router.add_get('/api/mobile/tts.ogg',tts);app.router.add_post('/api/mobile/translate',translate);app.router.add_patch('/api/mobile/child/{child_id}/language',update_child_language);app.router.add_get('/api/mobile/child/{child_id}/movies',movies);app.router.add_route('*','/api/mobile/movie/{child_id}/{filename}',movie_file)
+    app.router.add_post('/api/mobile/register',register);app.router.add_post('/api/mobile/verify-email',verify_email);app.router.add_post('/api/mobile/resend-verification',resend_verification);app.router.add_post('/api/mobile/login',login);app.router.add_post('/api/mobile/password-reset/request',request_password_reset);app.router.add_post('/api/mobile/password-reset/confirm',confirm_password_reset);app.router.add_get('/api/mobile/bootstrap',bootstrap);app.router.add_get('/api/mobile/lesson/{lesson_id}',lesson)
+    app.router.add_get('/api/mobile/hero/file/{child_id}/{character_id}',hero_file);app.router.add_post('/api/mobile/child/{child_id}/hero/preset',hero_preset);app.router.add_post('/api/mobile/child/{child_id}/hero/upload',hero_upload)
+    app.router.add_post('/api/mobile/session/start',session_start);app.router.add_post('/api/mobile/session/{session_id}/voice',voice);app.router.add_post('/api/mobile/session/{session_id}/interactive',interactive);app.router.add_post('/api/mobile/session/{session_id}/complete',complete)
+    app.router.add_get('/api/mobile/tts',tts);app.router.add_post('/api/mobile/translate',translate);app.router.add_patch('/api/mobile/child/{child_id}/language',update_child_language);app.router.add_get('/api/mobile/child/{child_id}/movies',movies);app.router.add_get('/api/mobile/movie/{child_id}/{filename}',movie_file)
+    app.router.add_get('/api/mobile/child/{child_id}/homework',child_homework_list);app.router.add_post('/api/mobile/child/{child_id}/homework/{homework_id}/submit',child_homework_submit);app.router.add_route('OPTIONS','/api/mobile/movie/{child_id}/{filename}',movie_file)
