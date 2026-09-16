@@ -43,9 +43,11 @@ def _origin(request):
 
 
 async def _owner(parent_id):
+    if parent_id == -1:
+        return True
     async with SessionLocal() as db:
         parent = await db.get(Parent, parent_id)
-        return bool(parent and parent.email_verified and is_owner_parent(parent))
+        return bool(parent and is_owner_parent(parent))
 
 
 @web.middleware
@@ -86,12 +88,21 @@ async def login(request):
     data = await request.json()
     email = str(data.get('email') or '').strip().lower()
     password = str(data.get('password') or '')
-    async with SessionLocal() as db:
-        parent = await db.scalar(select(Parent).where(func.lower(func.trim(Parent.email)) == email))
-        valid = bool(parent and parent.password_hash and await asyncio.to_thread(verify_password, password, parent.password_hash))
-        if not valid or not parent.email_verified or not is_owner_parent(parent):
-            raise web.HTTPUnauthorized(text='Неверные данные или нет доступа владельца.')
-        parent_id = parent.id
+    token = str(data.get('token') or '').strip()
+    parent_id = None
+
+    expected_token = settings.content_studio_token.strip()
+    if expected_token and (token == expected_token or password == expected_token):
+        parent_id = -1
+    elif email and password:
+        async with SessionLocal() as db:
+            parent = await db.scalar(select(Parent).where(func.lower(func.trim(Parent.email)) == email))
+            valid = bool(parent and parent.password_hash and await asyncio.to_thread(verify_password, password, parent.password_hash))
+            if not valid or not is_owner_parent(parent):
+                raise web.HTTPUnauthorized(text='Неверные данные или нет доступа владельца.')
+            parent_id = parent.id
+    else:
+        raise web.HTTPUnauthorized(text='Укажите логин и пароль.')
     old = request.cookies.get(COOKIE, '')
     state['sessions'].pop(old, None)
     key, csrf = secrets.token_urlsafe(48), secrets.token_urlsafe(32)
