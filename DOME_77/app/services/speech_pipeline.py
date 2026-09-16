@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import math
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -9,8 +12,67 @@ import httpx
 
 from app.core.config import settings
 from app.core.i18n import language_name
+from app.services.conversational_tutor import TutorTurn, adaptive_follow_up_policy, build_assessed_turn
+from app.services.lesson_voice_context import referenced_items_are_visible
 
 log = logging.getLogger("dome.speech")
+
+_NON_SPEECH_TRANSCRIPTS = {
+    "music", "applause", "silence", "background noise", "noise",
+    "музыка", "тишина", "шум", "аплодисменты",
+    "uh", "um", "erm", "hmm", "mm", "ah", "eh",
+    "ээ", "эм", "мм", "м-м", "аа", "а-а",
+}
+
+
+def is_non_speech_transcript(value: str) -> bool:
+    """Identify ASR placeholders/garbage without rejecting valid one-word answers."""
+    text = str(value or "").strip().lower()
+    if not text:
+        return True
+    normalized = re.sub(r"[\[\](){}<>♪♫.,!?…:;\-—_]+", " ", text)
+    normalized = " ".join(normalized.split())
+    if not normalized or normalized in _NON_SPEECH_TRANSCRIPTS:
+        return True
+    if any(marker in normalized for marker in ("subtitles by", "thanks for watching", "продолжение следует")):
+        return True
+    compact = re.sub(r"\W+", "", normalized, flags=re.UNICODE)
+    return bool(compact) and len(set(compact)) == 1 and len(compact) >= 3
+
+
+def _transcription_confidence(payload: dict) -> float:
+    """Derive confidence from provider evidence instead of inventing a score."""
+    token_logprobs: list[float] = []
+    for item in payload.get("logprobs") or []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            token_logprobs.append(float(item["logprob"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+    if token_logprobs:
+        return max(0.0, min(1.0, math.exp(sum(token_logprobs) / len(token_logprobs))))
+
+    weighted_logprob = 0.0
+    total_weight = 0.0
+    no_speech_probability = 0.0
+    for segment in payload.get("segments") or []:
+        if not isinstance(segment, dict):
+            continue
+        try:
+            start = float(segment.get("start", 0.0))
+            end = float(segment.get("end", start))
+            weight = max(0.05, end - start)
+            weighted_logprob += float(segment["avg_logprob"]) * weight
+            total_weight += weight
+            no_speech_probability = max(no_speech_probability, float(segment.get("no_speech_prob", 0.0)))
+        except (KeyError, TypeError, ValueError):
+            continue
+    if total_weight:
+        confidence = math.exp(weighted_logprob / total_weight) * (1.0 - no_speech_probability)
+        return max(0.0, min(1.0, confidence))
+    # Missing confidence evidence is unsafe: semantic grading must not receive it.
+    return 0.0
 
 
 @dataclass
@@ -26,6 +88,7 @@ class SpeechAssessment:
     corrected_target: str = ""
     response_target: str = ""
     response_native: str = ""
+    tutor_turn: TutorTurn | None = None
 
     def __post_init__(self):
         self.grammar_errors = self.grammar_errors or []
@@ -35,6 +98,10 @@ class SpeechAssessment:
 async def _transcribe_with_model(wav_path: Path, model: str, language: str = "", prompt: str = "") -> tuple[str, str, float]:
     headers = {"Authorization": f"Bearer {settings.openai_api_key}"}
     data = {"model": model, "response_format": "json"}
+    if model.startswith("gpt-4o"):
+        data["include[]"] = "logprobs"
+    elif model == "whisper-1":
+        data["response_format"] = "verbose_json"
     if language:
         data["language"] = language
     if prompt:
@@ -53,7 +120,7 @@ async def _transcribe_with_model(wav_path: Path, model: str, language: str = "",
     payload = response.json()
     text = str(payload.get("text", "")).strip()
     language = str(payload.get("language", "")).strip().lower()
-    return text, language, (0.9 if text else 0.0)
+    return text, language, (_transcription_confidence(payload) if text else 0.0)
 
 
 async def transcribe_audio(wav_path: Path, target_language: str = "", native_language: str = "", goal: str = "") -> tuple[str, str, float]:
@@ -67,27 +134,21 @@ async def transcribe_audio(wav_path: Path, target_language: str = "", native_lan
         return "", "", 0.0
     preferred = settings.openai_transcription_model or "gpt-4o-mini-transcribe"
     models = [preferred] + ([] if preferred == "whisper-1" else ["whisper-1"])
-    candidates: list[tuple[str, str, float, int]] = []
     prompt = f"A child is answering this lesson prompt: {goal}. Transcribe exactly; do not invent missing words."
     for model in models:
-        # Automatic language detection is the primary path.
+        # Automatic detection is the only normal request. Forced-language
+        # requests are concurrent fallbacks, so one voice take is not sent to
+        # the transcription provider three times in sequence.
         text, detected, confidence = await _transcribe_with_model(wav_path, model, "", prompt)
         if text:
-            candidates.append((text, detected, confidence, 3))
-        # Language hints are fallback candidates, not immediate winners.
-        for lang, priority in ((target_language, 2), (native_language, 1)):
-            if not lang:
-                continue
-            text, detected, confidence = await _transcribe_with_model(wav_path, model, lang, prompt)
-            if text:
-                candidates.append((text, detected or lang, confidence, priority))
+            return text.strip(), detected.strip().lower(), confidence
+        languages=list(dict.fromkeys(lang for lang in (target_language,native_language) if lang))
+        fallbacks=await asyncio.gather(*[_transcribe_with_model(wav_path,model,lang,prompt) for lang in languages])
+        candidates=[(value,lang) for value,lang in zip(fallbacks,languages) if value[0]]
         if candidates:
-            break
-    if not candidates:
-        return "", "", 0.0
-    # Prefer automatic detection, then a reasonably informative transcript.
-    text, detected, confidence, _ = max(candidates, key=lambda x: (x[3], min(len(x[0]), 120)))
-    return text.strip(), detected.strip().lower(), confidence
+            (text,detected,confidence),hint=max(candidates,key=lambda item:min(len(item[0][0]),120))
+            return text.strip(),(detected or hint).strip().lower(),confidence
+    return "", "", 0.0
 
 
 
@@ -131,22 +192,44 @@ def _safe_json(text: str) -> dict:
 
 async def _evaluate_with_chat(prompt: dict) -> dict | None:
     instructions = (
-        "You are an encouraging, warm child language companion in DOME conversational learning. "
-        "Evaluate a short spoken answer and engage in natural dialogue. "
+        "You are Mila, a warm and caring female language tutor for children aged 3-12. "
+        "You speak and refer to yourself using feminine grammatical forms (in Russian: я рада, я готова, я слушаю, etc.). "
+        "Your personality is encouraging, playful, and patient — never robotic. "
+        "Evaluate a short spoken answer. "
         "Return valid JSON only with keys: detected_language_code, semantic_match, grammar_errors, "
-        "pronunciation_errors, feedback_native, corrected_target, response_target, response_native, decision, task_complete. "
+        "pronunciation_errors, feedback_native, corrected_target, reaction_target, response_native, "
+        "follow_up_target, model_answer_target, native_hint, referenced_item_ids, emotion, decision. "
         "decision must be CORRECT, RETRY, WRONG_LANGUAGE, or TECHNICAL_UNCERTAINTY. "
-        "task_complete is a boolean: true when the child expressed an idea addressing the goal, false if unintelligible or completely off-topic. "
-        "Do not punish likely transcription errors. Accept correct close paraphrases and creative ideas. "
-        "Preserve the child's chosen meaning and nouns: never replace cat with dog or one chosen animal/object with another. "
-        "Conversational rules: "
-        "1. response_target must sound like a real human dialogue with a child, not a rigid test or robot script. "
-        "2. React naturally and semantically to what the child said: praise their specific idea, support their thought, or ask a brief friendly follow-up question. "
-        "3. If the child answers in their native language, gently help them phrase it in the target language. "
-        "4. If the child is struggling, simplify and offer a friendly hint. "
-        "5. Keep responses short, playful, and age-appropriate (1-2 sentences). "
-        "corrected_target must be a clean, natural phrase in the target language representing the child's intended thought. "
-        "response_native may briefly provide encouragement or translation in the child's native language."
+        "Do not punish likely transcription errors. Accept correct close paraphrases. Preserve the child's chosen meaning and nouns: never replace cat with dog or one chosen animal/object with another. "
+        "reaction_target must react to the ACTUAL meaning of this answer with genuine delight, curiosity, surprise, support, or a gentle correction. "
+        "Never output an interchangeable Nice/Great/Good regardless of the answer, and never praise a wrong or empty answer. "
+        "Do not mechanically repeat or paraphrase what the child just said when it is already understandable. "
+        "follow_up_target must be empty unless dialogue_policy.allow_follow_up is true, the answer is correct, and follow-up slots remain. "
+        "When allowed, ask exactly one short, naturally connected question based on the child's answer. Never create an unrelated task. "
+        "When the child needs help, give one short usable example that directly answers the CURRENT goal. Never reuse nouns, animals, places, facts, or questions from another task. "
+        "pedagogical_intent is an immutable authored speech act. Never turn ask_person_question into answer_question, repeat, or say-the-answer. "
+        "For ask_person_question, evaluate whether the child ASKED the person a relevant question; corrected_target and model_answer_target must also be questions, never factual answers. "
+        "Follow pedagogical_instruction only inside the current goal and safety constraints. At independent_attempt do not reveal an authored model answer before evaluating the child's idea. "
+        "When open_question_first is true, evaluate the child's independent idea before offering choices or a model. "
+        "Use authored_model_examples only for scaffolding/correction, as meaning-equivalent possibilities rather than exact-string requirements; when examples_allowed is false, do not reveal them. "
+        "Use the child's name only occasionally when a name is provided, never in every reply. "
+        "At low difficulty accept one-word/very short answers. Never invite an extra reason, detail, comparison or dialogue unless the CURRENT goal explicitly requests it. "
+        "For PRE_A1 use no more than two very short sentences and at most one question in the whole turn. "
+        "corrected_target and model_answer_target must be valid direct answers to the CURRENT goal, never praise. "
+        "When runtime_context.visible_items is present, referenced_item_ids must list every visible item ID referred to in your response. "
+        "Never mention, request, recommend, correct toward, or invent an item absent from runtime_context.visible_items. "
+        "When selection_policy is child_choice, the child's selected_items are valid by definition: there is no hidden correct set. "
+        "If the child answers in native_language when target_language was required, set decision=WRONG_LANGUAGE, set reaction_target='', and provide a warm, encouraging hint in response_native/native_hint asking the child to repeat in target_language. Do not mark as CORRECT when spoken in native_language or wrong language. "
+        "child_gender indicates if the child is a boy or girl. Use grammatically appropriate forms in target and native languages (e.g. in Russian: молодец/умница, past tense verbs like сказал/сказала, выбрал/выбрала). "
+        "dialogue_history contains recent turns of conversation in this lesson. Maintain conversational continuity and do not repeat previous questions. "
+        "response_native/native_hint are brief and only needed for wrong-language, off-topic, confused, or explicitly requested progressive help. "
+        "emotion must be one of warm, happy, curious, surprised, encouraging, gentle_correction. "
+        "When runtime_context.visual_metadata is present it describes the REAL visible object in the image. "
+        "If the child states a clearly wrong factual attribute about that object (e.g. wrong colour, wrong animal species, wrong quantity) "
+        "set decision=RETRY, include a gentle correction in reaction_target (e.g. 'The lion is beautiful, but it isn't red — it's yellow/brown. Try again!'), "
+        "and set corrected_target to the factually correct version of their sentence. "
+        "Only apply this rule when the child's claim directly contradicts a fact stated in visual_metadata. "
+        "Do not invent visual_metadata facts or apply corrections when no contradiction is present."
     )
     headers = {"Authorization": f"Bearer {settings.openai_api_key}", "Content-Type": "application/json"}
     models = [settings.openai_text_model or "gpt-4o-mini"]
@@ -182,21 +265,57 @@ async def assess_speech(
     accepted_meaning: list[str] | None,
     attempt_number: int,
     child_name: str = "",
+    child_gender: str = "boy",
     working_difficulty: float = 0.15,
+    language_level: str = "PRE_A1",
+    allow_follow_up: bool = False,
+    max_follow_ups: int = 0,
+    follow_up_count: int = 0,
+    conversation_goal: str = "",
+    runtime_context: dict | None = None,
+    pedagogical_intent: str = "",
+    pedagogical_instruction: str = "",
+    target_meaning: str = "",
+    model_examples: list[str] | None = None,
+    scaffold_stage: str = "independent_attempt",
+    open_question_first: bool = True,
+    examples_allowed: bool = True,
+    dialogue_history: list[dict] | None = None,
 ) -> SpeechAssessment:
     transcript, detected, confidence = await transcribe_audio(wav_path, target_language, native_language, goal)
-    if not transcript or confidence < 0.35:
-        return SpeechAssessment(transcript=transcript, detected_language=detected, confidence=confidence)
+    if is_non_speech_transcript(transcript) or confidence < 0.35:
+        return SpeechAssessment(
+            transcript=transcript,
+            detected_language=detected,
+            confidence=confidence,
+            # Acoustic silence is rejected before this function. Empty/weak
+            # ASR after real speech is technical uncertainty, never "I did not
+            # hear you" when a transcript or audible voice exists.
+            status="TECHNICAL_UNCERTAINTY",
+        )
 
     if not settings.openai_api_key:
+        # Do not emit an English sentence when the active target language is
+        # something else. The caller can complete this accepted best effort
+        # without a tutor utterance until the optional AI service is available.
         return SpeechAssessment(
             transcript=transcript,
             detected_language=detected,
             confidence=confidence,
             semantic_match=0.5,
             status="ACCEPTED_BEST_ATTEMPT",
-            response_target="Good. Let's continue.",
+            response_target="",
+            tutor_turn=TutorTurn(complete=True, reason="offline_fallback"),
         )
+
+    follow_up_candidate, bounded_follow_ups, follow_up_reason = adaptive_follow_up_policy(
+        authored_enabled=allow_follow_up,
+        authored_max=max_follow_ups,
+        language_level=language_level,
+        attempt_number=attempt_number,
+        transcript=transcript,
+        confidence=confidence,
+    )
 
     prompt = {
         "target_language": language_name(target_language),
@@ -206,20 +325,55 @@ async def assess_speech(
         "transcript": transcript,
         "transcription_detected_language": detected,
         "goal": goal,
+        "conversation_goal": conversation_goal or goal,
+        "pedagogical_intent": pedagogical_intent or "answer_question",
+        "pedagogical_instruction": pedagogical_instruction,
+        "target_meaning": target_meaning or goal,
+        "authored_model_examples": [str(value) for value in (model_examples or []) if str(value).strip()][:3] if examples_allowed else [],
+        "scaffold_stage": scaffold_stage,
+        "open_question_first": bool(open_question_first),
+        "examples_allowed": bool(examples_allowed),
+        "runtime_context": runtime_context or {},
         "accepted_meaning": accepted_meaning or [],
         "attempt_number": attempt_number,
         "child_name": child_name,
+        "child_gender": child_gender or "boy",
+        "dialogue_history": (dialogue_history or [])[-6:],
         "working_difficulty_0_to_1": max(0.0, min(1.0, float(working_difficulty or 0.15))),
+        "profile_language_level": language_level or "PRE_A1",
         "dialogue_policy": {
             "use_name_sparingly": True,
             "avoid_echo_if_answer_is_understandable": True,
             "offer_real_examples_when_helping": True,
-            "adapt_complexity_during_this_lesson": True
+            "adapt_complexity_during_this_lesson": True,
+            "allow_follow_up": follow_up_candidate,
+            "max_follow_ups": bounded_follow_ups,
+            "follow_up_count": max(0, int(follow_up_count)),
+            "remaining_follow_ups": max(0, bounded_follow_ups - int(follow_up_count)),
+            "pre_a1_max_questions_per_turn": 1,
+            "policy_reason": follow_up_reason,
         },
     }
     result = await _evaluate_with_chat(prompt)
     if not result:
         return SpeechAssessment(transcript=transcript, detected_language=detected, confidence=confidence)
+    if runtime_context and not referenced_items_are_visible(result, runtime_context):
+        log.error(
+            "MOBILE_VOICE_CONTEXT_REJECTED visible=%s referenced=%s",
+            [item.get("id") for item in runtime_context.get("visible_items") or []],
+            result.get("referenced_item_ids") or result.get("referenced_items"),
+        )
+        result = {
+            **result,
+            "decision": "RETRY",
+            "semantic_match": 0,
+            "reaction_target": "",
+            "follow_up_target": "",
+            "corrected_target": "",
+            "model_answer_target": "",
+            "response_native": "",
+            "native_hint": "",
+        }
 
     decision = str(result.get("decision", "TECHNICAL_UNCERTAINTY")).upper()
     status = {
@@ -228,16 +382,36 @@ async def assess_speech(
         "WRONG_LANGUAGE": "WRONG_LANGUAGE",
         "TECHNICAL_UNCERTAINTY": "TECHNICAL_UNCERTAINTY",
     }.get(decision, "TECHNICAL_UNCERTAINTY")
+    accepted = status.startswith("ACCEPTED")
+    semantic_match = _coerce_score(result.get("semantic_match"), 0.0)
+    follow_up_allowed, bounded_follow_ups, _ = adaptive_follow_up_policy(
+        authored_enabled=allow_follow_up,
+        authored_max=max_follow_ups,
+        language_level=language_level,
+        attempt_number=attempt_number,
+        transcript=transcript,
+        confidence=confidence,
+        semantic_match=semantic_match,
+    )
+    turn = build_assessed_turn(
+        result,
+        accepted=accepted,
+        allow_follow_up=follow_up_allowed,
+        follow_up_count=follow_up_count,
+        max_follow_ups=bounded_follow_ups,
+        answer_text=transcript,
+    )
     return SpeechAssessment(
         transcript=transcript,
         detected_language=str(result.get("detected_language_code") or detected),
         confidence=confidence,
         grammar_errors=list(result.get("grammar_errors") or []),
         pronunciation_errors=list(result.get("pronunciation_errors") or []),
-        semantic_match=_coerce_score(result.get("semantic_match"), 0.0),
+        semantic_match=semantic_match,
         status=status,
         feedback_native=str(result.get("feedback_native") or ""),
         corrected_target=str(result.get("corrected_target") or goal),
-        response_target=str(result.get("response_target") or ""),
+        response_target=turn.reaction_target,
         response_native=str(result.get("response_native") or ""),
+        tutor_turn=turn,
     )

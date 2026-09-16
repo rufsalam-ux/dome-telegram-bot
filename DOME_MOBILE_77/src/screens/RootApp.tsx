@@ -1,6 +1,7 @@
 import React,{useEffect,useRef,useState} from 'react';
-import {Alert,Image,ImageBackground,Pressable,ScrollView,Share,Text,useWindowDimensions,View} from 'react-native';
+import {Alert,AppState,AppStateStatus,Image,ImageBackground,Pressable,ScrollView,Share,Text,useWindowDimensions,View} from 'react-native';
 import {useSafeAreaInsets} from 'react-native-safe-area-context';
+import {syncPublishedContent} from '../engine/contentSync';
 import {Body,Button,Card,H1,H2} from '../components/Ui';
 import {MoviePlayer} from '../components/MoviePlayer';
 import {useAppStore} from '../store/AppStore';
@@ -98,6 +99,14 @@ export function RootApp({onBootStage,retryCount,onRetryReceived}:RootAppProps){
   const visibleChildren=s.children.filter(child=>Boolean(child?.id&&child?.name?.trim()));
 
   useEffect(()=>{
+    void syncPublishedContent().catch(()=>{});
+    const sub=AppState.addEventListener('change',(nextState:AppStateStatus)=>{
+      if(nextState==='active')void syncPublishedContent().catch(()=>{});
+    });
+    return ()=>sub.remove();
+  },[]);
+
+  useEffect(()=>{
     let active=true;
     setSessionReady(false);setStartupError(null);
     (async()=>{
@@ -150,7 +159,7 @@ export function RootApp({onBootStage,retryCount,onRetryReceived}:RootAppProps){
   useEffect(()=>{if(s.screen!=='movies'||!s.selectedChild)return;let active=true;let timer:any;const poll=async()=>{console.info('MOVIE_MOBILE_POLL_START',{child_id:s.selectedChild!.id,source:'MOVIE_LIBRARY'});try{const result=await listMovies(s.selectedChild!.id);if(!active)return;const items=(result.movies||[]).map(normalizedListedMovie);console.info('MOVIE_MOBILE_POLL_RESPONSE',{child_id:s.selectedChild!.id,count:items.length,statuses:items.map((movie:any)=>({session_id:movie.session_id,run_id:movie.run_id,status:movie.status,job_id:movie.job_id,attempt_id:movie.attempt_id,movie_url:movie.movie_url}))});for(const movie of items.filter((item:any)=>MOVIE_SUCCESS_STATES.has(item.status)&&item.movie_url)){console.info('MOVIE_MOBILE_READY_RECEIVED',movieIdentity(movie));console.info('MOVIE_MOBILE_URL_SET',movieIdentity(movie))}setMovies(items);setOpenedMovie((current:any)=>{if(current){const updated=items.find((item:any)=>item.session_id===current.session_id);if(updated?.movie_url)return updated}return items.find((item:any)=>MOVIE_SUCCESS_STATES.has(item.status)&&item.movie_url)||null});if(items.some((item:any)=>MOVIE_ACTIVE_STATES.has(item.status)))timer=setTimeout(poll,2500)}catch(error:any){console.warn('MOVIE_MOBILE_POLL_RESPONSE',{child_id:s.selectedChild!.id,status:'NETWORK_ERROR',error:String(error?.message||error)});if(active)timer=setTimeout(poll,4000)}};void poll();return()=>{active=false;if(timer)clearTimeout(timer)}},[s.screen,s.selectedChild?.id,movieReloadNonce]);
   const isOwnerEmail=(email?:string|null)=>String(email||'').trim().toLowerCase()==='krisriskrisris@gmail.com';
   const applyOwnerBypass=(rawItems:any[],ownerAccount:boolean)=>ownerAccount?rawItems.map((item:any)=>({...item,available:true,max_completed_runs:999999,is_owner:true})):rawItems;
-  useEffect(()=>{let active=true;const child=s.selectedChild;if(!child){setLessons([]);setActiveLessonId('');return}setLessonsLoading(true);setLessonsError('');const ownerAccount=isOwnerEmail(s.parent?.email)||Boolean(s.parent?.isOwner);void listLessons(child.id).then(data=>{if(!active)return;const raw=Array.isArray(data?.lessons)?data.lessons:[];const filtered=raw.filter((item:any)=>(item.course_id||'conversation')==='conversation');const items=applyOwnerBypass(filtered,ownerAccount);setLessons(items);const first=items.find((item:any)=>item.available&&item.resume_step!==null)||items.find((item:any)=>item.available);setActiveLessonId(current=>items.some((item:any)=>item.lesson_id===current&&item.available)?current:String(first?.lesson_id||''))}).catch(error=>{if(active&&!isUnauthorizedError(error)){setLessons([]);setActiveLessonId('');setLessonsError(error.message||'Не удалось загрузить уроки')}}).finally(()=>{if(active)setLessonsLoading(false)});return()=>{active=false}},[s.selectedChild?.id,catalogReloadNonce,s.parent?.email,s.parent?.isOwner]);
+  useEffect(()=>{let active=true;const child=s.selectedChild;if(!child){setLessons([]);setActiveLessonId('');return}setLessonsLoading(true);setLessonsError('');const ownerAccount=isOwnerEmail(s.parent?.email)||Boolean(s.parent?.isOwner);const courseTarget=child.courseId||'conversation';void listLessons(child.id).then(data=>{if(!active)return;const raw=Array.isArray(data?.lessons)?data.lessons:[];const filtered=raw.filter((item:any)=>(item.course_id||'conversation')===courseTarget);const items=applyOwnerBypass(filtered,ownerAccount);setLessons(items);const first=items.find((item:any)=>item.available&&item.resume_step!==null)||items.find((item:any)=>item.available);setActiveLessonId(current=>items.some((item:any)=>item.lesson_id===current&&item.available)?current:String(first?.lesson_id||''))}).catch(error=>{if(active&&!isUnauthorizedError(error)){setLessons([]);setActiveLessonId('');setLessonsError(error.message||'Не удалось загрузить уроки')}}).finally(()=>{if(active)setLessonsLoading(false)});return()=>{active=false}},[s.selectedChild?.id,catalogReloadNonce,s.parent?.email,s.parent?.isOwner]);
   const openLesson=(lessonId:string)=>{setActiveLessonId(lessonId);s.setScreen('lesson')};
   const retryListedMovie=async(movie:any)=>{
     if(!MOVIE_RETRY_STATES.has(String(movie.status||'')))return;
