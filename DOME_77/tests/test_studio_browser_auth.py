@@ -40,6 +40,8 @@ async def test_owner_cookie_csrf_logout_and_non_owner_denial(monkeypatch):
         assert bad.status == 401
         foreign = await client.post('/api/studio/auth/login', headers={'Origin':'https://evil.example'}, json={})
         assert foreign.status == 403
+        railway_foreign = await client.post('/api/studio/auth/login', headers={'Origin':'https://unrelated.up.railway.app'}, json={})
+        assert railway_foreign.status == 403
         response = await client.post('/api/studio/auth/login', headers={'Origin':origin}, json={'email':' KRISRISKRISRIS@gmail.com ','password':'test-secret'})
         assert response.status == 200
         csrf = (await response.json())['csrf']

@@ -34,10 +34,6 @@ def _origin(request):
     configured = urlsplit(settings.effective_webapp_base_url)
     expected = {f'{configured.scheme}://{configured.netloc}'} if configured.netloc else set()
     expected.add(f'{request.scheme}://{request.host}')
-    origin_parsed = urlsplit(origin)
-    host = origin_parsed.netloc.split(':')[0].lower()
-    if host.endswith('bilingvadom.com') or host.endswith('railway.app') or host in ('localhost', '127.0.0.1'):
-        return
     if origin not in expected:
         raise web.HTTPForbidden(text='Запрос должен выполняться из самой админки.')
 
