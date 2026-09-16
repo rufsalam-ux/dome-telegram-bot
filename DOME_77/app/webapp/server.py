@@ -317,9 +317,17 @@ async def paypal_webhook(request:web.Request)->web.Response:
             return web.json_response({'received':True,'duplicate':True})
         try:
             from app.services.payment_lifecycle import apply_normalized_event
-            await apply_normalized_event(db,ev); await db.commit()
+            sub = await apply_normalized_event(db,ev); await db.commit()
         except Exception:
             await db.rollback(); raise
+        # Auto-release lessons immediately after successful payment so the user
+        # does not have to open the app for content to become available.
+        if ev.event_type in {'PAYMENT_SUCCEEDED','SUBSCRIPTION_ACTIVE'} and ev.child_id and ev.course_id:
+            try:
+                from app.services.subscription_release import release_due_lessons
+                await release_due_lessons(ev.child_id, ev.course_id)
+            except Exception:
+                pass  # Non-fatal: lessons will release on next catalog open
     return web.json_response({'received':True})
 
 
