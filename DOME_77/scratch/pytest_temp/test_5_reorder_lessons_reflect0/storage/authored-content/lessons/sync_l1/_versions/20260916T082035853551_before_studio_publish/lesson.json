@@ -1,0 +1,24 @@
+{
+  "lesson_id": "sync_l1",
+  "engine": "content_v1",
+  "course_id": "conversation",
+  "title": "Lesson 1",
+  "revision": 2,
+  "active": true,
+  "status": "published",
+  "import_status": "PUBLISHED",
+  "publication_status": "PUBLISHED",
+  "order": 10,
+  "slides": [
+    {
+      "slide_id": "start",
+      "order": 1,
+      "type": "passive",
+      "prompt": "Lesson 1"
+    }
+  ],
+  "required_phrases": [],
+  "schema_version": "2.1",
+  "max_completed_runs": 2,
+  "expires_after_months": 10
+}

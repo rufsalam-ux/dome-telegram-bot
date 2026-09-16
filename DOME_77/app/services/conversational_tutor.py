@@ -22,7 +22,9 @@ class TutorTurn:
     reaction_native: str = ""
     correction_target: str = ""
     follow_up_target: str = ""
+    follow_up_native: str = ""
     model_answer_target: str = ""
+    model_answer_native: str = ""
     native_hint: str = ""
     emotion: str = "warm"
     complete: bool = False
@@ -87,11 +89,12 @@ def adaptive_follow_up_policy(
     level_cap = 2 if level == "PRE_A1" else 3
     maximum = min(level_cap, max(0, int(authored_max)))
     words = re.findall(r"\w+", str(transcript or ""), flags=re.UNICODE)
+    is_strong_attempt = int(attempt_number) == 1 or (semantic_match is not None and float(semantic_match) >= 0.85)
     strong = (
         authored_enabled
         and maximum > 0
-        and int(attempt_number) == 1
-        and float(confidence or 0.0) >= 0.78
+        and is_strong_attempt
+        and float(confidence or 0.0) >= 0.75
         and len(words) >= (2 if level == "PRE_A1" else 3)
         and (semantic_match is None or float(semantic_match) >= 0.82)
     )
@@ -128,10 +131,12 @@ def build_assessed_turn(
         emotion = "warm"
     return TutorTurn(
         reaction_target=reaction,
-        reaction_native=_compact(result.get("response_native")),
+        reaction_native=_compact(result.get("reaction_native") or result.get("response_native")),
         correction_target=correction,
         follow_up_target=follow_up,
+        follow_up_native=_compact(result.get("follow_up_native")) if follow_up else "",
         model_answer_target=_compact(result.get("model_answer_target") or correction),
+        model_answer_native=_compact(result.get("model_answer_native")),
         native_hint=_compact(result.get("native_hint")),
         emotion=emotion,
         complete=accepted and not follow_up,

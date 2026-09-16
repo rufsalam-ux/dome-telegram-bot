@@ -88,6 +88,11 @@ class SpeechAssessment:
     corrected_target: str = ""
     response_target: str = ""
     response_native: str = ""
+    follow_up_target: str = ""
+    follow_up_native: str = ""
+    model_answer_target: str = ""
+    model_answer_native: str = ""
+    child_phrase_native: str = ""
     tutor_turn: TutorTurn | None = None
 
     def __post_init__(self):
@@ -197,9 +202,15 @@ async def _evaluate_with_chat(prompt: dict) -> dict | None:
         "Your personality is encouraging, playful, and patient — never robotic. "
         "Evaluate a short spoken answer. "
         "Return valid JSON only with keys: detected_language_code, semantic_match, grammar_errors, "
-        "pronunciation_errors, feedback_native, corrected_target, reaction_target, response_native, "
-        "follow_up_target, model_answer_target, native_hint, referenced_item_ids, emotion, decision. "
+        "pronunciation_errors, feedback_native, corrected_target, reaction_target, reaction_native, "
+        "response_native, follow_up_target, follow_up_native, model_answer_target, model_answer_native, "
+        "child_phrase_native, native_hint, referenced_item_ids, emotion, decision. "
         "decision must be CORRECT, RETRY, WRONG_LANGUAGE, or TECHNICAL_UNCERTAINTY. "
+        "Bilingual requirement: Provide native_language equivalents alongside target_language utterances in a single pass. "
+        "reaction_target is in target_language; reaction_native is its natural Russian/native_language counterpart. "
+        "follow_up_target is in target_language; follow_up_native is its natural translation in native_language. "
+        "model_answer_target is in target_language; model_answer_native is its natural translation in native_language. "
+        "child_phrase_native is the translation of the child's words into native_language. "
         "Do not punish likely transcription errors. Accept correct close paraphrases. Preserve the child's chosen meaning and nouns: never replace cat with dog or one chosen animal/object with another. "
         "reaction_target must react to the ACTUAL meaning of this answer with genuine delight, curiosity, surprise, support, or a gentle correction. "
         "Never output an interchangeable Nice/Great/Good regardless of the answer, and never praise a wrong or empty answer. "
@@ -412,6 +423,11 @@ async def assess_speech(
         feedback_native=str(result.get("feedback_native") or ""),
         corrected_target=str(result.get("corrected_target") or goal),
         response_target=turn.reaction_target,
-        response_native=str(result.get("response_native") or ""),
+        response_native=turn.reaction_native or str(result.get("reaction_native") or result.get("response_native") or ""),
+        follow_up_target=turn.follow_up_target,
+        follow_up_native=turn.follow_up_native or str(result.get("follow_up_native") or ""),
+        model_answer_target=turn.model_answer_target,
+        model_answer_native=turn.model_answer_native or str(result.get("model_answer_native") or ""),
+        child_phrase_native=str(result.get("child_phrase_native") or ""),
         tutor_turn=turn,
     )

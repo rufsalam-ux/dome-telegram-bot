@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "features": {
+    "custom_heroes": true,
+    "new_animation_engine": true,
+    "voice_homework": true
+  }
+}

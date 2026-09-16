@@ -1,0 +1,24 @@
+{
+  "lesson_id": "sync_test_01",
+  "engine": "content_v1",
+  "course_id": "conversation",
+  "title": "Original Title v1",
+  "revision": 2,
+  "active": true,
+  "status": "published",
+  "import_status": "PUBLISHED",
+  "publication_status": "PUBLISHED",
+  "order": 1,
+  "slides": [
+    {
+      "slide_id": "start",
+      "order": 1,
+      "type": "passive",
+      "prompt": "Original Title v1"
+    }
+  ],
+  "required_phrases": [],
+  "schema_version": "2.1",
+  "max_completed_runs": 2,
+  "expires_after_months": 10
+}

@@ -312,7 +312,6 @@ export function advanceAfterAssessment(response:{accepted?:boolean;advance_allow
 }
 
 export function hasCorrectiveFeedback(response:any):boolean{
-  if(response?.advance_allowed===true)return false;
   const turn=response?.tutor_turn||{};
   return response?.needs_retry===true||Boolean(turn.model_answer_target||turn.correction_target||response?.correction_target)&&response?.accepted!==true||String(response?.voice_feedback_state||'').toUpperCase()==='PARTIALLY_CORRECT';
 }

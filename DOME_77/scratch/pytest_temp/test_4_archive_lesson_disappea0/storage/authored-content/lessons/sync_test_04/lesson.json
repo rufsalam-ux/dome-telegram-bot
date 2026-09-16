@@ -1,0 +1,24 @@
+{
+  "lesson_id": "sync_test_04",
+  "engine": "content_v1",
+  "course_id": "conversation",
+  "title": "Lesson to Archive",
+  "revision": 3,
+  "active": false,
+  "status": "archived",
+  "import_status": "ARCHIVED",
+  "publication_status": "PUBLISHED",
+  "order": 1,
+  "slides": [
+    {
+      "slide_id": "start",
+      "order": 1,
+      "type": "passive",
+      "prompt": "Lesson to Archive"
+    }
+  ],
+  "required_phrases": [],
+  "schema_version": "2.1",
+  "max_completed_runs": 2,
+  "expires_after_months": 10
+}

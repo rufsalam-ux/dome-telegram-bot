@@ -152,28 +152,48 @@ async def _optional_translation(text:str,source_language:str,target_language:str
         return ''
 
 
-async def _selected_context_turn(context:dict,target_language:str,native_language:str,allow_follow_up:bool)->TutorTurn|None:
+async def _selected_context_turn(context:dict,target_language:str,native_language:str,allow_follow_up:bool,child_gender:str='boy')->TutorTurn|None:
     """Realize one selected-item response in both languages from one meaning."""
     selected=context.get('selected_items') or []
     if not selected:return None
     item=selected[-1];marker='__DOME_SELECTED_ITEM__'
     task_type=str(context.get('task_type') or '')
+    is_girl=str(child_gender or '').lower()=='girl'
     if task_type=='animal_compare':
-        reaction_source=f'I heard your idea about {marker}!';follow_source=''
+        en_reaction=f'I heard your idea about {marker}!'
+        ru_reaction=f'Я услышала твою мысль про {marker}!'
+        en_follow=''
+        ru_follow=''
     else:
-        reaction_source=f'You chose {marker}!';follow_source=f'Why did you choose {marker}?' if allow_follow_up else ''
+        en_reaction=f'You chose {marker}!'
+        ru_reaction=f'Ты выбрала {marker}!' if is_girl else f'Ты выбрал {marker}!'
+        en_follow=f'Why did you choose {marker}?' if allow_follow_up else ''
+        ru_follow=(f'Почему ты выбрала {marker}?' if is_girl else f'Почему ты выбрал {marker}?') if allow_follow_up else ''
+
+    target_reaction=ru_reaction if target_language=='ru' else (en_reaction if target_language=='en' else '')
+    native_reaction=ru_reaction if native_language=='ru' else (en_reaction if native_language=='en' else '')
+    target_follow=ru_follow if target_language=='ru' else (en_follow if target_language=='en' else '')
+    native_follow=ru_follow if native_language=='ru' else (en_follow if native_language=='en' else '')
+
+    pending_ops=[]
+    if not target_reaction:pending_ops.append(('target_reaction',_optional_translation(en_reaction,'en',target_language,'selected_reaction_target')))
+    if not native_reaction:pending_ops.append(('native_reaction',_optional_translation(en_reaction,'en',native_language,'selected_reaction_native')))
+    if en_follow and not target_follow:pending_ops.append(('target_follow',_optional_translation(en_follow,'en',target_language,'selected_followup_target')))
+    if en_follow and not native_follow:pending_ops.append(('native_follow',_optional_translation(en_follow,'en',native_language,'selected_followup_native')))
+    if pending_ops:
+        res_list=await asyncio.gather(*(op[1] for op in pending_ops))
+        for (key,_),val in zip(pending_ops,res_list):
+            if key=='target_reaction':target_reaction=val or en_reaction
+            elif key=='native_reaction':native_reaction=val or ru_reaction
+            elif key=='target_follow':target_follow=val or en_follow
+            elif key=='native_follow':native_follow=val or ru_follow
+
     target_label=str(item.get('label_target') or item.get('id') or 'item')
     native_label=str(item.get('label_native') or item.get('id') or target_label)
-    target_reaction,native_reaction,target_follow,native_follow=await asyncio.gather(
-        _optional_translation(reaction_source,'en',target_language,'selected_reaction_target'),
-        _optional_translation(reaction_source,'en',native_language,'selected_reaction_native'),
-        _optional_translation(follow_source,'en',target_language,'selected_followup_target') if follow_source else asyncio.sleep(0,result=''),
-        _optional_translation(follow_source,'en',native_language,'selected_followup_native') if follow_source else asyncio.sleep(0,result=''),
-    )
-    target_reaction=(target_reaction or reaction_source).replace(marker,target_label)
-    native_reaction=(native_reaction or reaction_source).replace(marker,native_label)
-    target_follow=(target_follow or follow_source).replace(marker,target_label)
-    native_follow=(native_follow or follow_source).replace(marker,native_label)
+    target_reaction=(target_reaction or en_reaction).replace(marker,target_label)
+    native_reaction=(native_reaction or ru_reaction).replace(marker,native_label)
+    target_follow=(target_follow or en_follow).replace(marker,target_label)
+    native_follow=(native_follow or ru_follow).replace(marker,native_label)
     return selected_item_turn(target_reaction,native_reaction,follow_up_target=target_follow,follow_up_native=native_follow,emotion='curious' if target_follow else 'happy')
 
 
@@ -182,9 +202,15 @@ async def _selected_context_model_answer(context:dict,target_language:str)->str:
     selected=context.get('selected_items') or []
     if not selected:return ''
     item=selected[-1];marker='__DOME_SELECTED_ITEM__';task_type=str(context.get('task_type') or '')
-    source=f'{marker} is interesting.' if task_type=='animal_compare' else f'I will take {marker}.'
-    translated=await _optional_translation(source,'en',target_language,'selected_model_answer')
-    return (translated or source).replace(marker,str(item.get('label_target') or item.get('id') or 'item'))
+    if target_language=='ru':
+        source=f'{marker} — это интересно.' if task_type=='animal_compare' else f'Я возьму {marker}.'
+    elif target_language=='en':
+        source=f'{marker} is interesting.' if task_type=='animal_compare' else f'I will take {marker}.'
+    else:
+        base=f'{marker} is interesting.' if task_type=='animal_compare' else f'I will take {marker}.'
+        translated=await _optional_translation(base,'en',target_language,'selected_model_answer')
+        source=translated or base
+    return source.replace(marker,str(item.get('label_target') or item.get('id') or 'item'))
 
 
 def _load_mobile_lesson(lesson_id:str)->dict:
@@ -1495,12 +1521,16 @@ async def _voice_impl(request:web.Request)->web.Response:
         try:current_runtime=json.loads(sess.runtime_state_json or '{}')
         except (TypeError,ValueError,json.JSONDecodeError):current_runtime={}
         dialogue_hist=current_runtime.get('dialogue_history') or []
+        is_conversational_turn=conversation_turn>0
+        allow_follow_up=(bool(sl.get('allow_ai_followup')) and not bool(sl.get('suppress_ai_followup'))) or context_follow_up or is_conversational_turn
+        max_follow_ups=max(2 if is_conversational_turn else (1 if context_follow_up else 0),int(sl.get('max_ai_followups') or 0))
+        effective_attempt_number=1 if is_conversational_turn else attempt_number
         assessment=await assess_speech(
             wav,c.target_language or 'ru',c.native_language or 'ru',goal,
-            accepted_meaning,attempt_number,
+            accepted_meaning,effective_attempt_number,
             c.display_name,c.gender or 'boy',c.working_difficulty,c.language_level or 'PRE_A1',
-            allow_follow_up=(bool(sl.get('allow_ai_followup')) and not bool(sl.get('suppress_ai_followup'))) or context_follow_up,
-            max_follow_ups=max(1 if context_follow_up else 0,int(sl.get('max_ai_followups') or 0)),
+            allow_follow_up=allow_follow_up,
+            max_follow_ups=max_follow_ups,
             follow_up_count=conversation_turn,
             conversation_goal=str(sl.get('conversation_goal') or goal),
             runtime_context=runtime_context,
@@ -1508,7 +1538,7 @@ async def _voice_impl(request:web.Request)->web.Response:
             pedagogical_instruction=str(sl.get('ai_instruction') or sl.get('tutor_instruction') or ''),
             target_meaning=str(sl.get('target_meaning') or authored_goal),
             model_examples=[str(value) for value in (sl.get('model_examples') or [ph.get('simplified_text') or ph.get('target_text') or '']) if str(value).strip()],
-            scaffold_stage='independent_attempt' if attempt_number<=1 else ('semantic_hint' if attempt_number==2 else 'model_support'),
+            scaffold_stage='independent_attempt' if effective_attempt_number<=1 else ('semantic_hint' if effective_attempt_number==2 else 'model_support'),
             open_question_first=sl.get('open_question_first') is not False,
             examples_allowed=sl.get('examples_allowed') is not False,
             dialogue_history=dialogue_hist,
@@ -1542,8 +1572,9 @@ async def _voice_impl(request:web.Request)->web.Response:
     if tutor_turn and not accepted and correction_target:
         tutor_turn=replace(tutor_turn,correction_target=correction_target,model_answer_target=correction_target)
     if accepted and runtime_context.get('selected_items'):
-        contextual_turn=await _selected_context_turn(runtime_context,c.target_language or 'ru',c.native_language or 'ru',context_follow_up and conversation_turn<1)
-        if contextual_turn:tutor_turn=contextual_turn
+        if not (tutor_turn and tutor_turn.reaction_target):
+            contextual_turn=await _selected_context_turn(runtime_context,c.target_language or 'ru',c.native_language or 'ru',context_follow_up and conversation_turn<1,child_gender=c.gender or 'boy')
+            if contextual_turn:tutor_turn=contextual_turn
     if feedback_state in {'NO_AUDIO','NO_SPEECH'}:
         feedback,_legacy_example=no_speech_feedback(attempt_number,max_attempts,correction_target)
         retry_ru = ('Запись не сохранилась. Нажми на микрофон и попробуй ещё раз.' if feedback_state=='NO_AUDIO' else 'Я тебя не услышала. Попробуй ещё раз.') if required_movie_phrase or attempt_number < max_attempts else 'Я тебя не услышала. Пойдём дальше, а попытку отметим как пропущенную.'
@@ -1570,21 +1601,41 @@ async def _voice_impl(request:web.Request)->web.Response:
         tutor_turn=TutorTurn(reaction_target=target_retry,native_hint=native_hint,model_answer_target=model_answer,emotion='encouraging',complete=False,reason=feedback_state.lower())
         feedback=native_hint
     target_response=str(tutor_turn.reaction_target if tutor_turn else assessment.response_target or '')
-    follow_up_question=str(tutor_turn.follow_up_target if tutor_turn else '')
+    follow_up_question=str(tutor_turn.follow_up_target if tutor_turn else assessment.follow_up_target or '')
     model_phrase=str((tutor_turn.model_answer_target or tutor_turn.correction_target) if tutor_turn else correction_target or '')
-    helper_translation=follow_up_translation=model_translation=child_phrase_translation=''
-    if (c.native_language or 'ru')!=(c.target_language or 'ru'):
-        helper_translation,follow_up_translation,model_translation,child_phrase_translation=await asyncio.gather(
-            _optional_translation(target_response,c.target_language or 'ru',c.native_language or 'ru','target_response'),
-            _optional_translation(follow_up_question,c.target_language or 'ru',c.native_language or 'ru','follow_up_question'),
-            _optional_translation(model_phrase,c.target_language or 'ru',c.native_language or 'ru','model_phrase'),
-            _optional_translation(assessment.transcript,c.target_language or 'ru',c.native_language or 'ru','child_phrase') if accepted else asyncio.sleep(0,result=''),
-        )
+    helper_translation=str((tutor_turn.reaction_native if tutor_turn else '') or assessment.response_native or '')
+    follow_up_translation=str((tutor_turn.follow_up_native if tutor_turn else '') or assessment.follow_up_native or '')
+    model_translation=str((tutor_turn.model_answer_native if tutor_turn else '') or assessment.model_answer_native or '')
+    child_phrase_translation=str(assessment.child_phrase_native or '')
+    native_lang=c.native_language or 'ru';target_lang=c.target_language or 'ru'
+    if native_lang!=target_lang:
+        need_helper=not helper_translation and bool(target_response)
+        need_follow=not follow_up_translation and bool(follow_up_question)
+        need_model=not model_translation and bool(model_phrase)
+        need_child=not child_phrase_translation and bool(accepted and assessment.transcript)
+        if need_helper or need_follow or need_model or need_child:
+            helper_t,follow_t,model_t,child_t=await asyncio.gather(
+                _optional_translation(target_response,target_lang,native_lang,'target_response') if need_helper else asyncio.sleep(0,result=helper_translation),
+                _optional_translation(follow_up_question,target_lang,native_lang,'follow_up_question') if need_follow else asyncio.sleep(0,result=follow_up_translation),
+                _optional_translation(model_phrase,target_lang,native_lang,'model_phrase') if need_model else asyncio.sleep(0,result=model_translation),
+                _optional_translation(assessment.transcript,target_lang,native_lang,'child_phrase') if need_child else asyncio.sleep(0,result=child_phrase_translation),
+            )
+            helper_translation=helper_t or helper_translation
+            follow_up_translation=follow_t or follow_up_translation
+            model_translation=model_t or model_translation
+            child_phrase_translation=child_t or child_phrase_translation
+    else:
+        if not helper_translation:helper_translation=target_response
+        if not follow_up_translation:follow_up_translation=follow_up_question
+        if not model_translation:model_translation=model_phrase
+        if not child_phrase_translation and accepted:child_phrase_translation=assessment.transcript
     if tutor_turn and feedback_state not in {'NO_AUDIO','NO_SPEECH'}:
         tutor_turn=replace(
             tutor_turn,
-            reaction_native=helper_translation or (target_response if (c.native_language or 'ru')==(c.target_language or 'ru') else ''),
-            native_hint=follow_up_translation or model_translation,
+            reaction_native=helper_translation,
+            follow_up_native=follow_up_translation,
+            model_answer_native=model_translation,
+            native_hint=follow_up_translation or model_translation or tutor_turn.native_hint,
         )
         feedback=tutor_turn.reaction_native or (model_translation if not accepted else '') or feedback
     durable_name=(f"voice_{hashlib.sha256(recording_id.encode()).hexdigest()[:20]}.m4a" if recording_id else f'voice_{secrets.token_hex(10)}.m4a')
@@ -1597,7 +1648,9 @@ async def _voice_impl(request:web.Request)->web.Response:
     try:
         async with SessionLocal() as db:
             db_child=await db.get(Child,c.id)
-            va=VoiceAttempt(lesson_session_id=sid,phrase_id=storage_phrase_id,attempt_number=attempt_number,audio_path=str(durable_path),client_recording_id=recording_id or None,audio_size_bytes=upload_size,audio_mime_type=audio_mime_type,status=status,transcript=assessment.transcript,detected_language=assessment.detected_language,confidence=assessment.confidence,grammar_errors=json.dumps(assessment.grammar_errors,ensure_ascii=False),pronunciation_errors=json.dumps(assessment.pronunciation_errors,ensure_ascii=False),semantic_match=assessment.semantic_match);db.add(va);await db.flush();await record_movie_voice_slot(db,sid,storage_phrase_id,va,lesson_data)
+            va=VoiceAttempt(lesson_session_id=sid,phrase_id=storage_phrase_id,attempt_number=attempt_number,audio_path=str(durable_path),client_recording_id=recording_id or None,audio_size_bytes=upload_size,audio_mime_type=audio_mime_type,status=status,transcript=assessment.transcript,detected_language=assessment.detected_language,confidence=assessment.confidence,grammar_errors=json.dumps(assessment.grammar_errors,ensure_ascii=False),pronunciation_errors=json.dumps(assessment.pronunciation_errors,ensure_ascii=False),semantic_match=assessment.semantic_match);db.add(va);await db.flush()
+            if not (conversation_turn > 0 and not retake_mode):
+                await record_movie_voice_slot(db,sid,storage_phrase_id,va,lesson_data)
             adaptive_signals={
                 'response_latency_ms':_bounded_int(client_context.get('response_latency_ms'),120_000) if isinstance(client_context,dict) else 0,
                 'hints_used':_bounded_int(client_context.get('hints_used'),5) if isinstance(client_context,dict) else 0,
@@ -1629,6 +1682,12 @@ async def _voice_impl(request:web.Request)->web.Response:
     saved=time.perf_counter()
     log.info('MOBILE_VOICE_SAVE_SUCCESS session=%s child=%s slide=%s phrase=%s recording_id=%s path=%s bytes=%s mime=%s db_attempt=%s movie_take=%s',sid,c.id,slide_id,storage_phrase_id,recording_id or '-',durable_path,upload_size,audio_mime_type,attempt_number,movie_take_accepted)
     log.info('MOBILE_VOICE_LATENCY session=%s slide=%s phrase=%s upload_ms=%d prepare_ms=%d assess_ms=%d save_ms=%d total_ms=%d attempt=%d status=%s activity=%s speech_ms=%d retake=%s',sid,slide_id,storage_phrase_id,round((uploaded-started)*1000),round((prepared-uploaded)*1000),round((assessed-prepared)*1000),round((saved-assessed)*1000),round((saved-started)*1000),attempt_number,status,activity.reason,round(activity.speech_seconds*1000),retake_mode)
+    if target_response or helper_translation:
+        try:
+            spoken_target=target_response;spoken_native=helper_translation if (c.native_language or 'ru')!=(c.target_language or 'ru') else ''
+            style=str(tutor_turn.emotion if tutor_turn else 'warm')
+            asyncio.create_task(synthesize_bilingual_speech(spoken_target,c.target_language or 'ru',spoken_native,c.native_language or 'ru',settings.storage_root/'tts-cache-mobile','mobile',style),name='dome-mobile-tts-prewarm')
+        except Exception as exc:log.warning('TTS_PREWARM_SCHEDULE_FAILED: %s',exc)
     return web.json_response(response_payload)
 
 

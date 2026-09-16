@@ -1,0 +1,1 @@
+{"engine": "content_v1", "schema_version": "1.4", "lesson_id": "draft_001", "course_id": "conversation", "title": "Draft", "order": 99, "status": "draft", "active": false, "max_completed_runs": 2, "expires_after_months": 10, "slides": [{"slide_id": "s1", "order": 1, "type": "passive", "prompt": "Preview"}]}

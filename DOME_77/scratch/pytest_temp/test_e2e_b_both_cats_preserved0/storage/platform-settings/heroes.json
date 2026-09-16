@@ -1,0 +1,84 @@
+{
+  "version": 1,
+  "heroes": [
+    {
+      "id": "cat",
+      "name": "Серый кот (Классический)",
+      "role": "old_cat",
+      "description": "Классический серый кот из прежней базы и уроков.",
+      "filename": "cat.png",
+      "order": 1,
+      "enabled": true,
+      "asset_exists": true,
+      "preview_url": "/assets/preset-characters/cat.png"
+    },
+    {
+      "id": "dome_cat",
+      "name": "Кот DOME (в синей худи)",
+      "role": "dome_cat",
+      "description": "Новый фирменный серый пушистый кот DOME в синей толстовке.",
+      "filename": "dome_cat.png",
+      "order": 2,
+      "enabled": true,
+      "asset_exists": true,
+      "preview_url": "/assets/preset-characters/dome_cat.png",
+      "active": true,
+      "voice_id": "cartesia-dome-cat-v1"
+    },
+    {
+      "id": "dragon",
+      "name": "Дракончик",
+      "role": "dragon",
+      "description": "Дружелюбный зелёный дракон.",
+      "filename": "dragon.png",
+      "order": 3,
+      "enabled": true,
+      "asset_exists": true,
+      "preview_url": "/assets/preset-characters/dragon.png"
+    },
+    {
+      "id": "explorer",
+      "name": "Исследователь",
+      "role": "explorer",
+      "description": "Юный путешественник.",
+      "filename": "explorer.png",
+      "order": 4,
+      "enabled": true,
+      "asset_exists": true,
+      "preview_url": "/assets/preset-characters/explorer.png"
+    },
+    {
+      "id": "fox",
+      "name": "Лисёнок",
+      "role": "fox",
+      "description": "Любознательный рыжий лис.",
+      "filename": "fox.png",
+      "order": 5,
+      "enabled": true,
+      "asset_exists": true,
+      "preview_url": "/assets/preset-characters/fox.png"
+    },
+    {
+      "id": "robot",
+      "name": "Робот",
+      "role": "robot",
+      "description": "Умный робот-помощник.",
+      "filename": "robot.png",
+      "order": 6,
+      "enabled": true,
+      "asset_exists": true,
+      "preview_url": "/assets/preset-characters/robot.png"
+    },
+    {
+      "id": "star",
+      "name": "Звёздочка",
+      "role": "star",
+      "description": "Яркая волшебная звёздочка.",
+      "filename": "star.png",
+      "order": 7,
+      "enabled": true,
+      "asset_exists": true,
+      "preview_url": "/assets/preset-characters/star.png"
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "lesson_id": "sync_test_06",
+  "engine": "content_v1",
+  "course_id": "conversation",
+  "title": "Version 2 Mistake Title",
+  "revision": 2,
+  "active": true,
+  "status": "published",
+  "import_status": "PUBLISHED",
+  "publication_status": "PUBLISHED",
+  "order": 1,
+  "slides": [
+    {
+      "slide_id": "start",
+      "order": 1,
+      "type": "passive",
+      "prompt": "Version 2 Mistake Title"
+    }
+  ],
+  "required_phrases": [],
+  "schema_version": "2.1",
+  "max_completed_runs": 2,
+  "expires_after_months": 10
+}

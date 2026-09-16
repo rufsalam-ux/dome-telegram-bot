@@ -1,0 +1,374 @@
+{
+  "version": 2,
+  "animations": {
+    "idle": {
+      "mirror": false,
+      "rotation": 0.006,
+      "walk_bob": 0.0,
+      "body_bob": 1.5,
+      "blink_period": 3.8,
+      "reusable": true,
+      "id": "idle",
+      "name": "idle",
+      "enabled": true
+    },
+    "blink": {
+      "mirror": false,
+      "rotation": 0.004,
+      "walk_bob": 0.0,
+      "body_bob": 1.0,
+      "blink_period": 2.8,
+      "reusable": true,
+      "id": "blink",
+      "name": "blink",
+      "enabled": true
+    },
+    "talk": {
+      "mirror": false,
+      "rotation": 0.014,
+      "walk_bob": 0.0,
+      "body_bob": 2.0,
+      "mouth_pulse": true,
+      "reusable": true,
+      "id": "talk",
+      "name": "talk",
+      "enabled": true
+    },
+    "listen": {
+      "mirror": false,
+      "rotation": 0.008,
+      "walk_bob": 0.0,
+      "body_bob": 1.2,
+      "head_tilt": 0.018,
+      "reusable": true,
+      "id": "listen",
+      "name": "listen",
+      "enabled": true
+    },
+    "walk_left": {
+      "mirror": true,
+      "rotation": 0.016,
+      "walk_bob": 4.0,
+      "direction": "left",
+      "limb_cycle": true,
+      "reusable": true,
+      "id": "walk_left",
+      "name": "walk_left",
+      "enabled": true
+    },
+    "walk_right": {
+      "mirror": false,
+      "rotation": 0.016,
+      "walk_bob": 4.0,
+      "direction": "right",
+      "limb_cycle": true,
+      "reusable": true,
+      "id": "walk_right",
+      "name": "walk_right",
+      "enabled": true
+    },
+    "turn_left": {
+      "mirror": true,
+      "rotation": 0.018,
+      "walk_bob": 0.0,
+      "direction": "left",
+      "reusable": true,
+      "id": "turn_left",
+      "name": "turn_left",
+      "enabled": true
+    },
+    "turn_right": {
+      "mirror": false,
+      "rotation": 0.018,
+      "walk_bob": 0.0,
+      "direction": "right",
+      "reusable": true,
+      "id": "turn_right",
+      "name": "turn_right",
+      "enabled": true
+    },
+    "wave": {
+      "mirror": false,
+      "rotation": 0.02,
+      "walk_bob": 0.0,
+      "id": "wave",
+      "name": "wave",
+      "enabled": true,
+      "reusable": true
+    },
+    "point": {
+      "mirror": false,
+      "rotation": 0.016,
+      "walk_bob": 0.0,
+      "gesture": "point",
+      "id": "point",
+      "name": "point",
+      "enabled": true,
+      "reusable": true
+    },
+    "happy": {
+      "mirror": false,
+      "rotation": 0.02,
+      "walk_bob": 0.0,
+      "body_bob": 2.4,
+      "reusable": true,
+      "id": "happy",
+      "name": "happy",
+      "enabled": true
+    },
+    "thinking": {
+      "mirror": false,
+      "rotation": 0.012,
+      "walk_bob": 0.0,
+      "head_tilt": 0.025,
+      "reusable": true,
+      "id": "thinking",
+      "name": "thinking",
+      "enabled": true
+    },
+    "small_jump": {
+      "mirror": false,
+      "rotation": 0.018,
+      "walk_bob": 0.0,
+      "jump_height": 18.0,
+      "reusable": true,
+      "id": "small_jump",
+      "name": "small_jump",
+      "enabled": true
+    },
+    "enter_left": {
+      "mirror": false,
+      "rotation": 0.016,
+      "walk_bob": 4.0,
+      "direction": "right",
+      "limb_cycle": true,
+      "reusable": true,
+      "id": "enter_left",
+      "name": "enter_left",
+      "enabled": true
+    },
+    "enter_right": {
+      "mirror": true,
+      "rotation": 0.016,
+      "walk_bob": 4.0,
+      "direction": "left",
+      "limb_cycle": true,
+      "reusable": true,
+      "id": "enter_right",
+      "name": "enter_right",
+      "enabled": true
+    },
+    "exit_left": {
+      "mirror": true,
+      "rotation": 0.016,
+      "walk_bob": 4.0,
+      "direction": "left",
+      "limb_cycle": true,
+      "reusable": true,
+      "id": "exit_left",
+      "name": "exit_left",
+      "enabled": true
+    },
+    "exit_right": {
+      "mirror": false,
+      "rotation": 0.016,
+      "walk_bob": 4.0,
+      "direction": "right",
+      "limb_cycle": true,
+      "reusable": true,
+      "id": "exit_right",
+      "name": "exit_right",
+      "enabled": true
+    },
+    "tail_idle": {
+      "mirror": false,
+      "rotation": 0.006,
+      "walk_bob": 0.0,
+      "tail_sway": 0.02,
+      "reusable": true,
+      "id": "tail_idle",
+      "name": "tail_idle",
+      "enabled": true
+    },
+    "tail_sway": {
+      "mirror": false,
+      "rotation": 0.008,
+      "walk_bob": 0.0,
+      "tail_sway": 0.045,
+      "reusable": true,
+      "id": "tail_sway",
+      "name": "tail_sway",
+      "enabled": true
+    },
+    "walk": {
+      "mirror": false,
+      "rotation": 0.016,
+      "walk_bob": 4.0,
+      "limb_cycle": true,
+      "reusable": true,
+      "id": "walk",
+      "name": "walk",
+      "enabled": true
+    },
+    "turn": {
+      "mirror": false,
+      "rotation": 0.018,
+      "walk_bob": 0.0,
+      "gesture": "turn",
+      "reusable": true,
+      "id": "turn",
+      "name": "turn",
+      "enabled": true
+    },
+    "dance": {
+      "mirror": false,
+      "rotation": 0.028,
+      "walk_bob": 3.0,
+      "gesture": "dance",
+      "reusable": true,
+      "id": "dance",
+      "name": "dance",
+      "enabled": true
+    },
+    "pick_up": {
+      "mirror": false,
+      "rotation": 0.02,
+      "walk_bob": 0.0,
+      "gesture": "bend_pick",
+      "reusable": true,
+      "id": "pick_up",
+      "name": "pick_up",
+      "enabled": true
+    },
+    "stand_front_talk": {
+      "mirror": false,
+      "rotation": 0.012,
+      "walk_bob": 0.0,
+      "look_at": "camera",
+      "talk": true,
+      "lip_sync": true,
+      "reusable": true,
+      "id": "stand_front_talk",
+      "name": "stand_front_talk",
+      "enabled": true
+    },
+    "stand_front_listen": {
+      "mirror": false,
+      "rotation": 0.006,
+      "walk_bob": 0.0,
+      "look_at": "camera",
+      "talk": false,
+      "idle": true,
+      "reusable": true,
+      "id": "stand_front_listen",
+      "name": "stand_front_listen",
+      "enabled": true
+    },
+    "walk_from_left": {
+      "mirror": false,
+      "rotation": 0.016,
+      "walk_bob": 4.0,
+      "direction": "right",
+      "talk": true,
+      "lip_sync": true,
+      "reusable": true,
+      "id": "walk_from_left",
+      "name": "walk_from_left",
+      "enabled": true
+    },
+    "walk_from_right": {
+      "mirror": true,
+      "rotation": 0.016,
+      "walk_bob": 4.0,
+      "direction": "left",
+      "talk": true,
+      "lip_sync": true,
+      "reusable": true,
+      "id": "walk_from_right",
+      "name": "walk_from_right",
+      "enabled": true
+    },
+    "walk_right_to_left_talk": {
+      "mirror": true,
+      "rotation": 0.016,
+      "walk_bob": 4.0,
+      "id": "walk_right_to_left_talk",
+      "name": "walk_right_to_left_talk",
+      "enabled": true,
+      "reusable": true
+    },
+    "walk_left_to_right_talk": {
+      "mirror": false,
+      "rotation": 0.016,
+      "walk_bob": 4.0,
+      "id": "walk_left_to_right_talk",
+      "name": "walk_left_to_right_talk",
+      "enabled": true,
+      "reusable": true
+    },
+    "happy_jump": {
+      "mirror": false,
+      "rotation": 0.025,
+      "walk_bob": 0.0,
+      "id": "happy_jump",
+      "name": "happy_jump",
+      "enabled": true,
+      "reusable": true
+    },
+    "turn_to_friend": {
+      "mirror": false,
+      "rotation": 0.02,
+      "walk_bob": 0.0,
+      "gesture": "turn",
+      "id": "turn_to_friend",
+      "name": "turn_to_friend",
+      "enabled": true,
+      "reusable": true
+    },
+    "pick_up_object": {
+      "mirror": false,
+      "rotation": 0.022,
+      "walk_bob": 0.0,
+      "gesture": "bend_pick",
+      "id": "pick_up_object",
+      "name": "pick_up_object",
+      "enabled": true,
+      "reusable": true
+    },
+    "talk_excited": {
+      "mirror": false,
+      "rotation": 0.02,
+      "walk_bob": 1.5,
+      "gesture": "talk",
+      "id": "talk_excited",
+      "name": "talk_excited",
+      "enabled": true,
+      "reusable": true
+    },
+    "spin_jump": {
+      "id": "spin_jump",
+      "name": "Spin and Jump",
+      "description": "Character rotates and jumps",
+      "duration": 3.0,
+      "loopable": false,
+      "actions": [
+        {
+          "action": "turn",
+          "duration": 1.0
+        },
+        {
+          "action": "jump",
+          "duration": 2.0
+        }
+      ],
+      "compatible_heroes": [
+        "all"
+      ],
+      "reusable": true,
+      "enabled": true,
+      "created_at": "2026-09-16T08:20:36.991218+00:00"
+    }
+  },
+  "updated_at": "2026-09-16T08:20:36.991218+00:00",
+  "notes": "Reusable animation library shared across movies and lessons."
+}

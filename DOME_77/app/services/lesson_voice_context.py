@@ -167,6 +167,7 @@ def selected_item_turn(
         reaction_target=reaction_target,
         reaction_native=reaction_native,
         follow_up_target=follow_up_target,
+        follow_up_native=follow_up_native,
         native_hint=follow_up_native,
         emotion=emotion,
         complete=not bool(follow_up_target),

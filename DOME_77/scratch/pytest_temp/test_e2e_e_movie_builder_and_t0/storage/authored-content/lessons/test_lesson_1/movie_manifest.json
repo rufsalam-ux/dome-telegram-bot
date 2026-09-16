@@ -1,0 +1,21 @@
+{
+  "lesson_id": "test_lesson_1",
+  "config": {
+    "scenes": [
+      {
+        "title": "Intro",
+        "duration": 3.0,
+        "animation": "wave",
+        "background": "room_default",
+        "dialogue": "Привет!"
+      },
+      {
+        "title": "Finale",
+        "duration": 4.0,
+        "animation": "cheer",
+        "background": "celebration",
+        "dialogue": "Отличная работа!"
+      }
+    ]
+  }
+}
