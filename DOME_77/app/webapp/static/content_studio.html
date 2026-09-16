@@ -11,10 +11,11 @@
 <body>
 
   <section id="loginView" class="login card">
-    <h1>DOME Admin Panel & CMS</h1>
-    <p>Панель управления владельца DOME. Вход по email и паролю.</p>
-    <label>Email владельца<input id="ownerEmail" type="email" value="krisriskrisris@gmail.com" autocomplete="username"></label>
-    <label>Пароль / Ключ доступа<input id="ownerPassword" type="password" placeholder="Введите пароль" autocomplete="current-password"></label>
+    <h1>DOME · <span>Admin</span></h1>
+    <p>Панель управления BilingvaDom. Введите пароль для входа.</p>
+    <label>Пароль администратора
+      <input id="ownerPassword" type="password" placeholder="Введите пароль" autocomplete="current-password" autofocus>
+    </label>
     <button id="loginButton" class="primary">Войти в админку</button>
     <div id="loginError" class="error" role="alert"></div>
   </section>
@@ -587,6 +588,24 @@
             <h3>Функциональные флаги (Feature Flags)</h3>
             <p style="font-size:12px;color:#64748B;margin-bottom:12px">Включение/отключение модулей в мобильном приложении без выпуска нового APK.</p>
             <div id="featureFlagsList" style="display:flex;flex-direction:column;gap:10px"></div>
+          </div>
+
+          <div class="card">
+            <h3>🔐 Безопасность и пароль администратора</h3>
+            <p style="font-size:12px;color:#64748B;margin-bottom:12px">Смена мастер-пароля для входа в панель управления DOME / BilingvaDom.</p>
+            <div style="display:flex;flex-direction:column;gap:10px">
+              <label>Текущий пароль
+                <input id="adminCurrentPassword" type="password" placeholder="Текущий пароль">
+              </label>
+              <label>Новый пароль
+                <input id="adminNewPassword" type="password" placeholder="Минимум 6 символов">
+              </label>
+              <label>Повторите новый пароль
+                <input id="adminNewPasswordConfirm" type="password" placeholder="Повторите новый пароль">
+              </label>
+              <button type="button" class="primary" style="margin-top:6px" onclick="changeAdminPasswordAction()">Сохранить новый пароль</button>
+              <div id="changePasswordStatus" style="font-size:13px;font-weight:600;min-height:20px"></div>
+            </div>
           </div>
         </div>
       </div>

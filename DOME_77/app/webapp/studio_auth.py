@@ -11,9 +11,12 @@ from urllib.parse import urlsplit
 from aiohttp import web
 from sqlalchemy import func, select
 
+import json
+
 from app.core.config import settings
 from app.db.models import Parent
 from app.db.session import SessionLocal
+from app.services.admin_credentials import change_admin_password, verify_admin_password
 from app.services.password_auth import verify_password
 from app.services.qa_access import is_owner_parent
 
@@ -36,7 +39,7 @@ def _origin(request):
     expected.add(f'{request.scheme}://{request.host}')
     origin_parsed = urlsplit(origin)
     host = origin_parsed.netloc.split(':')[0].lower()
-    if host.endswith('bilingvadom.com') or host.endswith('railway.app') or host in ('localhost', '127.0.0.1'):
+    if host.endswith('bilingvadom.com') or host.endswith('bilinguadom.com') or host.endswith('railway.app') or host in ('localhost', '127.0.0.1'):
         return
     if origin not in expected:
         raise web.HTTPForbidden(text='Запрос должен выполняться из самой админки.')
@@ -92,17 +95,19 @@ async def login(request):
     parent_id = None
 
     expected_token = settings.content_studio_token.strip() or "dome77owner"
-    if expected_token and (token == expected_token or password == expected_token):
+    if verify_admin_password(password):
+        parent_id = -1
+    elif expected_token and (token == expected_token or password == expected_token):
         parent_id = -1
     elif email and password:
         async with SessionLocal() as db:
             parent = await db.scalar(select(Parent).where(func.lower(func.trim(Parent.email)) == email))
             valid = bool(parent and parent.password_hash and await asyncio.to_thread(verify_password, password, parent.password_hash))
             if not valid or not is_owner_parent(parent):
-                raise web.HTTPUnauthorized(text='Неверные данные или нет доступа владельца.')
+                raise web.HTTPUnauthorized(text='Неверный пароль администратора.')
             parent_id = parent.id
     else:
-        raise web.HTTPUnauthorized(text='Укажите логин и пароль.')
+        raise web.HTTPUnauthorized(text='Неверный пароль администратора.')
     old = request.cookies.get(COOKIE, '')
     state['sessions'].pop(old, None)
     key, csrf = secrets.token_urlsafe(48), secrets.token_urlsafe(32)
@@ -111,7 +116,7 @@ async def login(request):
     state['sessions'][key] = {'parent_id': parent_id, 'csrf': csrf, 'expires': now + TTL}
     response = web.json_response({'ok': True, 'csrf': csrf})
     secure = urlsplit(settings.effective_webapp_base_url).scheme == 'https' or request.secure
-    response.set_cookie(COOKIE, key, httponly=True, secure=secure, samesite='Strict', max_age=TTL, path='/api/studio')
+    response.set_cookie(COOKIE, key, httponly=True, secure=secure, samesite='Lax', max_age=TTL, path='/api/studio')
     return response
 
 
@@ -131,9 +136,23 @@ async def logout(request):
     return response
 
 
+async def change_password(request):
+    session = request.get('studio_browser_session')
+    if not session or not await _owner(session.get('parent_id')):
+        raise web.HTTPUnauthorized(text='Требуется авторизация владельца.')
+    data = await request.json()
+    old_pw = str(data.get('old_password') or '')
+    new_pw = str(data.get('new_password') or '')
+    ok, msg = change_admin_password(old_pw, new_pw)
+    if not ok:
+        raise web.HTTPBadRequest(text=json.dumps({'error': msg}), content_type='application/json')
+    return web.json_response({'ok': True, 'message': msg})
+
+
 def register_studio_auth(app):
     app[STATE] = {'sessions': {}, 'attempts': []}
     app.middlewares.append(studio_session_middleware)
     app.router.add_post('/api/studio/auth/login', login)
     app.router.add_get('/api/studio/auth/session', session_status)
     app.router.add_post('/api/studio/auth/logout', logout)
+    app.router.add_post('/api/studio/auth/change-password', change_password)

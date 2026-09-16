@@ -174,9 +174,14 @@ async function login(restore = false) {
   try {
     const auth = restore === true
       ? await api("/api/studio/auth/session")
-      : await api("/api/studio/auth/login", {method:"POST",body:JSON.stringify({email:$("#ownerEmail").value.trim(),password:$("#ownerPassword").value})});
+      : await api("/api/studio/auth/login", {
+          method: "POST",
+          body: JSON.stringify({
+            password: $("#ownerPassword") ? $("#ownerPassword").value.trim() : ""
+          })
+        });
     state.csrf = auth.csrf;
-    $("#ownerPassword").value = "";
+    if ($("#ownerPassword")) $("#ownerPassword").value = "";
     const status = await api("/api/studio/status");
     if ($("#loginView")) $("#loginView").classList.add("hidden");
     if ($("#appView")) $("#appView").classList.remove("hidden");
@@ -184,9 +189,48 @@ async function login(restore = false) {
     await loadLessons();
     loadDashboard();
   } catch (e) {
-    showLogin(restore === true ? "" : (e.message || "Не удалось войти"));
+    showLogin(restore === true ? "" : (e.message || "Неверный пароль"));
   }
 }
+
+async function changeAdminPasswordAction() {
+  const current = $("#adminCurrentPassword") ? $("#adminCurrentPassword").value.trim() : "";
+  const next = $("#adminNewPassword") ? $("#adminNewPassword").value.trim() : "";
+  const confirm = $("#adminNewPasswordConfirm") ? $("#adminNewPasswordConfirm").value.trim() : "";
+  const status = $("#changePasswordStatus");
+  if (!status) return;
+  status.textContent = "";
+  if (!current) {
+    status.style.color = "#EF4444";
+    status.textContent = "Укажите текущий пароль";
+    return;
+  }
+  if (!next || next.length < 6) {
+    status.style.color = "#EF4444";
+    status.textContent = "Новый пароль должен содержать минимум 6 символов";
+    return;
+  }
+  if (next !== confirm) {
+    status.style.color = "#EF4444";
+    status.textContent = "Новые пароли не совпадают";
+    return;
+  }
+  try {
+    const res = await api("/api/studio/auth/change-password", {
+      method: "POST",
+      body: JSON.stringify({ old_password: current, new_password: next })
+    });
+    status.style.color = "#10B981";
+    status.textContent = res.message || "Пароль успешно изменён!";
+    if ($("#adminCurrentPassword")) $("#adminCurrentPassword").value = "";
+    if ($("#adminNewPassword")) $("#adminNewPassword").value = "";
+    if ($("#adminNewPasswordConfirm")) $("#adminNewPasswordConfirm").value = "";
+  } catch (e) {
+    status.style.color = "#EF4444";
+    status.textContent = e.message || "Ошибка смены пароля";
+  }
+}
+window.changeAdminPasswordAction = changeAdminPasswordAction;
 
 function switchSection(name) {
   $$(".app-section").forEach(s => s.classList.add("hidden"));

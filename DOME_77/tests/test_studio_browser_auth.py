@@ -10,7 +10,8 @@ from app.webapp import studio_auth, content_studio
 
 
 @pytest.mark.asyncio
-async def test_owner_cookie_csrf_logout_and_non_owner_denial(monkeypatch):
+async def test_owner_cookie_csrf_logout_and_non_owner_denial(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, 'storage_root', tmp_path)
     engine = create_async_engine('sqlite+aiosqlite:///:memory:')
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     async with engine.begin() as connection:
@@ -44,14 +45,25 @@ async def test_owner_cookie_csrf_logout_and_non_owner_denial(monkeypatch):
         assert response.status == 200
         csrf = (await response.json())['csrf']
         cookie = response.cookies[studio_auth.COOKIE]
-        assert cookie['httponly'] and cookie['samesite'] == 'Strict'
+        assert cookie['httponly'] and cookie['samesite'] in ('Lax', 'Strict')
         assert cookie.value != csrf
         assert (await client.get('/api/studio/protected')).status == 200
         assert (await client.post('/api/studio/protected', headers={'Origin':origin})).status == 403
         headers = {'Origin':origin, 'X-DOME-CSRF':csrf}
         assert (await client.post('/api/studio/protected', headers=headers)).status == 200
+
+        # Test change password
+        ch_bad = await client.post('/api/studio/auth/change-password', headers=headers, json={'old_password':'wrong','new_password':'newsecret123'})
+        assert ch_bad.status == 400
+        ch_ok = await client.post('/api/studio/auth/change-password', headers=headers, json={'old_password':'11111111','new_password':'newsecret123'})
+        assert ch_ok.status == 200
+
         assert (await client.post('/api/studio/auth/logout', headers=headers)).status == 200
         assert (await client.get('/api/studio/auth/session')).status == 401
+
+        # Test login with new password directly (without email)
+        relogin = await client.post('/api/studio/auth/login', headers={'Origin':origin}, json={'password':'newsecret123'})
+        assert relogin.status == 200
     finally:
         await client.close()
         await engine.dispose()

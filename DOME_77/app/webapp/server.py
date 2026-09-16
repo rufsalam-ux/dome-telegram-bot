@@ -18,7 +18,9 @@ async def health(_: web.Request) -> web.Response:
     return web.json_response({"ok": True, "service": "DOME Mini App"})
 
 
-async def index(_: web.Request) -> web.FileResponse:
+async def index(request: web.Request) -> web.StreamResponse:
+    if request.host.lower().startswith("admin."):
+        raise web.HTTPFound("/admin")
     static = Path(__file__).parent / "static"
     return web.FileResponse(static / "index.html")
 
