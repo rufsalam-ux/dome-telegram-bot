@@ -39,3 +39,21 @@ unicode_qr.txt
 .pytest-*/
 ../.pytest-tmp-*/
 ../.pytest-progress-*/
+
+# Large video assets are served from Railway CDN at runtime — exclude from APK archive
+assets/videos/*.mov
+assets/videos/*.mp4
+assets/videos/*.avi
+
+# Gradle build cache & local build artifacts
+android/.cxx/
+android/app/build/
+android/build/
+android/.gradle/
+android/app/src/main/assets/index.android.bundle
+android/app/src/main/res/drawable/
+android/app/src/main/res/raw/
+
+# Local keystore (never upload — EAS uses remote credentials)
+android/app/dome-release.keystore
+android/app/*.keystore
