@@ -5,8 +5,8 @@
   "main": "index.js",
   "scripts": {
     "start": "expo start",
-    "android": "expo start --android",
-    "ios": "expo start --ios",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
     "check": "tsc --noEmit",
     "test:runtime": "node --experimental-strip-types --test tests/lessonRuntime.test.ts",
     "validate-lessons": "node scripts/validate-lessons.mjs",

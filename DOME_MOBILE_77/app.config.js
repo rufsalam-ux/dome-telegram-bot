@@ -2,7 +2,7 @@ const expo={
   name:'DOME',
   slug:'dome-mobile',
   owner:'bilingvadom',
-  version:'3.1.3',
+  version:'3.1.4',
   scheme:'dome',
   icon:'./assets/branding/dome-app-icon-v2.png',
   orientation:'default',
@@ -22,7 +22,7 @@ const expo={
     // a tester device. This is an Android identity change only: it does not
     // change the DOME EAS project, lesson data, or backend.
     package:'com.bilingvadom.dome.mobile',
-    versionCode:30103,
+    versionCode:30104,
     softwareKeyboardLayoutMode:'resize',
     adaptiveIcon:{
       foregroundImage:'./assets/branding/dome-adaptive-foreground-v2.png',

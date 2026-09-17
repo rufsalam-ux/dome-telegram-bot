@@ -92,8 +92,8 @@ android {
         applicationId 'com.bilingvadom.dome.mobile'
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 30102
-        versionName "3.1.2"
+        versionCode 30104
+        versionName "3.1.4"
 
         buildConfigField "String", "REACT_NATIVE_RELEASE_LEVEL", "\"${findProperty('reactNativeReleaseLevel') ?: 'stable'}\""
     }
@@ -104,15 +104,19 @@ android {
             keyAlias 'androiddebugkey'
             keyPassword 'android'
         }
+        release {
+            storeFile file('dome-release.keystore')
+            storePassword 'dome_release_2026'
+            keyAlias 'dome-release'
+            keyPassword 'dome_release_2026'
+        }
     }
     buildTypes {
         debug {
             signingConfig signingConfigs.debug
         }
         release {
-            // Signing is managed by EAS (Expo Application Services).
-            // The production keystore is injected at EAS build time via credentials.
-            // Do NOT reference the local debug keystore here.
+            signingConfig signingConfigs.release
             def enableShrinkResources = findProperty('android.enableShrinkResourcesInReleaseBuilds') ?: 'false'
             shrinkResources enableShrinkResources.toBoolean()
             minifyEnabled enableMinifyInReleaseBuilds
