@@ -318,6 +318,8 @@ class Subscription(Base):
     # release schedule segment started. Prevents plan changes/re-subscribe from
     # retroactively granting or withholding weeks from an older segment.
     release_baseline_count: Mapped[int] = mapped_column(Integer, default=0)
+    special_first_year: Mapped[bool] = mapped_column(Boolean, default=False)
+    standard_renewal_price: Mapped[float | None] = mapped_column(Float, nullable=True)
 
 
 class SubscriptionAuditEvent(Base):

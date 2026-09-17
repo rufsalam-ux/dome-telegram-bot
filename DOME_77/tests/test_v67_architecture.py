@@ -9,7 +9,7 @@ def test_v67_prices_and_access():
     p=json.loads((ROOT/'config/pricing.json').read_text('utf-8'))
     assert p['currency']=='EUR'
     assert [x['monthly_price'] for x in p['regular_course']['subscription_plans']]==[39,69,99,139]
-    assert [x['annual_price'] for x in p['regular_course']['subscription_plans']]==[429,759,1089,1536]
+    assert [x['annual_price'] for x in p['regular_course']['subscription_plans']]==[439,759,1089,1535]
     assert p['regular_course']['max_completed_runs']==2
     assert p['regular_course']['lesson_access_months']==10
 

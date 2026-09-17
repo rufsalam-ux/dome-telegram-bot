@@ -51,10 +51,10 @@ DEFAULT_PRICING: dict[str, Any] = {
         "max_replays": 2,
         "max_completed_runs": 2,
         "subscription_plans": [
-            {"id":"weekly1","lessons_per_week":1,"monthly_price":39,"annual_price":429},
+            {"id":"weekly1","lessons_per_week":1,"monthly_price":39,"annual_price":439},
             {"id":"weekly2","lessons_per_week":2,"monthly_price":69,"annual_price":759},
             {"id":"weekly3","lessons_per_week":3,"monthly_price":99,"annual_price":1089},
-            {"id":"weekly4","lessons_per_week":4,"monthly_price":139,"annual_price":1536},
+            {"id":"weekly4","lessons_per_week":4,"monthly_price":139,"annual_price":1535},
         ],
         "profitability": {
             "hide_unprofitable_plans": True,

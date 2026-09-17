@@ -52,10 +52,10 @@ def test_paypal_all_four_plans_catalog(monkeypatch, tmp_path):
         assert row["price"] == exp["price"]
 
     expected_annual = [
-        {"plan_id": "weekly1", "lessons_per_week": 1, "price": 429.0},
+        {"plan_id": "weekly1", "lessons_per_week": 1, "price": 439.0},
         {"plan_id": "weekly2", "lessons_per_week": 2, "price": 759.0},
         {"plan_id": "weekly3", "lessons_per_week": 3, "price": 1089.0},
-        {"plan_id": "weekly4", "lessons_per_week": 4, "price": 1536.0},
+        {"plan_id": "weekly4", "lessons_per_week": 4, "price": 1535.0},
     ]
     for row, exp in zip(annual, expected_annual):
         assert row["plan_id"] == exp["plan_id"]

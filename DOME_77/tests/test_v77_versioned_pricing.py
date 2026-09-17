@@ -50,7 +50,7 @@ def test_default_catalog_and_profitability_gate(monkeypatch, tmp_path):
     cfg = isolated_pricing(monkeypatch, tmp_path)
     assert cfg["schema_version"] == "2.0"
     assert [row["price"] for row in plan_versions_for_course(None, MONTH)] == [39, 69, 99, 139]
-    assert [row["price"] for row in plan_versions_for_course(None, YEAR)] == [429, 759, 1089, 1536]
+    assert [row["price"] for row in plan_versions_for_course(None, YEAR)] == [439, 759, 1089, 1535]
     cfg = platform_settings.load_settings("pricing")
     cfg["regular_course"]["profitability"].update({"estimated_cost_per_lesson": 40, "minimum_margin_percent": 10})
     platform_settings.save_settings("pricing", cfg)

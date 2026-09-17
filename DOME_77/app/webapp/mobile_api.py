@@ -457,11 +457,24 @@ def _date_json(value:datetime|None)->str|None:
     return value.isoformat() if value else None
 
 
-def _plan_json(plan)->dict:
-    return {
+def _plan_json(plan, is_eligible_special: bool = False)->dict:
+    data = {
         'plan_id':plan.plan_id,'version_id':plan.version_id,'title':plan.title,'lessons_per_week':plan.lessons_per_week,
         'price':plan.price,'currency':plan.currency,'billing_period':plan.billing_period,
     }
+    if str(plan.billing_period).upper() == 'YEAR':
+        from app.services.special_annual_pricing import get_plan_annual_offer_detail
+        offer = get_plan_annual_offer_detail(plan.plan_id, plan.lessons_per_week, is_eligible_special)
+        data['special_first_year'] = offer['special_first_year']
+        data['price'] = offer['effective_price']
+        data['first_year_price'] = offer['first_year_price']
+        data['standard_annual_price'] = offer['standard_renewal_price']
+        data['standard_renewal_price'] = offer['standard_renewal_price']
+        data['annual_savings'] = offer['annual_savings']
+        data['intro_week_price'] = offer['intro_week_price']
+        data['renewal_disclosure'] = offer['renewal_disclosure']
+        data['title_badge'] = offer['title_badge']
+    return data
 
 
 async def _subscription_for_child(db,child_id:int,course_id:str)->Subscription|None:
@@ -490,6 +503,8 @@ def _subscription_json(sub:Subscription|None)->dict|None:
         'next_charge_at':_date_json(sub.next_charge_at or sub.current_period_end or next_billing_period_start(sub)),
         'lessons_allocated':int(sub.lessons_allocated or 0),'lessons_used':int(sub.lessons_used or 0),
         'pending_plan':pending,'payment_provider':sub.payment_provider,
+        'special_first_year':bool(getattr(sub, 'special_first_year', False)),
+        'standard_renewal_price':getattr(sub, 'standard_renewal_price', None),
     }
 
 
@@ -499,7 +514,13 @@ async def subscription_overview(request:web.Request)->web.Response:
     async with SessionLocal() as db:
         sub=await _subscription_for_child(db,cid,course_id)
         plans=await plan_catalog_for_child(db,parent_id=p.id,child_id=cid,course_id=course_id)
-        return web.json_response({'subscription':_subscription_json(sub),'plans':[_plan_json(x) for x in plans]})
+        from app.services.special_annual_pricing import is_eligible_for_special_annual
+        is_eligible = await is_eligible_for_special_annual(db, parent_id=p.id, child_id=cid)
+        return web.json_response({
+            'subscription':_subscription_json(sub),
+            'plans':[_plan_json(x, is_eligible_special=is_eligible) for x in plans],
+            'special_annual_eligible': is_eligible,
+        })
 
 
 async def subscription_plan_change_preview(request:web.Request)->web.Response:
@@ -796,15 +817,16 @@ async def subscription_checkout(request: web.Request) -> web.Response:
     plan_freq_map = {'weekly1': 1, 'weekly2': 2, 'weekly3': 3, 'weekly4': 4,
                       'start': 1, 'smart': 2, 'plus': 3, 'max': 4}
     freq = plan_freq_map.get(plan_id, 1)
-    _MONTHLY_PRICES = {'weekly1': 39.0, 'weekly2': 69.0, 'weekly3': 99.0, 'weekly4': 129.0,
-                        'start': 39.0, 'smart': 69.0, 'plus': 99.0, 'max': 129.0}
-    _ANNUAL_PRICES  = {'weekly1': 399.0, 'weekly2': 699.0, 'weekly3': 999.0, 'weekly4': 1299.0,
-                       'start': 399.0, 'smart': 699.0, 'plus': 999.0, 'max': 1299.0}
-    # For YEAR billing: PayPal charges the full annual price once per year
-    # lesson allowance remains monthly (4/8/12/16 per month)
-    base_price = _ANNUAL_PRICES.get(plan_id, 399.0) if billing_period == 'YEAR' else _MONTHLY_PRICES.get(plan_id, 39.0)
-    monthly_reference_price = _MONTHLY_PRICES.get(plan_id, 39.0)  # lesson-frequency reference
+    _MONTHLY_PRICES = {'weekly1': 39.0, 'weekly2': 69.0, 'weekly3': 99.0, 'weekly4': 139.0,
+                        'start': 39.0, 'smart': 69.0, 'plus': 99.0, 'max': 139.0}
+    _ANNUAL_PRICES  = {'weekly1': 439.0, 'weekly2': 759.0, 'weekly3': 1089.0, 'weekly4': 1535.0,
+                       'start': 439.0, 'smart': 759.0, 'plus': 1089.0, 'max': 1535.0}
+    monthly_reference_price = _MONTHLY_PRICES.get(plan_id, 39.0)
+    base_price = _ANNUAL_PRICES.get(plan_id, 439.0) if billing_period == 'YEAR' else monthly_reference_price
     effective_price = base_price
+    special_first_year = False
+    standard_renewal_price = _ANNUAL_PRICES.get(plan_id, 439.0)
+    intro_week_price = float(freq * 3)
     promo_result = None
 
     async with SessionLocal() as db:
@@ -819,6 +841,14 @@ async def subscription_checkout(request: web.Request) -> web.Response:
                 'status': 'ACTIVE',
             })
 
+        if billing_period == 'YEAR':
+            from app.services.special_annual_pricing import is_eligible_for_special_annual, get_plan_annual_offer_detail
+            is_eligible = await is_eligible_for_special_annual(db, parent_id=p.id, child_id=cid)
+            offer = get_plan_annual_offer_detail(plan_id, freq, is_eligible)
+            special_first_year = offer['special_first_year']
+            effective_price = offer['effective_price']
+            standard_renewal_price = offer['standard_renewal_price']
+
         if promo_code:
             from app.services.promo_codes import validate_promo_code
             promo_result = await validate_promo_code(
@@ -826,7 +856,13 @@ async def subscription_checkout(request: web.Request) -> web.Response:
                 plan_id=plan_id, course_id=course_id, original_price=base_price
             )
             if promo_result.valid:
-                effective_price = promo_result.final_price
+                if special_first_year:
+                    # Note: OWNER DECISION REQUIRED. Do not stack double discount automatically.
+                    log.info("OWNER_DECISION_REQUIRED: Promo code '%s' entered with special annual offer", promo_code)
+                    if promo_result.final_price < effective_price:
+                        effective_price = promo_result.final_price
+                else:
+                    effective_price = promo_result.final_price
 
         from app.services.payment_provider import get_payment_provider
         provider = get_payment_provider(provider_name)
@@ -849,9 +885,12 @@ async def subscription_checkout(request: web.Request) -> web.Response:
             plan_id=plan_id,
             plan_version_id=f"v77-{plan_id}-{billing_period.lower()}-{effective_price:.2f}",
             lessons_per_week=freq,
-            monthly_price=effective_price,  # for YEAR: this is the annual charge amount
+            monthly_price=effective_price,
             currency="EUR",
             billing_period=billing_period,
+            special_first_year=special_first_year,
+            standard_renewal_price=standard_renewal_price,
+            intro_week_price=intro_week_price,
             success_url=success_url,
             cancel_url=cancel_url,
             promo_code=promo_code,
@@ -885,6 +924,8 @@ async def subscription_checkout(request: web.Request) -> web.Response:
                 payment_provider=provider_name,
                 provider_subscription_id=checkout_res.subscription_id or None,
                 started_at=datetime.utcnow(),
+                special_first_year=special_first_year,
+                standard_renewal_price=standard_renewal_price if special_first_year else None,
             )
             db.add(sub)
         else:
@@ -893,6 +934,9 @@ async def subscription_checkout(request: web.Request) -> web.Response:
             sub.pending_plan_billing_period = billing_period
             sub.pending_provider_reference = checkout_res.subscription_id or None
             sub.pending_provider_status = "APPROVAL_PENDING"
+            sub.special_first_year = special_first_year
+            if special_first_year:
+                sub.standard_renewal_price = standard_renewal_price
             if checkout_res.subscription_id and not sub.provider_subscription_id:
                 sub.provider_subscription_id = checkout_res.subscription_id
 
@@ -910,6 +954,8 @@ async def subscription_checkout(request: web.Request) -> web.Response:
             'monthly_reference_price': monthly_reference_price,
             'original_price': base_price,
             'effective_price': effective_price,
+            'special_first_year': special_first_year,
+            'standard_renewal_price': standard_renewal_price if special_first_year else None,
             'currency': 'EUR',
             'promo_applied': bool(promo_result and promo_result.valid),
             'promo_details': promo_result.to_dict() if promo_result else None,

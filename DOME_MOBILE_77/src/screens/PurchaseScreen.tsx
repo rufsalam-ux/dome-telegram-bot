@@ -27,6 +27,15 @@ export type Plan = {
   price: number;
   currency: string;
   billing_period: string;
+  // Special annual pricing fields (server-provided, YEAR plans only)
+  special_first_year?: boolean;
+  first_year_price?: number;
+  standard_annual_price?: number;
+  standard_renewal_price?: number;
+  annual_savings?: number;
+  intro_week_price?: number;
+  renewal_disclosure?: string;
+  title_badge?: string;
 };
 
 type Preview = {
@@ -36,41 +45,33 @@ type Preview = {
   notice: string;
 };
 
-// Canonical Model B Reference Configuration
-// weekly1: 39 EUR/mo, 399 EUR/yr (save 69 EUR)
-// weekly2: 69 EUR/mo, 699 EUR/yr (save 129 EUR)
-// weekly3: 99 EUR/mo, 999 EUR/yr (save 189 EUR)
-// weekly4: 129 EUR/mo, 1299 EUR/yr (save 249 EUR)
+// Canonical DOME Pricing (server is source of truth for prices)
+// Monthly: weekly1=39, weekly2=69, weekly3=99, weekly4=139 EUR/month
+// Standard Annual: weekly1=439, weekly2=759, weekly3=1089, weekly4=1535 EUR/year
+// Special First Year (new customers): weekly1=349, weekly2=599, weekly3=849, weekly4=1199 EUR
+// Intro week: weekly1=3, weekly2=6, weekly3=9, weekly4=12 EUR
 const PLAN_DETAILS: Record<
   number,
-  { name: string; introPrice: number; monthlyEquiv: number; annualSavings: number; subtitle: string }
+  { name: string; introPrice: number; subtitle: string }
 > = {
   1: {
     name: 'DOME Start',
     introPrice: 3,
-    monthlyEquiv: 33.25,
-    annualSavings: 69,
     subtitle: '1 занятие в неделю · плавный старт и регулярная практика',
   },
   2: {
     name: 'DOME Smart',
     introPrice: 6,
-    monthlyEquiv: 58.25,
-    annualSavings: 129,
     subtitle: '2 занятия в неделю · самый популярный и эффективный темп',
   },
   3: {
     name: 'DOME Plus',
     introPrice: 9,
-    monthlyEquiv: 83.25,
-    annualSavings: 189,
     subtitle: '3 занятия в неделю · ускоренный прогресс и уверенность',
   },
   4: {
     name: 'DOME Max',
     introPrice: 12,
-    monthlyEquiv: 108.25,
-    annualSavings: 249,
     subtitle: '4 занятия в неделю · полное погружение для билингвов',
   },
 };
@@ -345,11 +346,14 @@ export function PurchaseScreen({ onBack }: { onBack?: () => void }) {
           </Text>
         </View>
       ) : (
-        <View style={styles.annualBanner}>
-          <Text style={styles.annualBannerTitle}>💎 Выгода годового тарифа</Text>
-          <Text style={styles.annualBannerSub}>
-            2+ месяца занятий бесплатно! Фиксированная годовая цена защищает от повышений на весь
-            год.
+        <View style={data?.special_annual_eligible ? styles.annualBannerSpecial : styles.annualBanner}>
+          <Text style={data?.special_annual_eligible ? styles.annualBannerTitleSpecial : styles.annualBannerTitle}>
+            {data?.special_annual_eligible ? '🌟 Специальная цена первого года' : '💎 Выгода годового тарифа'}
+          </Text>
+          <Text style={data?.special_annual_eligible ? styles.annualBannerSubSpecial : styles.annualBannerSub}>
+            {data?.special_annual_eligible
+              ? 'Вы можете оформить первый год по специальной цене. Затем подписка автоматически продлевается по стандартной стоимости.'
+              : '2+ месяца занятий бесплатно! Фиксированная годовая цена защищает от повышений на весь год.'}
           </Text>
         </View>
       )}
@@ -361,8 +365,6 @@ export function PurchaseScreen({ onBack }: { onBack?: () => void }) {
             const detail = PLAN_DETAILS[plan.lessons_per_week] || {
               name: plan.title,
               introPrice: plan.lessons_per_week * 3,
-              monthlyEquiv: Math.round((plan.price / 12) * 100) / 100,
-              annualSavings: 0,
               subtitle: `${plan.lessons_per_week} урок(а) в неделю`,
             };
 
@@ -373,13 +375,41 @@ export function PurchaseScreen({ onBack }: { onBack?: () => void }) {
               plan.billing_period === current.billing_period;
             const isPending = pending && plan.version_id === pending.version_id;
 
+            const isSpecialAnnual = selectedPeriod === 'YEAR' && Boolean(plan.special_first_year);
+            const effectivePrice = isSpecialAnnual && plan.first_year_price != null
+              ? plan.first_year_price
+              : plan.price;
+            const displayCurrency = plan.currency || 'EUR';
+
             return (
               <Card key={plan.version_id}>
+                {/* Title badge — "Специальная цена первого года" or "Годовой тариф" for YEAR plans */}
+                {selectedPeriod === 'YEAR' && plan.title_badge ? (
+                  <View style={isSpecialAnnual ? styles.specialBadge : styles.annualBadge}>
+                    <Text style={isSpecialAnnual ? styles.specialBadgeText : styles.annualBadgeText}>
+                      {plan.title_badge}
+                    </Text>
+                  </View>
+                ) : null}
+
                 <View style={styles.planCardHeader}>
                   <Text style={styles.planTitle}>{detail.name}</Text>
-                  <Text style={styles.planPriceBadge}>
-                    {money(plan.price, plan.currency)} / {periodLabel(plan.billing_period)}
-                  </Text>
+                  {selectedPeriod === 'YEAR' && isSpecialAnnual ? (
+                    <View style={{ alignItems: 'flex-end' }}>
+                      {/* Strikethrough standard price */}
+                      <Text style={styles.planPriceStrikethrough}>
+                        {money(plan.standard_annual_price ?? plan.standard_renewal_price, displayCurrency)} / год
+                      </Text>
+                      {/* Special first-year price */}
+                      <Text style={styles.planPriceSpecial}>
+                        {money(effectivePrice, displayCurrency)} / год
+                      </Text>
+                    </View>
+                  ) : (
+                    <Text style={styles.planPriceBadge}>
+                      {money(effectivePrice, displayCurrency)} / {periodLabel(plan.billing_period)}
+                    </Text>
+                  )}
                 </View>
 
                 <Text style={styles.planSubtitle}>{detail.subtitle}</Text>
@@ -387,20 +417,21 @@ export function PurchaseScreen({ onBack }: { onBack?: () => void }) {
                 {selectedPeriod === 'MONTH' ? (
                   <View style={styles.introBadge}>
                     <Text style={styles.introBadgeText}>
-                      Первая неделя: {money(detail.introPrice, plan.currency)} ({detail.introPrice} € за неделю)
+                      Первая неделя: {detail.introPrice} € ({detail.introPrice} € за занятие)
                     </Text>
                   </View>
                 ) : (
                   <View style={styles.annualBreakdown}>
-                    <Text style={styles.annualBreakdownText}>
-                      ≈ {money(detail.monthlyEquiv, plan.currency)} в месяц
-                    </Text>
-                    {detail.annualSavings > 0 ? (
-                      <View style={styles.savingsChip}>
-                        <Text style={styles.savingsChipText}>
-                          Экономия {detail.annualSavings} € в год
+                    {isSpecialAnnual && (plan.annual_savings ?? 0) > 0 ? (
+                      <View style={styles.savingsChipSpecial}>
+                        <Text style={styles.savingsChipSpecialText}>
+                          Экономия {plan.annual_savings} € в первый год
                         </Text>
                       </View>
+                    ) : !isSpecialAnnual ? (
+                      <Text style={styles.annualBreakdownText}>
+                        ≈ {money(Math.round((effectivePrice / 12) * 100) / 100, displayCurrency)} в месяц
+                      </Text>
                     ) : null}
                   </View>
                 )}
@@ -415,10 +446,17 @@ export function PurchaseScreen({ onBack }: { onBack?: () => void }) {
                       ? 'Запланирован'
                       : subscription && subscription.status === 'ACTIVE'
                       ? 'Выбрать этот тариф'
-                      : `Оформить подписку (${money(plan.price, plan.currency)})`
+                      : selectedPeriod === 'YEAR'
+                      ? `Оформить подписку (${money(effectivePrice, displayCurrency)} / год)`
+                      : `Оформить подписку (${money(effectivePrice, displayCurrency)})`
                   }
                   onPress={() => handleSelectPlan(plan)}
                 />
+
+                {/* Mandatory renewal disclosure for special annual */}
+                {isSpecialAnnual && plan.renewal_disclosure ? (
+                  <Text style={styles.renewalDisclosure}>{plan.renewal_disclosure}</Text>
+                ) : null}
               </Card>
             );
           })}
@@ -602,6 +640,82 @@ const styles = StyleSheet.create({
     color: '#065F46',
     fontWeight: '700',
     fontSize: 11,
+  },
+  // Special annual pricing styles
+  annualBannerSpecial: {
+    backgroundColor: '#FFF7ED',
+    borderWidth: 1,
+    borderColor: '#FED7AA',
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 8,
+  },
+  annualBannerTitleSpecial: {
+    color: '#92400E',
+    fontWeight: '800',
+    fontSize: 14,
+    marginBottom: 4,
+  },
+  annualBannerSubSpecial: {
+    color: '#B45309',
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  specialBadge: {
+    backgroundColor: '#FEF3C7',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    alignSelf: 'flex-start',
+    marginBottom: 8,
+  },
+  specialBadgeText: {
+    color: '#92400E',
+    fontWeight: '800',
+    fontSize: 11,
+    letterSpacing: 0.3,
+  },
+  annualBadge: {
+    backgroundColor: '#ECFDF5',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    alignSelf: 'flex-start',
+    marginBottom: 8,
+  },
+  annualBadgeText: {
+    color: '#065F46',
+    fontWeight: '700',
+    fontSize: 11,
+  },
+  planPriceStrikethrough: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#9CA3AF',
+    textDecorationLine: 'line-through',
+  },
+  planPriceSpecial: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#D97706',
+  },
+  savingsChipSpecial: {
+    backgroundColor: '#FEF3C7',
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  savingsChipSpecialText: {
+    color: '#92400E',
+    fontWeight: '700',
+    fontSize: 11,
+  },
+  renewalDisclosure: {
+    fontSize: 11,
+    color: '#6B7280',
+    lineHeight: 16,
+    marginTop: 8,
+    fontStyle: 'italic',
   },
 });
 

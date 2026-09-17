@@ -51,6 +51,9 @@ class PaymentProvider(Protocol):
         monthly_price: float = 39.0,
         currency: str = "EUR",
         billing_period: str = "MONTH",
+        special_first_year: bool = False,
+        standard_renewal_price: float = 0.0,
+        intro_week_price: float = 0.0,
         success_url: str = "",
         cancel_url: str = "",
         promo_code: str = "",
@@ -79,6 +82,9 @@ class PayPalPaymentProvider:
         monthly_price: float = 39.0,
         currency: str = "EUR",
         billing_period: str = "MONTH",
+        special_first_year: bool = False,
+        standard_renewal_price: float = 0.0,
+        intro_week_price: float = 0.0,
         success_url: str = "",
         cancel_url: str = "",
         promo_code: str = "",
@@ -105,6 +111,9 @@ class PayPalPaymentProvider:
                 monthly_price=monthly_price,
                 currency=currency,
                 billing_period=billing_period,
+                special_first_year=special_first_year,
+                standard_renewal_price=standard_renewal_price,
+                intro_week_price=intro_week_price,
                 success_url=success_url,
                 cancel_url=cancel_url,
                 idempotency_key=idempotency_key,
@@ -188,19 +197,24 @@ class GooglePlayBillingProvider:
         monthly_price: float = 39.0,
         currency: str = "EUR",
         billing_period: str = "MONTH",
+        special_first_year: bool = False,
+        standard_renewal_price: float = 0.0,
+        intro_week_price: float = 0.0,
         success_url: str = "",
         cancel_url: str = "",
         promo_code: str = "",
         idempotency_key: str = "",
     ) -> CheckoutResult:
+        base_plan_id = f"annual-standard-{plan_id}" if billing_period.upper() == "YEAR" else f"monthly-standard-{plan_id}"
+        offer_id = "special-first-year-intro" if (billing_period.upper() == "YEAR" and special_first_year) else ("intro-week" if intro_week_price > 0 else "")
         sku = f"dome_{plan_id}_{billing_period.lower()}"
         return CheckoutResult(
             ok=False,
             provider=self.name,
             configured=self.is_configured(),
             error="PLAY_BILLING_CHANNEL",
-            message=f"Google Play Billing адаптер подготовлен (SKU: {sku}). Для внешнего/демо тестирования используйте прямой провайдер PayPal.",
-            details={"sku": sku, "channel": "google_play"},
+            message=f"Google Play Billing адаптер подготовлен (SKU: {sku}, base_plan: {base_plan_id}, offer: {offer_id}). Для внешнего/демо тестирования используйте прямой провайдер PayPal.",
+            details={"sku": sku, "channel": "google_play", "base_plan_id": base_plan_id, "offer_id": offer_id, "special_first_year": special_first_year, "standard_renewal_price": standard_renewal_price},
         )
 
     async def verify_subscription(self, provider_subscription_id: str) -> VerifyResult:

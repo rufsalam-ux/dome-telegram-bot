@@ -36,6 +36,8 @@ class NormalizedPaymentEvent:
     period_start: datetime | None = None
     period_end: datetime | None = None
     charged_amount: float = 0.0
+    special_first_year: bool = False
+    standard_renewal_price: float = 0.0
     raw: dict[str,Any] = field(default_factory=dict)
 
 
@@ -92,7 +94,9 @@ async def apply_normalized_event(db, ev:NormalizedPaymentEvent) -> Subscription|
             started_at=now, current_period_start=ev.period_start or now,
             current_period_end=ev.period_end, next_charge_at=ev.period_end,
             provider_subscription_id=ev.provider_subscription_id or None,
-            release_baseline_count=await _baseline(db,ev.child_id,ev.course_id), test_mode=False, payment_provider=ev.provider, status='PENDING')
+            release_baseline_count=await _baseline(db,ev.child_id,ev.course_id), test_mode=False, payment_provider=ev.provider, status='PENDING',
+            special_first_year=bool(ev.special_first_year),
+            standard_renewal_price=float(ev.standard_renewal_price) if ev.standard_renewal_price else None)
         db.add(sub)
         await db.flush()
     if sub is None:
@@ -139,6 +143,12 @@ async def apply_normalized_event(db, ev:NormalizedPaymentEvent) -> Subscription|
     if ev.provider_subscription_id: sub.provider_subscription_id=ev.provider_subscription_id
     sub.payment_provider=ev.provider
     sub.test_mode=False
+    if ev.special_first_year:
+        sub.special_first_year = True
+        if ev.standard_renewal_price:
+            sub.standard_renewal_price = float(ev.standard_renewal_price)
+    elif ev.event_type == 'PAYMENT_SUCCEEDED' and normalize_billing_period(sub.billing_period or MONTH) == 'YEAR' and sub.current_period_start and ev.period_start and ev.period_start > sub.current_period_start:
+        sub.special_first_year = False
 
     if ev.event_type in {'PAYMENT_FAILED'} or status=='PAST_DUE':
         sub.status='PAST_DUE'

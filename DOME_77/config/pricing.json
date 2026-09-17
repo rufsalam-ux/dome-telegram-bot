@@ -16,7 +16,7 @@
         "id": "weekly1",
         "lessons_per_week": 1,
         "monthly_price": 39.0,
-        "annual_price": 429.0
+        "annual_price": 439.0
       },
       {
         "id": "weekly2",
@@ -34,7 +34,7 @@
         "id": "weekly4",
         "lessons_per_week": 4,
         "monthly_price": 139.0,
-        "annual_price": 1536.0
+        "annual_price": 1535.0
       }
     ],
     "profitability": {
@@ -144,5 +144,29 @@
     ],
     "billing_weeks_per_month": 4,
     "discount_type": "fixed_per_scheduled_lesson"
+  },
+  "special_annual_offer": {
+    "enabled": true,
+    "start_date": "2026-09-17",
+    "end_date": "2027-04-17",
+    "eligibility": "new_annual_customers_only",
+    "plans": {
+      "weekly1": {
+        "first_year_price": 349.0,
+        "standard_renewal_price": 439.0
+      },
+      "weekly2": {
+        "first_year_price": 599.0,
+        "standard_renewal_price": 759.0
+      },
+      "weekly3": {
+        "first_year_price": 849.0,
+        "standard_renewal_price": 1089.0
+      },
+      "weekly4": {
+        "first_year_price": 1199.0,
+        "standard_renewal_price": 1535.0
+      }
+    }
   }
 }

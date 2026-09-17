@@ -51,28 +51,74 @@ async def _ensure_product() -> str:
     if not pid: raise PayPalError('PayPal не вернул product_id')
     cfg['paypal_product_id']=pid; save_settings('payments',cfg); return pid
 
-async def ensure_paypal_plan(*,plan_id:str,plan_version_id:str='',lessons_per_week:int,monthly_price:float,currency:str,billing_period:str='MONTH')->str:
+async def ensure_paypal_plan(*,plan_id:str,plan_version_id:str='',lessons_per_week:int,monthly_price:float,currency:str,billing_period:str='MONTH',special_first_year:bool=False,standard_renewal_price:float=0.0,intro_week_price:float=0.0)->str:
     cfg=load_settings('payments'); cache=dict(cfg.get('paypal_plan_versions') or {})
-    version_id=str(plan_version_id or f'legacy-{plan_id}-{str(billing_period).lower()}-{currency.lower()}-{monthly_price:.2f}')
     period=str(billing_period or 'MONTH').upper()
-    key=_plan_cache_key(version_id,monthly_price,currency,period)
+    version_id=str(plan_version_id or f'legacy-{plan_id}-{period.lower()}-{currency.lower()}-{monthly_price:.2f}')
+    if period == 'YEAR' and special_first_year and standard_renewal_price > 0:
+        key=f'{version_id}:YEAR:{currency.upper()}:{monthly_price:.2f}:{standard_renewal_price:.2f}:special:{intro_week_price:.2f}'
+    else:
+        key=_plan_cache_key(version_id,monthly_price,currency,period)
     entry=cache.get(key)
     if isinstance(entry,dict) and entry.get('paypal_plan_id'): return str(entry['paypal_plan_id'])
     product_id=await _ensure_product()
-    body={'product_id':product_id,'name':f'DOME {lessons_per_week}x/week {period.lower()} {version_id}','description':f'DOME immutable pricing version {version_id}','status':'ACTIVE','billing_cycles':[{'frequency':{'interval_unit':period,'interval_count':1},'tenure_type':'REGULAR','sequence':1,'total_cycles':0,'pricing_scheme':{'fixed_price':{'value':f'{monthly_price:.2f}','currency_code':currency.upper()}}}],'payment_preferences':{'auto_bill_outstanding':True,'payment_failure_threshold':3}}
+    billing_cycles = []
+    if period == 'YEAR' and special_first_year and standard_renewal_price > 0:
+        seq = 1
+        if intro_week_price > 0:
+            billing_cycles.append({
+                'frequency': {'interval_unit': 'WEEK', 'interval_count': 1},
+                'tenure_type': 'TRIAL',
+                'sequence': seq,
+                'total_cycles': 1,
+                'pricing_scheme': {'fixed_price': {'value': f'{intro_week_price:.2f}', 'currency_code': currency.upper()}}
+            })
+            seq += 1
+        billing_cycles.append({
+            'frequency': {'interval_unit': 'YEAR', 'interval_count': 1},
+            'tenure_type': 'TRIAL',
+            'sequence': seq,
+            'total_cycles': 1,
+            'pricing_scheme': {'fixed_price': {'value': f'{monthly_price:.2f}', 'currency_code': currency.upper()}}
+        })
+        seq += 1
+        billing_cycles.append({
+            'frequency': {'interval_unit': 'YEAR', 'interval_count': 1},
+            'tenure_type': 'REGULAR',
+            'sequence': seq,
+            'total_cycles': 0,
+            'pricing_scheme': {'fixed_price': {'value': f'{standard_renewal_price:.2f}', 'currency_code': currency.upper()}}
+        })
+    else:
+        billing_cycles.append({
+            'frequency': {'interval_unit': period, 'interval_count': 1},
+            'tenure_type': 'REGULAR',
+            'sequence': 1,
+            'total_cycles': 0,
+            'pricing_scheme': {'fixed_price': {'value': f'{monthly_price:.2f}', 'currency_code': currency.upper()}}
+        })
+    body={'product_id':product_id,'name':f'DOME {lessons_per_week}x/week {period.lower()} {version_id}','description':f'DOME immutable pricing version {version_id}','status':'ACTIVE','billing_cycles':billing_cycles,'payment_preferences':{'auto_bill_outstanding':True,'payment_failure_threshold':3}}
     data=await _request('POST','/v1/billing/plans',body=body,request_id='dome-plan-'+key.replace(':','-'))
     pp=str(data.get('id') or '')
     if not pp: raise PayPalError('PayPal не вернул plan_id')
-    cache[key]={'paypal_plan_id':pp,'plan_version_id':version_id,'plan_id':plan_id,'billing_period':period,'lessons_per_week':int(lessons_per_week),'price':round(float(monthly_price),2),'currency':currency.upper()}
+    cache[key]={'paypal_plan_id':pp,'plan_version_id':version_id,'plan_id':plan_id,'billing_period':period,'lessons_per_week':int(lessons_per_week),'price':round(float(monthly_price),2),'standard_renewal_price':round(float(standard_renewal_price),2) if standard_renewal_price > 0 else None,'special_first_year':bool(special_first_year),'currency':currency.upper()}
     cfg['paypal_plan_versions']=cache; save_settings('payments',cfg); return pp
 
-def _custom_id(child_id:int,course_id:str,plan_id:str,plan_version_id:str,freq:int,price:float,billing_period:str)->str:
-    return f'dome2|{child_id}|{course_id}|{plan_id}|{plan_version_id}|{freq}|{price:.2f}|{str(billing_period).upper()}'[:127]
+def _custom_id(child_id:int,course_id:str,plan_id:str,plan_version_id:str,freq:int,price:float,billing_period:str,special_first_year:bool=False,standard_renewal:float=0.0)->str:
+    s='1' if special_first_year else '0'
+    return f'dome2|{child_id}|{course_id}|{plan_id}|{plan_version_id}|{freq}|{price:.2f}|{str(billing_period).upper()}|{s}|{standard_renewal:.2f}'[:127]
 
 def _parse_custom_id(value:str)->dict:
     parts=str(value or '').split('|')
     if len(parts)>=8 and parts[0]=='dome2':
-        try:return {'child_id':int(parts[1]),'course_id':parts[2],'plan_id':parts[3],'plan_version_id':parts[4],'lessons_per_week':int(parts[5]),'monthly_price':float(parts[6]),'billing_period':parts[7]}
+        try:
+            res={'child_id':int(parts[1]),'course_id':parts[2],'plan_id':parts[3],'plan_version_id':parts[4],'lessons_per_week':int(parts[5]),'monthly_price':float(parts[6]),'billing_period':parts[7]}
+            if len(parts)>=9:
+                res['special_first_year']=bool(parts[8]=='1')
+            if len(parts)>=10:
+                try:res['standard_renewal_price']=float(parts[9])
+                except:pass
+            return res
         except:return {}
     if len(parts)>=6 and parts[0]=='dome':
         try:return {'child_id':int(parts[1]),'course_id':parts[2],'plan_id':parts[3],'lessons_per_week':int(parts[4]),'monthly_price':float(parts[5])}
@@ -85,7 +131,7 @@ def _meta_from_provider_plan(provider_plan_id:str)->dict:
     versioned=dict(payments.get('paypal_plan_versions') or {})
     for entry in versioned.values():
         if isinstance(entry,dict) and str(entry.get('paypal_plan_id') or '')==str(provider_plan_id):
-            return {'plan_id':str(entry.get('plan_id') or ''),'plan_version_id':str(entry.get('plan_version_id') or ''),'lessons_per_week':int(entry.get('lessons_per_week') or 1),'monthly_price':float(entry.get('price') or 0.0),'currency':str(entry.get('currency') or 'EUR'),'billing_period':str(entry.get('billing_period') or 'MONTH'),'provider_plan_id':str(provider_plan_id)}
+            return {'plan_id':str(entry.get('plan_id') or ''),'plan_version_id':str(entry.get('plan_version_id') or ''),'lessons_per_week':int(entry.get('lessons_per_week') or 1),'monthly_price':float(entry.get('price') or 0.0),'currency':str(entry.get('currency') or 'EUR'),'billing_period':str(entry.get('billing_period') or 'MONTH'),'provider_plan_id':str(provider_plan_id),'special_first_year':bool(entry.get('special_first_year',False)),'standard_renewal_price':float(entry.get('standard_renewal_price') or 0.0)}
     cache=dict(payments.get('paypal_plan_cache') or {})
     for key,value in cache.items():
         if str(value)==str(provider_plan_id):
@@ -96,9 +142,9 @@ def _meta_from_provider_plan(provider_plan_id:str)->dict:
             except Exception:return {}
     return {}
 
-async def create_paypal_subscription_checkout_detail(*,child_id:int,course_id:str,plan_id:str,plan_version_id:str='',lessons_per_week:int,monthly_price:float,currency:str,billing_period:str='MONTH',success_url:str,cancel_url:str,idempotency_key:str='')->dict:
-    pp=await ensure_paypal_plan(plan_id=plan_id,plan_version_id=plan_version_id,lessons_per_week=lessons_per_week,monthly_price=monthly_price,currency=currency,billing_period=billing_period)
-    body={'plan_id':pp,'custom_id':_custom_id(child_id,course_id,plan_id,plan_version_id,lessons_per_week,monthly_price,billing_period),'application_context':{'brand_name':'DOME / BilingvaDom','user_action':'SUBSCRIBE_NOW','return_url':success_url,'cancel_url':cancel_url}}
+async def create_paypal_subscription_checkout_detail(*,child_id:int,course_id:str,plan_id:str,plan_version_id:str='',lessons_per_week:int,monthly_price:float,currency:str,billing_period:str='MONTH',special_first_year:bool=False,standard_renewal_price:float=0.0,intro_week_price:float=0.0,success_url:str,cancel_url:str,idempotency_key:str='')->dict:
+    pp=await ensure_paypal_plan(plan_id=plan_id,plan_version_id=plan_version_id,lessons_per_week=lessons_per_week,monthly_price=monthly_price,currency=currency,billing_period=billing_period,special_first_year=special_first_year,standard_renewal_price=standard_renewal_price,intro_week_price=intro_week_price)
+    body={'plan_id':pp,'custom_id':_custom_id(child_id,course_id,plan_id,plan_version_id,lessons_per_week,monthly_price,billing_period,special_first_year=special_first_year,standard_renewal=standard_renewal_price),'application_context':{'brand_name':'DOME / BilingvaDom','user_action':'SUBSCRIBE_NOW','return_url':success_url,'cancel_url':cancel_url}}
     data=await _request('POST','/v1/billing/subscriptions',body=body,request_id=idempotency_key)
     approval_url=''
     for link in data.get('links') or []:
@@ -115,8 +161,8 @@ async def create_paypal_subscription_checkout_detail(*,child_id:int,course_id:st
         'raw': data,
     }
 
-async def create_paypal_subscription_checkout(*,child_id:int,course_id:str,plan_id:str,plan_version_id:str='',lessons_per_week:int,monthly_price:float,currency:str,billing_period:str='MONTH',success_url:str,cancel_url:str,idempotency_key:str='')->str:
-    detail=await create_paypal_subscription_checkout_detail(child_id=child_id,course_id=course_id,plan_id=plan_id,plan_version_id=plan_version_id,lessons_per_week=lessons_per_week,monthly_price=monthly_price,currency=currency,billing_period=billing_period,success_url=success_url,cancel_url=cancel_url,idempotency_key=idempotency_key)
+async def create_paypal_subscription_checkout(*,child_id:int,course_id:str,plan_id:str,plan_version_id:str='',lessons_per_week:int,monthly_price:float,currency:str,billing_period:str='MONTH',special_first_year:bool=False,standard_renewal_price:float=0.0,intro_week_price:float=0.0,success_url:str,cancel_url:str,idempotency_key:str='')->str:
+    detail=await create_paypal_subscription_checkout_detail(child_id=child_id,course_id=course_id,plan_id=plan_id,plan_version_id=plan_version_id,lessons_per_week=lessons_per_week,monthly_price=monthly_price,currency=currency,billing_period=billing_period,special_first_year=special_first_year,standard_renewal_price=standard_renewal_price,intro_week_price=intro_week_price,success_url=success_url,cancel_url=cancel_url,idempotency_key=idempotency_key)
     return str(detail['approval_url'])
 
 async def change_paypal_subscription_plan(*,subscription_id:str,child_id:int,course_id:str,plan_id:str,plan_version_id:str='',provider_plan_id:str='',lessons_per_week:int,monthly_price:float,currency:str,billing_period:str='MONTH',success_url:str,cancel_url:str,idempotency_key:str='')->dict:
@@ -176,4 +222,4 @@ def normalize_paypal_event(data:dict,subscription:dict|None=None)->NormalizedPay
     except (TypeError,ValueError):charged=0.0
     billing=(sub.get('billing_info') if isinstance(sub.get('billing_info'),dict) else {}) or (resource.get('billing_info') if isinstance(resource.get('billing_info'),dict) else {})
     last=billing.get('last_payment') if isinstance(billing.get('last_payment'),dict) else {}
-    return NormalizedPaymentEvent(provider='paypal',event_id=str(data.get('id') or ''),event_type=event_type,status=status,child_id=int(meta.get('child_id') or 0),course_id=str(meta.get('course_id') or ''),plan_id=str(meta.get('plan_id') or ''),plan_version_id=str(meta.get('plan_version_id') or ''),billing_period=str(meta.get('billing_period') or 'MONTH'),provider_plan_id=str(meta.get('provider_plan_id') or resource.get('plan_id') or sub.get('plan_id') or ''),lessons_per_week=int(meta.get('lessons_per_week') or 1),monthly_price=float(meta.get('monthly_price') or 0),currency=str(meta.get('currency') or amount.get('currency') or amount.get('currency_code') or 'EUR'),provider_subscription_id=provider_sub_id,occurred_at=_paypal_datetime(data.get('create_time')),period_start=_paypal_datetime(last.get('time')) or _paypal_datetime(data.get('create_time')),period_end=_paypal_datetime(billing.get('next_billing_time')),charged_amount=charged,raw=data)
+    return NormalizedPaymentEvent(provider='paypal',event_id=str(data.get('id') or ''),event_type=event_type,status=status,child_id=int(meta.get('child_id') or 0),course_id=str(meta.get('course_id') or ''),plan_id=str(meta.get('plan_id') or ''),plan_version_id=str(meta.get('plan_version_id') or ''),billing_period=str(meta.get('billing_period') or 'MONTH'),provider_plan_id=str(meta.get('provider_plan_id') or resource.get('plan_id') or sub.get('plan_id') or ''),lessons_per_week=int(meta.get('lessons_per_week') or 1),monthly_price=float(meta.get('monthly_price') or 0),currency=str(meta.get('currency') or amount.get('currency') or amount.get('currency_code') or 'EUR'),provider_subscription_id=provider_sub_id,occurred_at=_paypal_datetime(data.get('create_time')),period_start=_paypal_datetime(last.get('time')) or _paypal_datetime(data.get('create_time')),period_end=_paypal_datetime(billing.get('next_billing_time')),charged_amount=charged,special_first_year=bool(meta.get('special_first_year',False)),standard_renewal_price=float(meta.get('standard_renewal_price') or 0.0),raw=data)
