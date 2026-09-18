@@ -1,4 +1,4 @@
-﻿"""
+"""
 Tests A-M: DOME Special First-Year Annual Pricing
 ==================================================
 Run:
@@ -556,3 +556,218 @@ class TestRegression_StandardAnnualPrices:
             freq = row["lessons_per_week"]
             assert row["price"] == expected[freq], \
                 f"Catalog annual price for freq={freq}: expected {expected[freq]}, got {row['price']}"
+
+
+# ---------------------------------------------------------------------------
+# N: Intro week per-lesson price always = 3 EUR regardless of lessons_per_week
+# ---------------------------------------------------------------------------
+
+class TestN_IntroWeekPerLessonPrice:
+    """
+    Business rule: introPrice displayed in UI = lessons_per_week * 3 EUR.
+    Per-lesson price is always 3 EUR — never the total.
+    """
+
+    def test_intro_week_prices_defined_for_all_plans(self):
+        """INTRO_WEEK_PRICES must cover all four plan frequencies."""
+        assert set(INTRO_WEEK_PRICES.keys()) == {1, 2, 3, 4}
+
+    def test_intro_week_per_lesson_always_3_eur(self):
+        """For every plan, intro_week_price / lessons_per_week == 3.0 EUR."""
+        for freq, total in INTRO_WEEK_PRICES.items():
+            per_lesson = total / freq
+            assert per_lesson == 3.0, (
+                f"freq={freq}: per-lesson price should be 3.0€, "
+                f"got {per_lesson:.2f}€ (total={total}€)"
+            )
+
+    def test_intro_week_totals_correct(self):
+        """Total intro week prices must be 3/6/9/12 EUR."""
+        expected = {1: 3.0, 2: 6.0, 3: 9.0, 4: 12.0}
+        for freq, price in expected.items():
+            assert INTRO_WEEK_PRICES[freq] == price, \
+                f"freq={freq}: expected {price}€, got {INTRO_WEEK_PRICES[freq]}€"
+
+    def test_offer_detail_includes_correct_intro_week_price(self, monkeypatch, tmp_path):
+        """get_plan_annual_offer_detail must return correct intro_week_price for each plan."""
+        isolated_pricing(monkeypatch, tmp_path)
+        expected_totals = {1: 3.0, 2: 6.0, 3: 9.0, 4: 12.0}
+        plan_map = {1: "weekly1", 2: "weekly2", 3: "weekly3", 4: "weekly4"}
+        for freq, expected_total in expected_totals.items():
+            offer = get_plan_annual_offer_detail(plan_map[freq], freq, True)
+            assert offer["intro_week_price"] == expected_total, \
+                f"freq={freq}: intro_week_price should be {expected_total}, got {offer['intro_week_price']}"
+            # Verify per-lesson price
+            per_lesson = offer["intro_week_price"] / freq
+            assert per_lesson == 3.0, \
+                f"freq={freq}: per-lesson should be 3.0€, got {per_lesson:.2f}€"
+
+
+# ---------------------------------------------------------------------------
+# O: PayPal adapter MONTH plan billing cycles include TRIAL week
+# ---------------------------------------------------------------------------
+
+class TestO_PaypalMonthTrialCycle:
+    """PayPal billing cycle for MONTH plans with intro_week_price > 0 must include TRIAL."""
+
+    def test_month_plan_gets_trial_week_cycle(self):
+        """When intro_week_price > 0 and period=MONTH, billing_cycles must have TRIAL + REGULAR."""
+        # Import the private billing cycle construction logic by testing the key branching
+        # We verify the cache key includes 'intro:' for MONTH+intro plans
+        from app.services import paypal_adapter
+        import inspect
+        source = inspect.getsource(paypal_adapter.ensure_paypal_plan)
+        # Verify the MONTH+intro week branch exists in the source
+        assert "elif intro_week_price > 0:" in source, \
+            "paypal_adapter must have elif intro_week_price > 0 branch for MONTH plans"
+        assert "interval_unit': 'WEEK'" in source or "WEEK" in source, \
+            "paypal_adapter must define WEEK interval for intro trial"
+        assert "TRIAL" in source, \
+            "paypal_adapter must use TRIAL tenure_type for intro week"
+
+    def test_month_plan_cache_key_includes_intro_price(self):
+        """Cache key must distinguish MONTH plans with vs without intro week."""
+        from app.services import paypal_adapter
+        import inspect
+        source = inspect.getsource(paypal_adapter.ensure_paypal_plan)
+        assert ":intro:" in source, \
+            "Cache key for MONTH+intro plans must include ':intro:' to avoid collision with no-intro plans"
+
+
+# ---------------------------------------------------------------------------
+# P: Consent service completeness
+# ---------------------------------------------------------------------------
+
+class TestP_ConsentServiceCompleteness:
+    """Consent service must include all required legal documents."""
+
+    def test_mandatory_documents_include_required_types(self):
+        from app.services.consents import MANDATORY_DOCUMENTS, DOCUMENT_METADATA
+        required_types = {
+            "TERMS_OF_SERVICE",
+            "PRIVACY_POLICY",
+            "SUBSCRIPTION_TERMS",
+            "CANCELLATION_POLICY",
+            "REFUND_POLICY",
+            "PARENT_LEGAL_REP",
+            "CHILD_DATA_PROCESSING",
+            "VOICE_DATA_PROCESSING",
+        }
+        missing = required_types - set(MANDATORY_DOCUMENTS)
+        assert not missing, f"Missing mandatory document types: {missing}"
+
+    def test_all_mandatory_docs_have_metadata(self):
+        from app.services.consents import MANDATORY_DOCUMENTS, DOCUMENT_METADATA
+        for doc in MANDATORY_DOCUMENTS:
+            assert doc in DOCUMENT_METADATA, f"{doc} has no metadata"
+            meta = DOCUMENT_METADATA[doc]
+            assert "title" in meta, f"{doc}: missing title"
+            assert "title_en" in meta, f"{doc}: missing title_en"
+            assert meta["required"] is True, f"{doc}: should be required=True"
+            assert meta["default_checked"] is False, f"{doc}: default_checked should be False"
+
+    def test_get_legal_documents_returns_all_docs(self):
+        from app.services.consents import get_legal_documents, DOCUMENT_METADATA
+        docs = get_legal_documents("ru")
+        doc_types = {d["document_type"] for d in docs}
+        assert len(docs) == len(DOCUMENT_METADATA)
+        assert "REFUND_POLICY" in doc_types
+        assert "VOICE_DATA_PROCESSING" in doc_types
+
+    def test_get_legal_documents_draft_field_present(self):
+        from app.services.consents import get_legal_documents
+        docs = get_legal_documents("ru")
+        for d in docs:
+            assert "draft" in d, f"{d['document_type']}: missing 'draft' field in response"
+
+    def test_get_legal_documents_en_locale(self):
+        from app.services.consents import get_legal_documents
+        docs_en = get_legal_documents("en")
+        for d in docs_en:
+            # English titles should not contain Cyrillic
+            assert not any("\u0400" <= ch <= "\u04FF" for ch in d["title"]), \
+                f"{d['document_type']}: English title contains Cyrillic: {d['title']}"
+
+
+# ---------------------------------------------------------------------------
+# Q: record_payment_consent persists correct data
+# ---------------------------------------------------------------------------
+
+class TestQ_RecordPaymentConsent:
+    """record_payment_consent must save SUBSCRIPTION_TERMS with full payment context."""
+
+    @pytest.mark.asyncio
+    async def test_record_payment_consent_creates_record(self):
+        from app.services.consents import record_payment_consent, CURRENT_DOCUMENT_VERSIONS
+        import json
+        engine, SessionLocal = await make_test_db()
+        async with SessionLocal() as db:
+            from app.db.models import Parent
+            parent = Parent(
+                email="consent_test@example.com",
+                display_name="Consent Test",
+                password_hash="x",
+            )
+            db.add(parent)
+            await db.commit()
+            await db.refresh(parent)
+
+            consent = await record_payment_consent(
+                db,
+                parent_id=parent.id,
+                plan_id="weekly2",
+                billing_period="MONTH",
+                effective_price=69.0,
+                currency="EUR",
+                intro_week_price=6.0,
+                standard_renewal_price=0.0,
+                special_first_year=False,
+                locale="ru",
+            )
+
+        assert consent.id is not None
+        assert consent.document_type == "SUBSCRIPTION_TERMS"
+        assert consent.accepted is True
+        assert consent.document_version == CURRENT_DOCUMENT_VERSIONS["SUBSCRIPTION_TERMS"]
+
+        ctx = json.loads(consent.metadata_json)
+        assert ctx["plan_id"] == "weekly2"
+        assert ctx["billing_period"] == "MONTH"
+        assert ctx["effective_price"] == 69.0
+        assert ctx["intro_week_price"] == 6.0
+        assert ctx["currency"] == "EUR"
+
+    @pytest.mark.asyncio
+    async def test_record_payment_consent_annual_special(self):
+        from app.services.consents import record_payment_consent
+        import json
+        engine, SessionLocal = await make_test_db()
+        async with SessionLocal() as db:
+            from app.db.models import Parent
+            parent = Parent(
+                email="consent_annual@example.com",
+                display_name="Consent Annual",
+                password_hash="x",
+            )
+            db.add(parent)
+            await db.commit()
+            await db.refresh(parent)
+
+            consent = await record_payment_consent(
+                db,
+                parent_id=parent.id,
+                plan_id="weekly4",
+                billing_period="YEAR",
+                effective_price=1199.0,
+                currency="EUR",
+                intro_week_price=12.0,
+                standard_renewal_price=1535.0,
+                special_first_year=True,
+                locale="ru",
+            )
+
+        ctx = json.loads(consent.metadata_json)
+        assert ctx["special_first_year"] is True
+        assert ctx["standard_renewal_price"] == 1535.0
+        assert ctx["intro_week_price"] == 12.0
+

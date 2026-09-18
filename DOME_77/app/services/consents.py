@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import logging
@@ -18,8 +18,10 @@ CURRENT_DOCUMENT_VERSIONS: dict[str, str] = {
     "PRIVACY_POLICY": "2026.1",
     "SUBSCRIPTION_TERMS": "2026.1",
     "CANCELLATION_POLICY": "2026.1",
+    "REFUND_POLICY": "2026.1",
     "PARENT_LEGAL_REP": "2026.1",
     "CHILD_DATA_PROCESSING": "2026.1",
+    "VOICE_DATA_PROCESSING": "2026.1",
     "MARKETING_NEWSLETTER": "2026.1",
 }
 
@@ -30,6 +32,7 @@ DOCUMENT_METADATA = {
         "description": "Правила использования интерактивной платформы DOME и условия предоставления сервиса.",
         "required": True,
         "default_checked": False,
+        "draft": False,
     },
     "PRIVACY_POLICY": {
         "title": "Политика конфиденциальности",
@@ -37,6 +40,7 @@ DOCUMENT_METADATA = {
         "description": "Порядок обработки, защиты и хранения персональных данных пользователей платформы.",
         "required": True,
         "default_checked": False,
+        "draft": False,
     },
     "SUBSCRIPTION_TERMS": {
         "title": "Условия подписки и автопродления",
@@ -44,13 +48,23 @@ DOCUMENT_METADATA = {
         "description": "Условия оплаты, периодичность списаний, правила продления тарифов и управления подпиской.",
         "required": True,
         "default_checked": False,
+        "draft": False,
     },
     "CANCELLATION_POLICY": {
-        "title": "Правила отмены и возврата",
-        "title_en": "Cancellation & Refund Policy",
-        "description": "Порядок отмены подписки в любое время и правила возврата средств.",
+        "title": "Правила отмены подписки",
+        "title_en": "Cancellation Policy",
+        "description": "Порядок отмены подписки в любое время через настройки приложения или PayPal.",
         "required": True,
         "default_checked": False,
+        "draft": False,
+    },
+    "REFUND_POLICY": {
+        "title": "Политика возврата средств",
+        "title_en": "Refund Policy",
+        "description": "После активации цифрового контента платежи не возвращаются, кроме случаев, прямо предусмотренных применимым законодательством.",
+        "required": True,
+        "default_checked": False,
+        "draft": False,
     },
     "PARENT_LEGAL_REP": {
         "title": "Подтверждение статуса законного представителя",
@@ -58,13 +72,23 @@ DOCUMENT_METADATA = {
         "description": "Подтверждение, что лицо является родителем/законным представителем ребёнка и имеет право дать согласие на обучение.",
         "required": True,
         "default_checked": False,
+        "draft": False,
     },
     "CHILD_DATA_PROCESSING": {
         "title": "Согласие на обработку данных ребёнка для обучения",
         "title_en": "Child Educational Data Processing Consent",
-        "description": "Согласие на обработку голосовых записей ответов ребёнка, рисунков и генерацию персонализированного мультфильма урока.",
+        "description": "Согласие на обработку рисунков, прогресса обучения и генерацию персонализированного мультфильма урока.",
         "required": True,
         "default_checked": False,
+        "draft": False,
+    },
+    "VOICE_DATA_PROCESSING": {
+        "title": "Согласие на обработку голосовых данных ребёнка",
+        "title_en": "Child Voice & AI Processing Consent",
+        "description": "Согласие на запись и обработку голоса ребёнка во время учебных заданий для распознавания речи и создания персонализированного мультфильма.",
+        "required": True,
+        "default_checked": False,
+        "draft": False,
     },
     "MARKETING_NEWSLETTER": {
         "title": "Новости и спецпредложения DOME",
@@ -72,6 +96,7 @@ DOCUMENT_METADATA = {
         "description": "Получать полезные материалы для родителей, обновления программы и персональные акции DOME.",
         "required": False,
         "default_checked": False,
+        "draft": False,
     },
 }
 
@@ -89,6 +114,7 @@ def get_legal_documents(locale: str = "ru") -> list[dict[str, Any]]:
             "description": meta["description"],
             "required": meta["required"],
             "default_checked": meta["default_checked"],
+            "draft": meta.get("draft", False),
         })
     return docs
 
@@ -134,6 +160,58 @@ async def record_user_consents(
 
     await db.commit()
     return records
+
+
+async def record_payment_consent(
+    db: AsyncSession,
+    *,
+    parent_id: int,
+    plan_id: str,
+    billing_period: str,
+    effective_price: float,
+    currency: str = "EUR",
+    intro_week_price: float = 0.0,
+    standard_renewal_price: float = 0.0,
+    special_first_year: bool = False,
+    consent_version: str | None = None,
+    ip_address: str | None = None,
+    user_agent: str | None = None,
+    locale: str = "ru",
+) -> UserConsent:
+    """Record SUBSCRIPTION_TERMS consent with full payment context at checkout time.
+
+    Creates an auditable record linking the user's consent to the exact plan,
+    price, billing period and renewal conditions they agreed to.
+    """
+    now = datetime.utcnow()
+    doc_type = "SUBSCRIPTION_TERMS"
+    version = consent_version or CURRENT_DOCUMENT_VERSIONS.get(doc_type, "2026.1")
+
+    payment_context = {
+        "plan_id": plan_id,
+        "billing_period": billing_period,
+        "effective_price": effective_price,
+        "currency": currency,
+        "intro_week_price": intro_week_price,
+        "standard_renewal_price": standard_renewal_price,
+        "special_first_year": special_first_year,
+        "consented_at": now.isoformat(),
+    }
+
+    consent = UserConsent(
+        parent_id=parent_id,
+        document_type=doc_type,
+        document_version=version,
+        accepted=True,
+        accepted_at=now,
+        locale=locale[:16] if locale else "ru",
+        ip_address=ip_address[:64] if ip_address else None,
+        user_agent=user_agent[:512] if user_agent else None,
+        metadata_json=json.dumps(payment_context, ensure_ascii=False),
+    )
+    db.add(consent)
+    await db.commit()
+    return consent
 
 
 async def get_user_consents(db: AsyncSession, parent_id: int) -> list[dict[str, Any]]:

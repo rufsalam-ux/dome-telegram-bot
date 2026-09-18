@@ -943,6 +943,28 @@ async def subscription_checkout(request: web.Request) -> web.Response:
         await db.commit()
         await db.refresh(sub)
 
+        # Record SUBSCRIPTION_TERMS consent with full payment context for audit trail
+        try:
+            from app.services.consents import record_payment_consent, CURRENT_DOCUMENT_VERSIONS
+            consent_ver = str(data.get('consent_version') or CURRENT_DOCUMENT_VERSIONS.get('SUBSCRIPTION_TERMS', '2026.1'))
+            await record_payment_consent(
+                db,
+                parent_id=p.id,
+                plan_id=plan_id,
+                billing_period=billing_period,
+                effective_price=effective_price,
+                currency='EUR',
+                intro_week_price=intro_week_price,
+                standard_renewal_price=standard_renewal_price if special_first_year else 0.0,
+                special_first_year=special_first_year,
+                consent_version=consent_ver,
+                ip_address=str(request.remote or request.headers.get('X-Forwarded-For') or ''),
+                user_agent=request.headers.get('User-Agent'),
+                locale=str(data.get('locale') or 'ru'),
+            )
+        except Exception as consent_err:
+            log.warning('Failed to record payment consent (non-blocking): %s', consent_err)
+
         return web.json_response({
             'ok': True,
             'checkout_url': checkout_res.checkout_url,
@@ -954,11 +976,22 @@ async def subscription_checkout(request: web.Request) -> web.Response:
             'monthly_reference_price': monthly_reference_price,
             'original_price': base_price,
             'effective_price': effective_price,
+            'intro_week_price': intro_week_price,
             'special_first_year': special_first_year,
             'standard_renewal_price': standard_renewal_price if special_first_year else None,
             'currency': 'EUR',
             'promo_applied': bool(promo_result and promo_result.valid),
             'promo_details': promo_result.to_dict() if promo_result else None,
+            'consent_version': consent_ver if 'consent_ver' in dir() else '2026.1',
+            # Card checkout without PayPal account requires PayPal Advanced Card Payments (PPCP).
+            # This requires merchant account approval and is not yet enabled for this account.
+            # To enable: apply at https://www.paypal.com/us/enterprise/payment-processing
+            # and configure payment_source.card in subscription create request.
+            'provider_options': {
+                'paypal_available': True,
+                'card_checkout_available': False,
+                'card_checkout_unavailable_reason': 'PayPal Advanced Card Payments (PPCP) not yet enabled for this merchant account. Users must use a PayPal account to subscribe.',
+            },
         })
 
 

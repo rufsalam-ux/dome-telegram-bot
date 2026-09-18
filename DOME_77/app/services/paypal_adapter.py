@@ -57,6 +57,8 @@ async def ensure_paypal_plan(*,plan_id:str,plan_version_id:str='',lessons_per_we
     version_id=str(plan_version_id or f'legacy-{plan_id}-{period.lower()}-{currency.lower()}-{monthly_price:.2f}')
     if period == 'YEAR' and special_first_year and standard_renewal_price > 0:
         key=f'{version_id}:YEAR:{currency.upper()}:{monthly_price:.2f}:{standard_renewal_price:.2f}:special:{intro_week_price:.2f}'
+    elif intro_week_price > 0:
+        key=f'{_plan_cache_key(version_id,monthly_price,currency,period)}:intro:{intro_week_price:.2f}'
     else:
         key=_plan_cache_key(version_id,monthly_price,currency,period)
     entry=cache.get(key)
@@ -88,6 +90,22 @@ async def ensure_paypal_plan(*,plan_id:str,plan_version_id:str='',lessons_per_we
             'sequence': seq,
             'total_cycles': 0,
             'pricing_scheme': {'fixed_price': {'value': f'{standard_renewal_price:.2f}', 'currency_code': currency.upper()}}
+        })
+    elif intro_week_price > 0:
+        # MONTH plan with intro week: 1-week TRIAL at intro_week_price, then regular monthly billing
+        billing_cycles.append({
+            'frequency': {'interval_unit': 'WEEK', 'interval_count': 1},
+            'tenure_type': 'TRIAL',
+            'sequence': 1,
+            'total_cycles': 1,
+            'pricing_scheme': {'fixed_price': {'value': f'{intro_week_price:.2f}', 'currency_code': currency.upper()}}
+        })
+        billing_cycles.append({
+            'frequency': {'interval_unit': 'MONTH', 'interval_count': 1},
+            'tenure_type': 'REGULAR',
+            'sequence': 2,
+            'total_cycles': 0,
+            'pricing_scheme': {'fixed_price': {'value': f'{monthly_price:.2f}', 'currency_code': currency.upper()}}
         })
     else:
         billing_cycles.append({
