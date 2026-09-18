@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import {
   Alert,
   Linking,
+  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -93,6 +94,7 @@ export function PurchaseScreen({ onBack }: { onBack?: () => void }) {
   const [selectedPeriod, setSelectedPeriod] = useState<'MONTH' | 'YEAR'>('MONTH');
   const [preview, setPreview] = useState<Preview | null>(null);
   const [busy, setBusy] = useState(false);
+  const [legalModalDoc, setLegalModalDoc] = useState<{ title: string; body: string } | null>(null);
 
   const load = useCallback(async () => {
     if (!child) return;
@@ -417,7 +419,7 @@ export function PurchaseScreen({ onBack }: { onBack?: () => void }) {
                 {selectedPeriod === 'MONTH' ? (
                   <View style={styles.introBadge}>
                     <Text style={styles.introBadgeText}>
-                      Первая неделя: {detail.introPrice} € ({detail.introPrice} € за занятие)
+                      Первая неделя: {detail.introPrice} € (3 € за занятие)
                     </Text>
                   </View>
                 ) : (
@@ -435,6 +437,54 @@ export function PurchaseScreen({ onBack }: { onBack?: () => void }) {
                     ) : null}
                   </View>
                 )}
+
+                {/* Payment Details Box — transparent billing summary before checkout */}
+                {!isCurrent && !isPending && !(subscription && subscription.status === 'ACTIVE') ? (
+                  <View style={styles.paymentDetailsBox}>
+                    <Text style={styles.paymentDetailsTitle}>Условия оплаты</Text>
+                    {selectedPeriod === 'MONTH' ? (
+                      <>
+                        <Text style={styles.paymentDetailRow}>
+                          🗓 Первая неделя: <Text style={styles.paymentDetailBold}>{detail.introPrice} €</Text>
+                          {` (${plan.lessons_per_week} ${plan.lessons_per_week === 1 ? 'занятие' : 'занятия'} × 3 € = ${detail.introPrice} €)`}
+                        </Text>
+                        <Text style={styles.paymentDetailRow}>
+                          📅 Далее: <Text style={styles.paymentDetailBold}>{money(effectivePrice, displayCurrency)} / месяц</Text> автоматически
+                        </Text>
+                        <Text style={styles.paymentDetailRow}>
+                          🔄 Подписка продлевается каждый месяц до отмены
+                        </Text>
+                        <Text style={styles.paymentDetailRow}>
+                          ❌ Отмена: через PayPal или настройки приложения в любое время
+                        </Text>
+                      </>
+                    ) : (
+                      <>
+                        <Text style={styles.paymentDetailRow}>
+                          🗓 Первая неделя: <Text style={styles.paymentDetailBold}>{detail.introPrice} €</Text>
+                          {` (${plan.lessons_per_week} ${plan.lessons_per_week === 1 ? 'занятие' : 'занятия'} × 3 € = ${detail.introPrice} €)`}
+                        </Text>
+                        {isSpecialAnnual ? (
+                          <>
+                            <Text style={styles.paymentDetailRow}>
+                              🌟 Первый год: <Text style={styles.paymentDetailBold}>{money(effectivePrice, displayCurrency)}</Text>
+                            </Text>
+                            <Text style={styles.paymentDetailRow}>
+                              🔄 Следующее продление: <Text style={styles.paymentDetailBold}>{money(plan.standard_renewal_price, displayCurrency)} / год</Text>
+                            </Text>
+                          </>
+                        ) : (
+                          <Text style={styles.paymentDetailRow}>
+                            📅 Далее: <Text style={styles.paymentDetailBold}>{money(effectivePrice, displayCurrency)} / год</Text> автоматически
+                          </Text>
+                        )}
+                        <Text style={styles.paymentDetailRow}>
+                          ❌ Отмена: через PayPal или настройки приложения в любое время
+                        </Text>
+                      </>
+                    )}
+                  </View>
+                ) : null}
 
                 <Button
                   disabled={busy || Boolean(isCurrent)}
@@ -456,6 +506,43 @@ export function PurchaseScreen({ onBack }: { onBack?: () => void }) {
                 {/* Mandatory renewal disclosure for special annual */}
                 {isSpecialAnnual && plan.renewal_disclosure ? (
                   <Text style={styles.renewalDisclosure}>{plan.renewal_disclosure}</Text>
+                ) : null}
+
+                {/* Legal consent line — shown for new subscriptions only */}
+                {!isCurrent && !isPending && !(subscription && subscription.status === 'ACTIVE') ? (
+                  <Text style={styles.legalConsentLine}>
+                    Оформляя подписку, вы принимаете{' '}
+                    <Text
+                      style={styles.legalConsentLink}
+                      onPress={() => setLegalModalDoc({
+                        title: 'Пользовательское соглашение',
+                        body: 'DOME предоставляет ограниченное, личное, непередаваемое право доступа к цифровым образовательным материалам на срок и в количестве, указанном при покупке. Каждый выданный урок может быть полностью завершён не более двух раз. Каждое полное прохождение может создавать отдельный персонализированный мультфильм. Домашнее задание выдаётся один раз после первого полного прохождения. Покупка является оплатой цифрового доступа, а не гарантией конкретного образовательного результата. После активации и начала предоставления цифрового контента платежи не возвращаются, кроме случаев, когда возврат прямо обязателен применимым законодательством.',
+                      })}
+                    >
+                      Пользовательское соглашение
+                    </Text>
+                    {', '}
+                    <Text
+                      style={styles.legalConsentLink}
+                      onPress={() => setLegalModalDoc({
+                        title: 'Политику конфиденциальности',
+                        body: 'Мы обрабатываем данные родителя и ребёнка только для регистрации, предоставления обучения, сохранения прогресса, безопасности, поддержки, платежей, отчётов и создания персонализированных материалов. Данные ребёнка не продаются и не используются для поведенческой рекламы. Сроки хранения должны быть ограничены необходимостью и требованиями закона. Родитель может запросить доступ, исправление, экспорт или удаление данных в пределах применимого законодательства.',
+                      })}
+                    >
+                      Политику конфиденциальности
+                    </Text>
+                    {' и '}
+                    <Text
+                      style={styles.legalConsentLink}
+                      onPress={() => setLegalModalDoc({
+                        title: 'Условия подписки и автопродления',
+                        body: 'Подписка оформляется на выбранный период (месяц или год) и автоматически продлевается до отмены. Первая неделя тарифицируется по 3 € за занятие. Для месячных тарифов следующее списание производится по выбранной месячной цене. Для годовых тарифов — по годовой цене. Вы можете отменить подписку в любое время через настройки PayPal или в профиле приложения. Отмена прекращает автоматическое продление — текущий период остаётся активным до его окончания.',
+                      })}
+                    >
+                      Условия подписки
+                    </Text>
+                    .
+                  </Text>
                 ) : null}
               </Card>
             );
@@ -485,6 +572,26 @@ export function PurchaseScreen({ onBack }: { onBack?: () => void }) {
       ) : null}
 
       <Button disabled={busy} title="Назад" secondary onPress={handleBack} />
+
+      {/* Legal Document Modal */}
+      <Modal
+        visible={legalModalDoc !== null}
+        animationType="slide"
+        transparent={false}
+        onRequestClose={() => setLegalModalDoc(null)}
+      >
+        <View style={styles.legalModalContainer}>
+          <View style={styles.legalModalHeader}>
+            <Text style={styles.legalModalTitle}>{legalModalDoc?.title}</Text>
+            <Pressable onPress={() => setLegalModalDoc(null)} style={styles.legalModalClose}>
+              <Text style={styles.legalModalCloseText}>✕ Закрыть</Text>
+            </Pressable>
+          </View>
+          <ScrollView style={styles.legalModalBody} contentContainerStyle={{ padding: 20 }}>
+            <Text style={styles.legalModalText}>{legalModalDoc?.body}</Text>
+          </ScrollView>
+        </View>
+      </Modal>
     </ScrollView>
   );
 }
@@ -716,6 +823,89 @@ const styles = StyleSheet.create({
     lineHeight: 16,
     marginTop: 8,
     fontStyle: 'italic',
+  },
+  // Payment details box — transparent billing summary before checkout button
+  paymentDetailsBox: {
+    backgroundColor: '#F0F9FF',
+    borderWidth: 1,
+    borderColor: '#BAE6FD',
+    borderRadius: 10,
+    padding: 12,
+    marginTop: 12,
+    marginBottom: 4,
+    gap: 4,
+  },
+  paymentDetailsTitle: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#0369A1',
+    marginBottom: 6,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
+  paymentDetailRow: {
+    fontSize: 12,
+    color: '#374151',
+    lineHeight: 18,
+  },
+  paymentDetailBold: {
+    fontWeight: '700',
+    color: '#111827',
+  },
+  // Legal consent line — shown after checkout button
+  legalConsentLine: {
+    fontSize: 11,
+    color: '#6B7280',
+    lineHeight: 16,
+    marginTop: 10,
+    textAlign: 'center',
+  },
+  legalConsentLink: {
+    color: '#2563EB',
+    textDecorationLine: 'underline',
+    fontWeight: '500',
+  },
+  // Legal document modal
+  legalModalContainer: {
+    flex: 1,
+    backgroundColor: '#FFFFFF',
+  },
+  legalModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingTop: 56,
+    paddingBottom: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E5E7EB',
+    backgroundColor: '#F9FAFB',
+  },
+  legalModalTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#111827',
+    flex: 1,
+    marginRight: 12,
+  },
+  legalModalClose: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    backgroundColor: '#E5E7EB',
+    borderRadius: 8,
+  },
+  legalModalCloseText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#374151',
+  },
+  legalModalBody: {
+    flex: 1,
+  },
+  legalModalText: {
+    fontSize: 14,
+    color: '#374151',
+    lineHeight: 22,
   },
 });
 

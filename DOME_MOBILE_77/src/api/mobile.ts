@@ -477,10 +477,28 @@ export function validatePromoCode(childId:string|number, code:string, planId:str
   }));
 }
 
-export function subscriptionCheckout(childId:string|number, planId:string, billingPeriod='MONTH', courseId='conversation', promoCode='') {
+export function subscriptionCheckout(
+  childId: string | number,
+  planId: string,
+  billingPeriod = 'MONTH',
+  courseId = 'conversation',
+  promoCode = '',
+  consentVersion = '2026.1',
+  locale = 'ru',
+) {
   return request(`/api/mobile/child/${childId}/subscription/checkout`, jsonInit('POST', {
-    plan_id: planId, billing_period: billingPeriod, course_id: courseId, promo_code: promoCode, provider: 'paypal'
+    plan_id: planId,
+    billing_period: billingPeriod,
+    course_id: courseId,
+    promo_code: promoCode,
+    provider: 'paypal',
+    consent_version: consentVersion,
+    locale,
   }));
+}
+
+export function getLegalDocuments(locale = 'ru') {
+  return request(`/api/mobile/legal/documents?locale=${locale}`);
 }
 
 export function verifySubscription(childId:string|number, subscriptionId:string, courseId='conversation', promoCode='') {
