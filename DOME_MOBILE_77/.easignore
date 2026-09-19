@@ -1,4 +1,31 @@
 # Keep EAS preview uploads limited to build source and declared assets.
+# EAS resolves this ignore file from the mobile project, but archives from the
+# monorepo Git root.  These root-relative exclusions keep server code, Git
+# history and local build products out of the Android source upload.
+/.git/
+/.github/
+/.pytest_tmp/
+/DOME_77/
+/content/
+/storage/
+/scratch_*.png
+/Dockerfile
+/railway.json
+/codemagic.yaml
+/DOME_MOBILE_77/node_modules/
+/DOME_MOBILE_77/.expo/
+/DOME_MOBILE_77/.npm-cache/
+/DOME_MOBILE_77/graphify-out/
+/DOME_MOBILE_77/android/.gradle/
+/DOME_MOBILE_77/android/.kotlin/
+/DOME_MOBILE_77/android/.cxx/
+/DOME_MOBILE_77/android/build/
+/DOME_MOBILE_77/android/app/build/
+/DOME_MOBILE_77/android/app/dome-release.keystore
+/DOME_MOBILE_77/android/app/*.keystore
+/DOME_MOBILE_77/*.apk
+/DOME_MOBILE_77/*.aab
+
 node_modules/
 .expo/
 .npm-cache/
@@ -33,6 +60,8 @@ qr_display.txt
 tg_*.txt
 unicode_qr.txt
 *.zip
+*.apk
+*.aab
 
 # Pytest temp dirs (cause EPERM on Windows/OneDrive during EAS upload)
 ../.pytest-*/
@@ -40,19 +69,12 @@ unicode_qr.txt
 ../.pytest-tmp-*/
 ../.pytest-progress-*/
 
-# Large video assets are served from Railway CDN at runtime — exclude from APK archive
-assets/videos/*.mov
-assets/videos/*.mp4
-assets/videos/*.avi
-
 # Gradle build cache & local build artifacts
 android/.cxx/
 android/app/build/
 android/build/
 android/.gradle/
 android/app/src/main/assets/index.android.bundle
-android/app/src/main/res/drawable/
-android/app/src/main/res/raw/
 
 # Local keystore (never upload — EAS uses remote credentials)
 android/app/dome-release.keystore
