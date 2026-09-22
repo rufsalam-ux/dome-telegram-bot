@@ -38,6 +38,7 @@ function childProfile(raw:any,parentId:string):ChildProfile{
     workingDifficulty:Number(raw.working_difficulty??0.15),
     courseId:'conversation',
     activeCharacterId:raw.active_character_id,
+    heroId:raw.hero_id||null,
     heroUrl:raw.hero_url||null,
     heroMetadata:raw.hero_metadata||null,
   };

@@ -20,6 +20,12 @@ def _norm(text: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[^\wа-яА-ЯёЁ]+", " ", (text or "").lower())).strip()
 
 
+def stable_animation_id(avatar_id: str | int, animation_key: str, direction: str, generation_version: str) -> str:
+    """Stable reusable identity for one avatar motion, independent of a movie run."""
+    raw=f"{avatar_id}|{animation_key}|{direction}|{generation_version}"
+    return f"anim_{hashlib.sha256(raw.encode('utf-8')).hexdigest()[:24]}"
+
+
 def signature(description_ru: str, *, speaking: bool, view: str, duration: float) -> str:
     # Bucket duration so a 4.7s and 5.0s scene can safely reuse the same 5s motion.
     bucket = 10 if duration > 5.2 else 5
@@ -92,6 +98,7 @@ class CharacterMotionLibrary:
         ).hexdigest()[:24]
         data = self._load()
         data.setdefault("motions", {})[sig] = {
+            "animation_id": stable_animation_id(self.avatar_id, animation_key, direction, generation_version),
             "avatar_id": self.avatar_id,
             "source_avatar_hash": self.source_avatar_hash,
             "animation_key": animation_key,
@@ -120,11 +127,14 @@ class CharacterMotionLibrary:
         if source.resolve() != target.resolve():
             shutil.copy2(source,target)
         data = self._load()
+        resolved_key = animation_key or ("talk" if speaking else "idle")
+        resolved_direction = direction or ("left" if str(view).endswith("left") else "right" if str(view).endswith("right") else "front")
         data.setdefault("motions", {})[sig] = {
+            "animation_id": stable_animation_id(self.avatar_id, resolved_key, resolved_direction, generation_version),
             "avatar_id": self.avatar_id,
             "source_avatar_hash": self.source_avatar_hash,
-            "animation_key": animation_key or ("talk" if speaking else "idle"),
-            "direction": direction or ("left" if str(view).endswith("left") else "right" if str(view).endswith("right") else "front"),
+            "animation_key": resolved_key,
+            "direction": resolved_direction,
             "description_ru": description_ru,
             "speaking": bool(speaking),
             "view": view,

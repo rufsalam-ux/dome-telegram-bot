@@ -5,6 +5,7 @@ import json
 import logging
 import math
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from app.core.config import settings
 from app.core.i18n import language_name
 from app.services.conversational_tutor import TutorTurn, adaptive_follow_up_policy, build_assessed_turn
 from app.services.lesson_voice_context import referenced_items_are_visible
+from app.services.language_realization import realize_tutor_result
 
 log = logging.getLogger("dome.speech")
 
@@ -195,7 +197,8 @@ def _safe_json(text: str) -> dict:
     return json.loads(text)
 
 
-async def _evaluate_with_chat(prompt: dict) -> dict | None:
+async def _evaluate_with_chat(prompt: dict, trace_id: str = "") -> dict | None:
+    trace_id=trace_id or str(prompt.get("_trace_id") or "")
     instructions = (
         "You are Mila, a warm and caring female language tutor for children aged 3-12. "
         "You speak and refer to yourself using feminine grammatical forms (in Russian: я рада, я готова, я слушаю, etc.). "
@@ -232,6 +235,8 @@ async def _evaluate_with_chat(prompt: dict) -> dict | None:
         "When selection_policy is child_choice, the child's selected_items are valid by definition: there is no hidden correct set. "
         "If the child answers in native_language when target_language was required, set decision=WRONG_LANGUAGE, set reaction_target='', and provide a warm, encouraging hint in response_native/native_hint asking the child to repeat in target_language. Do not mark as CORRECT when spoken in native_language or wrong language. "
         "child_gender indicates if the child is a boy or girl. Use grammatically appropriate forms in target and native languages (e.g. in Russian: молодец/умница, past tense verbs like сказал/сказала, выбрал/выбрала). "
+        "Never emit technical gender placeholders such as выбрал(а), сказал(а), slash alternatives, or parentheses intended for a template. "
+        "You are female. In Russian self-reference always use feminine grammar: я поняла, услышала, заметила, рада, готова. "
         "dialogue_history contains recent turns of conversation in this lesson. Maintain conversational continuity and do not repeat previous questions. "
         "response_native/native_hint are brief and only needed for wrong-language, off-topic, confused, or explicitly requested progressive help. "
         "emotion must be one of warm, happy, curious, surprised, encouraging, gentle_correction. "
@@ -243,9 +248,7 @@ async def _evaluate_with_chat(prompt: dict) -> dict | None:
         "Do not invent visual_metadata facts or apply corrections when no contradiction is present."
     )
     headers = {"Authorization": f"Bearer {settings.openai_api_key}", "Content-Type": "application/json"}
-    models = [settings.openai_text_model or "gpt-4o-mini"]
-    if models[0] != "gpt-4o-mini":
-        models.append("gpt-4o-mini")
+    models = [settings.openai_tutor_model or "gpt-4o-mini"]
     async with httpx.AsyncClient(timeout=90) as client:
         for model in models:
             payload = {
@@ -256,13 +259,19 @@ async def _evaluate_with_chat(prompt: dict) -> dict | None:
                     {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
                 ],
             }
+            requested=time.perf_counter()
+            log.info("MOBILE_VOICE_TRACE trace=%s stage=T7_AI_REQUEST model=%s",trace_id or '-',model)
             response = await client.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
+            received=time.perf_counter()
+            log.info("MOBILE_VOICE_TRACE trace=%s stage=T8_AI_RESPONSE model=%s http=%s elapsed_ms=%d",trace_id or '-',model,response.status_code,round((received-requested)*1000))
             if response.status_code >= 400:
                 log.warning("Assessment failed model=%s status=%s body=%s", model, response.status_code, response.text[:500])
                 continue
             try:
                 text = response.json()["choices"][0]["message"]["content"]
-                return _safe_json(text)
+                parsed=_safe_json(text)
+                log.info("MOBILE_VOICE_TRACE trace=%s stage=T9_AI_PARSED model=%s elapsed_ms=%d",trace_id or '-',model,round((time.perf_counter()-received)*1000))
+                return parsed
             except Exception as exc:
                 log.warning("Assessment parse failed model=%s: %s", model, exc)
     return None
@@ -292,8 +301,12 @@ async def assess_speech(
     open_question_first: bool = True,
     examples_allowed: bool = True,
     dialogue_history: list[dict] | None = None,
+    trace_id: str = "",
 ) -> SpeechAssessment:
+    log.info("MOBILE_VOICE_TRACE trace=%s stage=T4_STT_START",trace_id or '-')
+    stt_started=time.perf_counter()
     transcript, detected, confidence = await transcribe_audio(wav_path, target_language, native_language, goal)
+    log.info("MOBILE_VOICE_TRACE trace=%s stage=T5_STT_DONE elapsed_ms=%d transcript_chars=%d confidence=%.3f",trace_id or '-',round((time.perf_counter()-stt_started)*1000),len(transcript),confidence)
     if is_non_speech_transcript(transcript) or confidence < 0.35:
         return SpeechAssessment(
             transcript=transcript,
@@ -349,7 +362,7 @@ async def assess_speech(
         "attempt_number": attempt_number,
         "child_name": child_name,
         "child_gender": child_gender or "boy",
-        "dialogue_history": (dialogue_history or [])[-6:],
+        "dialogue_history": (dialogue_history or [])[-12:],
         "working_difficulty_0_to_1": max(0.0, min(1.0, float(working_difficulty or 0.15))),
         "profile_language_level": language_level or "PRE_A1",
         "dialogue_policy": {
@@ -364,10 +377,13 @@ async def assess_speech(
             "pre_a1_max_questions_per_turn": 1,
             "policy_reason": follow_up_reason,
         },
+        "_trace_id": trace_id,
     }
+    log.info("MOBILE_VOICE_TRACE trace=%s stage=T6_CONTEXT_VALIDATED history=%d",trace_id or '-',len(prompt["dialogue_history"]))
     result = await _evaluate_with_chat(prompt)
     if not result:
         return SpeechAssessment(transcript=transcript, detected_language=detected, confidence=confidence)
+    result=realize_tutor_result(result,target_language,native_language,child_gender)
     if runtime_context and not referenced_items_are_visible(result, runtime_context):
         log.error(
             "MOBILE_VOICE_CONTEXT_REJECTED visible=%s referenced=%s",

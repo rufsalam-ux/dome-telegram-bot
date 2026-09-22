@@ -390,7 +390,7 @@ test('DOME cat is an independent companion and reward star stays in its own laye
   const cat=readFileSync(new URL('../src/components/CatActivityLayer.tsx',import.meta.url),'utf8');const reward=readFileSync(new URL('../src/components/RewardEffectLayer.tsx',import.meta.url),'utf8');const player=readFileSync(new URL('../src/screens/LessonPlayer.tsx',import.meta.url),'utf8');
   assert.doesNotMatch(cat,/star\.png|gameActive|cat-mini-game-star|assets\/heroes\/cat\.png/);assert.match(cat,/DomeMascot/);assert.doesNotMatch(cat,/return null/);assert.match(reward,/star\.png/);assert.match(player,/<CatActivityLayer/);
   assert.match(player,/childIdeaPrompt\(labelRu,'suitcase'\)/);
-  assert.match(player,/const adaptiveContext=\{\.\.\.voiceRuntimeContext/);
+  assert.match(player,/const adaptiveContext=\{\.\.\.snapshot\.runtimeContext/);assert.match(player,/recordingSnapshotRef/);
   assert.match(player,/finalizeLocalVoiceRecording\(uri/);assert.match(player,/sendVoice\(localRecording\.sessionId/);
   assert.match(player,/acknowledgeLocalVoiceRecording\(localRecording\)/);assert.match(player,/retryPendingVoice/);
   const api=readFileSync(new URL('../src/api/mobile.ts',import.meta.url),'utf8');assert.match(api,/Idempotency-Key/);assert.match(api,/new FormData\(\)/);assert.match(api,/dome-pending-voice/);assert.match(api,/const \{File\}=require\('expo-file-system'\)/);assert.match(api,/new File\(uri\)/);assert.match(api,/form\.append\('audio',audioFile as any\)/);assert.doesNotMatch(api,/form\.append\('audio',\{uri/);

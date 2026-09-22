@@ -377,10 +377,10 @@ def test_release_mobile_runtime_uses_server_selected_lesson_and_production_api()
     player = (root / "src/screens/LessonPlayer.tsx").read_text("utf-8")
     app = (root / "src/screens/RootApp.tsx").read_text("utf-8")
     env = (root / ".env.example").read_text("utf-8")
-    assert "getLesson(lessonId)" in player and "startSession(child.id,lessonId)" in player
+    assert "getLessonWithOfflineFallback(lessonId)" in player and "startSession(child.id,lessonId)" in player
     assert "listLessons(child.id)" in app
     assert "require('./LessonPlayer')" in app and "<LessonPlayer lessonId={activeLessonId}" in app
-    assert "dome-telegram-bot-production.up.railway.app" in env
+    assert "dome-telegram-bot-production-e6f6.up.railway.app" in env
 
 
 def test_studio_lesson_orders_are_not_filtered_by_demo_001_legacy_cut(monkeypatch, tmp_path):

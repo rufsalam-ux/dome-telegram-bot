@@ -7,11 +7,13 @@ from app.services.character_geometry import ANALYSIS_VERSION, attach_character_r
 PRESET_CHARACTERS: list[dict] = [
     {"id": "robot", "title": "Робот", "file": "robot.png"},
     {"id": "fox", "title": "Лисёнок", "file": "fox.png"},
-    {"id": "cat", "title": "Серый котик", "file": "cat.png"},
     {"id": "dome_cat", "title": "Кот DOME", "file": "dome_cat.png"},
     {"id": "dragon", "title": "Дракончик", "file": "dragon.png"},
     {"id": "explorer", "title": "Путешественник", "file": "explorer.png"},
     {"id": "star", "title": "Звёздный герой", "file": "star.png"},
+    # Kept only so old rows and audit/history can still be read. It is never
+    # returned by the active catalog and cannot become a runtime fallback.
+    {"id": "cat", "title": "Legacy cat", "file": "cat.png", "active": False},
 ]
 
 
@@ -82,7 +84,8 @@ PRESET_RIG_GEOMETRY: dict[str, dict] = {
 
 
 def list_preset_characters() -> list[dict]:
-    return PRESET_CHARACTERS
+    return [{key: value for key, value in character.items() if key != "active"}
+            for character in PRESET_CHARACTERS if character.get("active", True)]
 
 
 def get_preset_character(character_id: str) -> dict:

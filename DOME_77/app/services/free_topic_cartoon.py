@@ -7,6 +7,18 @@ class FreeTopicCartoonError(RuntimeError):
     pass
 
 
+def _try_segment_hero(character_png:Path, work:Path)->Path|None:
+    """Compatibility hook for callers that can optionally provide a rigged hero.
+
+    The current renderer preserves the original flat artwork and does not invent
+    body parts. Missing or unsupported sources therefore degrade to the existing
+    whole-character motion instead of failing the movie build.
+    """
+    if not character_png.exists() or not character_png.is_file():
+        return None
+    return None
+
+
 def _run(cmd:list[str], timeout:int=420):
     try:
         return subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=timeout)

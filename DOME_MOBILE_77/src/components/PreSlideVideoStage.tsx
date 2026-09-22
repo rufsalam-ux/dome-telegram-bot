@@ -23,10 +23,11 @@ const OVERLAY_BTN = {
 function Player({source,video,onDone}:{source:ResolvedSource;video:PreSlideVideoDescriptor;onDone:(outcome:'ended'|'failed')=>void}){
   const player=useVideoPlayer(source as VideoSource,current=>{current.loop=false;if(video.autoplay)current.play()});
   useEffect(()=>{
-    const watchdog=setTimeout(()=>onDone('failed'),120_000);
-    const ended=player.addListener('playToEnd',()=>onDone('ended'));
-    const status=player.addListener('statusChange',event=>{if(event.status==='error')onDone('failed')});
-    return()=>{clearTimeout(watchdog);ended.remove();status.remove()};
+    const stop=(outcome:'ended'|'failed')=>{try{player.pause()}catch{}onDone(outcome)};
+    const watchdog=setTimeout(()=>stop('failed'),120_000);
+    const ended=player.addListener('playToEnd',()=>stop('ended'));
+    const status=player.addListener('statusChange',event=>{if(event.status==='error')stop('failed')});
+    return()=>{clearTimeout(watchdog);ended.remove();status.remove();try{player.pause()}catch{}};
   },[player,onDone]);
   return (
     <View style={{width:'100%',height:'100%',backgroundColor:'#000'}}>

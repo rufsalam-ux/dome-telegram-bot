@@ -225,13 +225,15 @@ def select_movie_voice_takes(voice_attempts: Iterable[object], lesson: dict) -> 
 
     required = required_movie_phrase_ids(lesson)
     wanted = set(all_movie_phrase_ids(lesson))
-    selected: dict[str, Path] = {}
+    selected_rows: dict[str, tuple[int, Path]] = {}
     for attempt in voice_attempts:
         phrase_id = str(getattr(attempt, "phrase_id", "") or "")
         status = str(getattr(attempt, "status", "") or "")
         path = Path(str(getattr(attempt, "audio_path", "") or ""))
         if phrase_id in wanted and movie_take_status(status) and path.exists() and path.stat().st_size > 0:
-            selected[phrase_id] = path
+            attempt_id=int(getattr(attempt,"id",0) or 0)
+            if attempt_id>=selected_rows.get(phrase_id,(-1,path))[0]:selected_rows[phrase_id]=(attempt_id,path)
+    selected={phrase_id:value[1] for phrase_id,value in selected_rows.items()}
     return selected, [phrase_id for phrase_id in required if phrase_id not in selected]
 
 
@@ -292,7 +294,9 @@ async def resolve_movie_voice_slots(db, session_id: int, voice_attempts: Iterabl
     exact:dict[str,object]={}
     for attempt in attempts:
         phrase_id=str(getattr(attempt,"phrase_id","") or "");path=Path(str(getattr(attempt,"audio_path","") or ""))
-        if phrase_id in wanted and movie_take_status(getattr(attempt,"status","")) and path.exists() and path.stat().st_size>0:exact[phrase_id]=attempt
+        if phrase_id in wanted and movie_take_status(getattr(attempt,"status","")) and path.exists() and path.stat().st_size>0:
+            current=exact.get(phrase_id)
+            if current is None or int(getattr(attempt,"id",0) or 0)>=int(getattr(current,"id",0) or 0):exact[phrase_id]=attempt
     for slot in slots:
         phrase_id=slot.required_voice_id;attempt=exact.get(phrase_id)
         if attempt:

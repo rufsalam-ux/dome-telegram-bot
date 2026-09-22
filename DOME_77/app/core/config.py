@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     admin_telegram_ids: str = ""
     openai_api_key: str = ""
     openai_text_model: str = "gpt-5-mini"
+    # Child-turn evaluation is latency-sensitive and has a bounded JSON task.
+    # Keep it independent from the heavier general text model used elsewhere.
+    openai_tutor_model: str = "gpt-4o-mini"
     openai_tts_model: str = "gpt-4o-mini-tts"
     openai_tts_voice: str = "coral"
     child_tts_voice: str = "coral"

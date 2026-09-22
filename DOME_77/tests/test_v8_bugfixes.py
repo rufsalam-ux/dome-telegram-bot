@@ -24,8 +24,10 @@ def test_voice_protocol_is_bounded():
 
 def test_transcription_has_fallback():
     text = Path("app/services/speech_pipeline.py").read_text(encoding="utf-8")
+    config = Path("app/core/config.py").read_text(encoding="utf-8")
     assert 'else ["whisper-1"]' in text
-    assert 'models.append("gpt-4o-mini")' in text
+    assert "settings.openai_tutor_model" in text
+    assert 'openai_tutor_model: str = "gpt-4o-mini"' in config
 
 
 def test_semantic_match_labels_do_not_crash():

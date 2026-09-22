@@ -4,11 +4,15 @@ from pathlib import Path
 from typing import Any
 
 from app.services.animation_library import animation_profile
-from .character_motion_library import CharacterMotionLibrary
+from .character_motion_library import CharacterMotionLibrary, stable_animation_id
 from .motion_planner import SEMANTIC_ACTIONS
 
 
 LOCAL_MOTION_VERSION = "avatar-cutout-v2"
+
+
+def stable_local_animation_id(avatar_id: str | int, action: str) -> str:
+    return stable_animation_id(avatar_id, action, action_direction(action), LOCAL_MOTION_VERSION)
 
 
 def analyze_hero_for_animation(metadata: dict[str, Any] | None, *, built_in: bool = False) -> dict[str, Any]:

@@ -9,13 +9,12 @@ function rectStyle(rect:NormalizedRect|number[]){
   return {left:`${values.left*100}%`,top:`${values.top*100}%`,width:`${values.width*100}%`,height:`${values.height*100}%`} as any;
 }
 
-const DEFAULT_HERO = require('../../assets/heroes/explorer.png');
-
 export function ChildAvatarLayer({uri,rect,facing,animation,metadata}:{uri?:string;rect:number[]|null;facing:AvatarFacing;animation:Animated.Value;metadata?:any}){
   const trace=avatarRenderTrace(metadata,facing);const[size,setSize]=useState({width:0,height:0});const[loadFailed,setLoadFailed]=useState(false);const frame=useMemo(()=>avatarImageFrame(metadata,size.width,size.height),[metadata,size.width,size.height]);
   useEffect(()=>{if(rect)console.info('[DOME_AVATAR_RENDER]',JSON.stringify({...trace,rect,hasUri:Boolean(uri),loadFailed}))},[uri,rect?.join(','),trace.sourceFacing,trace.desiredFacing,trace.appliedFlip,trace.confirmed,trace.analysisVersion,loadFailed]);
   if(!rect)return null;
-  const source = uri && !loadFailed ? {uri} : DEFAULT_HERO;
+  if(!uri||loadFailed)return <View testID='lesson-hero-placeholder' accessibilityLabel='Герой загружается' pointerEvents='none' style={[{position:'absolute',zIndex:5,elevation:5,overflow:'hidden',borderRadius:24,backgroundColor:'rgba(255,255,255,.28)',borderWidth:2,borderColor:'rgba(255,255,255,.48)'},rectStyle(rect)]}/>;
+  const source = {uri};
   return <View testID='lesson-hero-overlay' accessibilityLabel='Выбранный герой ребёнка' pointerEvents='none' onLayout={event=>{const{width,height}=event.nativeEvent.layout;if(Math.abs(width-size.width)>.5||Math.abs(height-size.height)>.5)setSize({width,height})}} style={[{position:'absolute',zIndex:5,elevation:5,overflow:'visible'},rectStyle(rect)]}>
     <Animated.Image testID='lesson-child-avatar' source={source} onError={()=>setLoadFailed(true)} resizeMode='contain' style={[size.width>0&&size.height>0?{position:'absolute',left:frame.left,top:frame.top,width:frame.width,height:frame.height}:{position:'absolute',left:0,top:0,width:'100%',height:'100%'},{transform:[{translateY:animation.interpolate({inputRange:[0,1],outputRange:[0,-4]})},{scaleX:avatarScaleX(facing,sourceAvatarFacing(metadata))}]}]}/>
   </View>;

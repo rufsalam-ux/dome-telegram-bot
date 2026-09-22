@@ -32,8 +32,8 @@ def test_two_cats_have_distinct_unchanged_assets():
     assert old != new
     assert hashlib.sha256(old.read_bytes()).digest()!=hashlib.sha256(new.read_bytes()).digest()
     mobile=Path(__file__).resolve().parents[2]/'DOME_MOBILE_77/assets/heroes'
-    assert old.read_bytes()==(mobile/'legacy-cat.png').read_bytes()
     assert new.read_bytes()==(mobile/'cat.png').read_bytes()
+    assert not (mobile/'legacy-cat.png').exists()
     with Image.open(new) as im:assert preset_character_geometry('dome_cat')['visibleAspectRatio']==im.width/im.height
 
 @pytest.mark.asyncio
@@ -55,7 +55,7 @@ async def test_preset_reselection_retains_identity_and_profile(monkeypatch,tmp_p
     try:
         headers={'Authorization':'Bearer '+issue_session_token(pid)}
         ids=[]
-        for catalog in ['cat','cat','robot','cat']:
+        for catalog in ['cat','dome_cat','robot','cat']:
             response=await client.post(f'/api/mobile/child/{cid}/hero/preset',json={'catalog_id':catalog},headers=headers)
             assert response.status==200,await response.text()
             ids.append((await response.json())['character_id'])
@@ -63,5 +63,7 @@ async def test_preset_reselection_retains_identity_and_profile(monkeypatch,tmp_p
         async with sessions() as db:
             assert (await db.get(Child,cid)).active_character_id==ids[0]
             assert await db.scalar(select(func.count()).select_from(Character))==2
+            selected=await db.get(Character,ids[0])
+            assert selected.catalog_id=='dome_cat'
     finally:
         await client.close();await engine.dispose()

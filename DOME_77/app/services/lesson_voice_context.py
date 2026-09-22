@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Iterable
 
 from app.services.conversational_tutor import TutorTurn
+from app.services.language_realization import russian_accusative
 
 
 @dataclass(frozen=True)
@@ -11,12 +12,16 @@ class RuntimeItem:
     id: str
     label_target: str
     label_native: str
+    label_target_accusative: str
+    label_native_accusative: str
 
     def payload(self) -> dict[str, str]:
         return {
             "id": self.id,
             "label_target": self.label_target,
             "label_native": self.label_native,
+            "label_target_accusative": self.label_target_accusative,
+            "label_native_accusative": self.label_native_accusative,
         }
 
 
@@ -38,6 +43,17 @@ def _label(item: dict, language: str, *, fallback: str = "") -> str:
         item.get("id"),
     ]
     return next((str(value).strip() for value in candidates if str(value or "").strip()), "")
+
+
+def _label_case(item: dict, language: str, case: str, *, fallback: str = "") -> str:
+    language = str(language or "").lower()
+    authored = item.get(f"label_{language}_{case}")
+    forms = item.get(f"forms_{language}") if isinstance(item.get(f"forms_{language}"), dict) else {}
+    value = str(authored or forms.get(case) or "").strip()
+    if value:
+        return value
+    nominative = _label(item, language, fallback=fallback)
+    return russian_accusative(nominative, animate=bool(item.get("animate"))) if language == "ru" and case == "accusative" else nominative
 
 
 def _authored_items(slide: dict, target_language: str, native_language: str) -> list[RuntimeItem]:
@@ -67,6 +83,8 @@ def _authored_items(slide: dict, target_language: str, native_language: str) -> 
             id=item_id,
             label_target=_label(item, target_language, fallback=item_id),
             label_native=_label(item, native_language, fallback=item_id),
+            label_target_accusative=_label_case(item, target_language, "accusative", fallback=item_id),
+            label_native_accusative=_label_case(item, native_language, "accusative", fallback=item_id),
         ))
     return output
 
@@ -103,6 +121,11 @@ def authoritative_voice_context(
         slide.get("selection_policy")
         or ("child_choice" if task_type == "suitcase" else "authored_choice")
     )
+    identity = {
+        key: raw.get(key)
+        for key in ("request_id", "session_id", "step_id", "turn_id", "hero_id")
+        if raw.get(key) is not None
+    }
     return {
         "task_type": task_type,
         "selection_policy": selection_policy,
@@ -117,6 +140,7 @@ def authoritative_voice_context(
             or slide.get("required_for_movie") is True
             or slide.get("voice_requirement") == "required"
         ),
+        **identity,
     }
 
 
