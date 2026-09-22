@@ -5,56 +5,95 @@ on:
   push:
     branches:
       - main
+      - codex/android-apk-30105
     paths:
       - DOME_MOBILE_77/**
       - .github/workflows/android-apk.yml
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-apk:
+    name: Build Signed Release APK
     runs-on: ubuntu-latest
-    timeout-minutes: 45
-    defaults:
-      run:
-        working-directory: DOME_MOBILE_77
+    timeout-minutes: 60
+
     steps:
       - name: Check out source
         uses: actions/checkout@v4
 
-      - name: Set up Node.js
+      - name: Set up Java 17 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Node.js 20
         uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
           cache-dependency-path: DOME_MOBILE_77/package-lock.json
 
-      - name: Set up Java
-        uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: 17
+      - name: Install npm dependencies
+        working-directory: DOME_MOBILE_77
+        run: npm ci --prefer-offline
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Accept Android licenses and install NDK 27.1.12297006
+        run: |
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "ndk;27.1.12297006" || true
 
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Generate Android project
-        env:
-          CI: '1'
-        run: npx expo prebuild --platform android --no-install
+      - name: Setup local.properties
+        run: |
+          echo "sdk.dir=$ANDROID_HOME" > DOME_MOBILE_77/android/local.properties
+          echo "ndk.dir=$ANDROID_HOME/ndk/27.1.12297006" >> DOME_MOBILE_77/android/local.properties
+          cat DOME_MOBILE_77/android/local.properties
 
       - name: Build signed release APK
-        run: ./gradlew assembleRelease --no-daemon
         working-directory: DOME_MOBILE_77/android
+        env:
+          EXPO_PUBLIC_DOME_API_BASE_URL: https://dome-telegram-bot-production-e6f6.up.railway.app
+          EXPO_PUBLIC_BUILD_COMMIT: DOME-APK-30105-c08674c-20260922
+          EXPO_PUBLIC_BUILD_TIMESTAMP: ${{ github.run_id }}
+          GRADLE_OPTS: "-Xmx6g -XX:MaxMetaspaceSize=512m -Dfile.encoding=UTF-8"
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon --stacktrace
 
-      - name: Upload APK
+      - name: Prepare release APK asset
+        id: prep_apk
+        run: |
+          APK_SRC=$(find DOME_MOBILE_77/android/app/build/outputs/apk/release -name "*.apk" | head -1)
+          echo "Found APK at: $APK_SRC"
+          ls -lh "$APK_SRC"
+          cp "$APK_SRC" DOME-v3.1.5-release.apk
+          ls -lh DOME-v3.1.5-release.apk
+          SHA256=$(sha256sum DOME-v3.1.5-release.apk | awk '{print $1}')
+          echo "sha256=$SHA256" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release with direct APK download link
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v3.1.5-apk-${{ github.run_number }}
+          name: "DOME v3.1.5 Release APK (Build ${{ github.run_number }})"
+          body: |
+            ## DOME Mobile v3.1.5 (versionCode 30105)
+
+            ### Direct APK Download:
+            [Download DOME-v3.1.5-release.apk](https://github.com/rufsalam-ux/dome-telegram-bot/releases/download/v3.1.5-apk-${{ github.run_number }}/DOME-v3.1.5-release.apk)
+
+            - **SHA-256:** `${{ steps.prep_apk.outputs.sha256 }}`
+            - **Commit:** `c08674c` + payment fixes `8b5c429` / `af1c311`
+            - **Built on:** Ubuntu Linux (Signed Release)
+          files: DOME-v3.1.5-release.apk
+          draft: false
+          prerelease: false
+
+      - name: Upload APK artifact backup
         uses: actions/upload-artifact@v4
         with:
-          name: DOME-mobile-3.0.3-apk
-          path: DOME_MOBILE_77/android/app/build/outputs/apk/release/app-release.apk
-          if-no-files-found: error
-          retention-days: 14
+          name: DOME-v3.1.5-release-apk
+          path: DOME-v3.1.5-release.apk
+          retention-days: 30
