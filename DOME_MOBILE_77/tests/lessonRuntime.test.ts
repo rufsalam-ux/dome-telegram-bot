@@ -61,6 +61,8 @@ import {
   voiceUploadFailureStage,
   voiceUploadTransition,
   withLessonTimeout,
+  formatChoiceReplica,
+  russianAccusative,
 } from '../src/engine/lessonRuntime.ts';
 
 test('movie completion polling exposes normalized identity, retry and player diagnostics',()=>{
@@ -1000,5 +1002,78 @@ test('slide 11/27 (slide_20) gift roleplay: recording, listen, retake, and advan
   // 8. enterSlide advances index from 10 (slide 11/27) to 11 (slide 12/27) even if saveSessionProgress fails
   assert.match(player, /const enterSlide=async\(nextIndex:number\)=>\{[\s\S]*?setIdx\(nextIndex\)/);
   assert.doesNotMatch(player, /catch\(error:any\)\{[\s\S]*?else setFeedback\(childSafeRuntimeMessage\('progress'\)\)\s*\}/);
+});
+
+test('suitcase item choice declension and gender agreement (Russian accusative)', () => {
+  // Test accusative case for all suitcase items
+  assert.equal(russianAccusative('куртка'), 'куртку');
+  assert.equal(russianAccusative('бутылка воды'), 'бутылку воды');
+  assert.equal(russianAccusative('рыба', true), 'рыбу');
+  assert.equal(russianAccusative('мишка', true), 'мишку');
+  assert.equal(russianAccusative('бинокль'), 'бинокль');
+  assert.equal(russianAccusative('компас'), 'компас');
+  assert.equal(russianAccusative('фотоаппарат'), 'фотоаппарат');
+  assert.equal(russianAccusative('телескоп'), 'телескоп');
+  assert.equal(russianAccusative('блокнот'), 'блокнот');
+  assert.equal(russianAccusative('солнцезащитные очки'), 'солнцезащитные очки');
+
+  // Test formatChoiceReplica for boy and girl
+  const jacketItem = { id: 'jacket', label_ru: 'куртка', label_ru_accusative: 'куртку', label_en: 'jacket' };
+  const waterItem = { id: 'water_bottle', label_ru: 'бутылка воды', label_ru_accusative: 'бутылку воды', label_en: 'water bottle' };
+
+  // Boy: "Ты выбрал куртку."
+  const boyJacket = formatChoiceReplica(jacketItem, 'boy', 'ru', 'chose', '.');
+  assert.equal(boyJacket, 'Ты выбрал куртку.');
+
+  // Girl: "Ты выбрала куртку."
+  const girlJacket = formatChoiceReplica(jacketItem, 'girl', 'ru', 'chose', '.');
+  assert.equal(girlJacket, 'Ты выбрала куртку.');
+
+  // Boy water bottle: "Ты выбрал бутылку воды."
+  const boyWater = formatChoiceReplica(waterItem, 'boy', 'ru', 'chose', '.');
+  assert.equal(boyWater, 'Ты выбрал бутылку воды.');
+
+  // Girl water bottle: "Ты выбрала бутылку воды."
+  const girlWater = formatChoiceReplica(waterItem, 'girl', 'ru', 'chose', '.');
+  assert.equal(girlWater, 'Ты выбрала бутылку воды.');
+
+  // Why chose for boy and girl
+  assert.equal(formatChoiceReplica(jacketItem, 'boy', 'ru', 'why_chose'), 'Почему ты выбрал куртку?');
+  assert.equal(formatChoiceReplica(jacketItem, 'girl', 'ru', 'why_chose'), 'Почему ты выбрала куртку?');
+
+  // Verify NO technical placeholders in any output
+  for (const replica of [boyJacket, girlJacket, boyWater, girlWater]) {
+    assert.doesNotMatch(replica, /выбрал\(а\)/i);
+    assert.doesNotMatch(replica, /выбрал\/выбрала/i);
+    assert.doesNotMatch(replica, /\//);
+    assert.doesNotMatch(replica, /\(/);
+  }
+
+  // Verify LessonPlayer uses formatChoiceReplica with child.gender in updateSuitcase
+  const player = readFileSync(new URL('../src/screens/LessonPlayer.tsx', import.meta.url), 'utf8');
+  assert.match(player, /formatChoiceReplica\(item,\s*childGender,\s*targetLang/);
+  assert.match(player, /speakTutor\(targetPhrase,\s*spokenHomeHint\(nativePhrase\)/);
+});
+
+test('Cat mascot safe zone and non-overlapping controls in LessonPortraitShell', () => {
+  const shell = readFileSync(new URL('../src/components/LessonPortraitShell.tsx', import.meta.url), 'utf8');
+  // Mascot has elevation 5, zIndex 5
+  assert.match(shell, /zIndex:\s*5,\s*elevation:\s*5/);
+  // Content panel has higher elevation: zIndex 15, elevation 15
+  assert.match(shell, /panel:\{position:'absolute',overflow:'hidden',borderRadius:26,padding:7,zIndex:15,elevation:15\}/);
+  // Recording tools have highest elevation: zIndex 35, elevation 35
+  assert.match(shell, /recordingTools:\{position:'absolute',left:9,right:9,bottom:7,zIndex:35,elevation:35\}/);
+  // Mascot sits lower on classroom floor (top 1175, size 215)
+  assert.match(shell, /top:layout\.image\.top\+1175\*layout\.scale/);
+  assert.match(shell, /size=\{215\*layout\.scale\}/);
+});
+
+test('Multi-turn conversation keeps Continue and Answer enabled concurrently', () => {
+  const player = readFileSync(new URL('../src/screens/LessonPlayer.tsx', import.meta.url), 'utf8');
+  // FOLLOW_UP transition passes 'COMPLETE' as after stage so Next button is unlocked
+  assert.match(player, /transition==='FOLLOW_UP'[\s\S]*?speakTutor\([^)]+,'COMPLETE'/);
+  // Both Continue and Answer are enabled when stage is COMPLETE
+  assert.equal(answerEnabled('COMPLETE', { answer_mode: 'required_voice' }, true, false, false), true);
+  assert.equal(nextEnabled('COMPLETE', true, { requiredForMovie: false, hasValidRecording: true, mode: 'after_answer' }), true);
 });
 

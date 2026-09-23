@@ -23,6 +23,7 @@ from app.services.speech_pipeline import SpeechAssessment, assess_speech
 from app.services.lesson_runtime import apply_adaptive_assessment,classify_voice_feedback,complexity_support,correction_for_assessment,no_speech_feedback,voice_attempt_outcome
 from app.services.adaptive_learning import proficiency_band
 from app.services.conversational_tutor import TutorTurn,no_speech_turn
+from app.services.language_realization import format_choice_replica, russian_accusative
 from app.services.lesson_voice_context import authoritative_voice_context,contextual_assessment_goal,selected_item_turn
 from app.services.cartoon_builder import CartoonBuildError
 from app.services.mobile_lesson_movie import MOBILE_MOVIE_VERSION,MOVIE_STALL_TIMEOUT_SECONDS,MovieContractError,MovieRenderInputs,build_mobile_lesson_movie,ensure_movie_voice_slots,load_movie_contract,movie_take_status,record_movie_voice_slot,required_movie_phrase_ids,resolve_movie_voice_slots,select_movie_voice_takes
@@ -156,19 +157,20 @@ async def _selected_context_turn(context:dict,target_language:str,native_languag
     """Realize one selected-item response in both languages from one meaning."""
     selected=context.get('selected_items') or []
     if not selected:return None
-    item=selected[-1];marker='__DOME_SELECTED_ITEM__'
+    item=selected[-1]
     task_type=str(context.get('task_type') or '')
-    is_girl=str(child_gender or '').lower()=='girl'
     if task_type=='animal_compare':
-        en_reaction=f'I heard your idea about {marker}!'
-        ru_reaction=f'Я услышала твою мысль про {marker}!'
+        target_label=str(item.get('label_target') or item.get('id') or 'animal')
+        native_label=str(item.get('label_native') or item.get('id') or target_label)
+        en_reaction=f'I heard your idea about {target_label}!'
+        ru_reaction=f'Я услышала твою мысль про {native_label}!'
         en_follow=''
         ru_follow=''
     else:
-        en_reaction=f'You chose {marker}!'
-        ru_reaction=f'Ты выбрала {marker}!' if is_girl else f'Ты выбрал {marker}!'
-        en_follow=f'Why did you choose {marker}?' if allow_follow_up else ''
-        ru_follow=(f'Почему ты выбрала {marker}?' if is_girl else f'Почему ты выбрал {marker}?') if allow_follow_up else ''
+        ru_reaction=format_choice_replica(item,child_gender,language='ru',action='chose',punctuation='!',target_language=target_language,native_language=native_language)
+        en_reaction=format_choice_replica(item,child_gender,language='en',action='chose',punctuation='!',target_language=target_language,native_language=native_language)
+        ru_follow=format_choice_replica(item,child_gender,language='ru',action='why_chose',target_language=target_language,native_language=native_language) if allow_follow_up else ''
+        en_follow=format_choice_replica(item,child_gender,language='en',action='why_chose',target_language=target_language,native_language=native_language) if allow_follow_up else ''
 
     target_reaction=ru_reaction if target_language=='ru' else (en_reaction if target_language=='en' else '')
     native_reaction=ru_reaction if native_language=='ru' else (en_reaction if native_language=='en' else '')
@@ -188,12 +190,6 @@ async def _selected_context_turn(context:dict,target_language:str,native_languag
             elif key=='target_follow':target_follow=val or en_follow
             elif key=='native_follow':native_follow=val or ru_follow
 
-    target_label=str(item.get('label_target_accusative') or item.get('label_target') or item.get('id') or 'item')
-    native_label=str(item.get('label_native_accusative') or item.get('label_native') or item.get('id') or target_label)
-    target_reaction=(target_reaction or en_reaction).replace(marker,target_label)
-    native_reaction=(native_reaction or ru_reaction).replace(marker,native_label)
-    target_follow=(target_follow or en_follow).replace(marker,target_label)
-    native_follow=(native_follow or ru_follow).replace(marker,native_label)
     return selected_item_turn(target_reaction,native_reaction,follow_up_target=target_follow,follow_up_native=native_follow,emotion='curious' if target_follow else 'happy')
 
 

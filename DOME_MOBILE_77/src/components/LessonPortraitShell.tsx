@@ -271,15 +271,15 @@ export function LessonPortraitShell({visual,prompt,progressLabel,replay,answer,h
       pointerEvents='box-none'
       style={{
         position:'absolute',
-        left:layout.image.left+2*layout.scale,
-        top:layout.image.top+1040*layout.scale,
-        zIndex:25,
-        elevation:25,
+        left:layout.image.left+4*layout.scale,
+        top:layout.image.top+1175*layout.scale,
+        zIndex:5,
+        elevation:5,
       }}
     >
       <DomeMascot
         state={mascotState||'HELLO'}
-        size={280*layout.scale}
+        size={215*layout.scale}
         testID='dome-portrait-mascot'
         onPress={()=>{console.info('DOME_WORLD_DETAIL_TAP',{detail:'cat'});emitDomeFeedback('tap')}}
       />
@@ -294,13 +294,13 @@ export function LessonPortraitShell({visual,prompt,progressLabel,replay,answer,h
 
 const styles=StyleSheet.create({
   root:{flex:1,overflow:'hidden',backgroundColor:'#bce8ff'},
-  panel:{position:'absolute',overflow:'hidden',borderRadius:26,padding:7},
+  panel:{position:'absolute',overflow:'hidden',borderRadius:26,padding:7,zIndex:15,elevation:15},
   progressPill:{position:'absolute',right:9,top:7,zIndex:20,borderRadius:12,backgroundColor:'rgba(255,255,255,.88)',paddingHorizontal:8,paddingVertical:3},
   progressText:{fontSize:11,fontWeight:'800',color:'#52606d'},
   visual:{flex:1,minHeight:0,paddingTop:2},
   prompt:{alignSelf:'flex-end',width:'78%',maxHeight:'27%',marginBottom:'4%',borderRadius:13,backgroundColor:'rgba(255,250,238,.94)',paddingHorizontal:9,paddingVertical:5,borderWidth:1,borderColor:'rgba(224,174,66,.28)'},
   promptWithRecordingTools:{maxHeight:'19%',marginBottom:60},
-  recordingTools:{position:'absolute',left:9,right:9,bottom:7,zIndex:26},
+  recordingTools:{position:'absolute',left:9,right:9,bottom:7,zIndex:35,elevation:35},
   overlay:{position:'absolute',left:8,right:8,bottom:8,zIndex:30,borderRadius:14,backgroundColor:'rgba(255,255,255,.97)',padding:8},
   environmentInteractions:{position:'absolute',left:0,right:0,top:0,bottom:0,zIndex:12},
   hotspot:{flex:1,backgroundColor:'transparent'},

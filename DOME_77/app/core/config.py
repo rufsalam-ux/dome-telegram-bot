@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     openai_tts_model: str = "gpt-4o-mini-tts"
     openai_tts_voice: str = "coral"
     child_tts_voice: str = "coral"
-    openai_transcription_model: str = "gpt-4o-mini-transcribe"
+    openai_transcription_model: str = "whisper-1"
     openai_image_model: str = "gpt-image-1-mini"
     # Optional full-body character animation. If Kling keys are empty, DOME uses the stable PNG renderer.
     kling_api_key: str = ""

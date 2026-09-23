@@ -139,7 +139,7 @@ async def transcribe_audio(wav_path: Path, target_language: str = "", native_lan
     """
     if not settings.openai_api_key:
         return "", "", 0.0
-    preferred = settings.openai_transcription_model or "gpt-4o-mini-transcribe"
+    preferred = settings.openai_transcription_model or "whisper-1"
     models = [preferred] + ([] if preferred == "whisper-1" else ["whisper-1"])
     prompt = f"A child is answering this lesson prompt: {goal}. Transcribe exactly; do not invent missing words."
     for model in models:
@@ -258,6 +258,7 @@ async def _evaluate_with_chat(prompt: dict, trace_id: str = "") -> dict | None:
                     {"role": "system", "content": instructions},
                     {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
                 ],
+                "max_tokens": 350,
             }
             requested=time.perf_counter()
             log.info("MOBILE_VOICE_TRACE trace=%s stage=T7_AI_REQUEST model=%s",trace_id or '-',model)

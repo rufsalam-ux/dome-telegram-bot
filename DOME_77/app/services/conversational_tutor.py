@@ -95,7 +95,7 @@ def adaptive_follow_up_policy(
         and maximum > 0
         and is_strong_attempt
         and float(confidence or 0.0) >= 0.75
-        and len(words) >= (2 if level == "PRE_A1" else 3)
+        and len(words) >= (1 if level == "PRE_A1" else 2)
         and (semantic_match is None or float(semantic_match) >= 0.82)
     )
     return strong, maximum, "strong_independent_answer" if strong else "support_or_completion"

@@ -112,10 +112,111 @@ export function buildVoiceRuntimeContext(slide:any,items:VoiceRuntimeItem[],sele
   };
 }
 
-export function childIdeaPrompt(itemLabel:string,taskType:string):string{
+const KNOWN_RUSSIAN_ACCUSATIVES:Record<string,string>={
+  'куртка':'куртку',
+  'бутылка воды':'бутылку воды',
+  'бутылка':'бутылку',
+  'книга':'книгу',
+  'камера':'камеру',
+  'рыба':'рыбу',
+  'мишка':'мишку',
+  'машина':'машину',
+  'шляпа':'шляпу',
+  'шапка':'шапку',
+  'кепка':'кепку',
+  'вода':'воду',
+  'кошка':'кошку',
+  'собака':'собаку',
+  'черепаха':'черепаху',
+  'птица':'птицу',
+};
+
+export function russianAccusative(value:string,animate=false):string{
+  const text=String(value||'').trim();
+  if(!text)return '';
+  const lower=text.toLowerCase();
+  const directKnown=KNOWN_RUSSIAN_ACCUSATIVES[lower];
+  if(directKnown){
+    const firstChar=text.charAt(0);
+    return firstChar&&firstChar===firstChar.toUpperCase()?directKnown.charAt(0).toUpperCase()+directKnown.slice(1):directKnown;
+  }
+  const words=text.split(/\s+/).filter(Boolean);
+  if(!words.length)return text;
+  if(words.length>1){
+    const firstWord=words[0]||'';
+    const firstLower=firstWord.toLowerCase();
+    const firstKnown=KNOWN_RUSSIAN_ACCUSATIVES[firstLower];
+    if(firstKnown){
+      let firstAcc=firstKnown;
+      const firstChar=firstWord.charAt(0);
+      if(firstChar&&firstChar===firstChar.toUpperCase())firstAcc=firstAcc.charAt(0).toUpperCase()+firstAcc.slice(1);
+      return [firstAcc,...words.slice(1)].join(' ');
+    }
+    const lastChar=firstWord.slice(-1);
+    if(firstLower.endsWith('а')){
+      const firstChanged=firstWord.slice(0,-1)+(lastChar==='А'?'У':'у');
+      return [firstChanged,...words.slice(1)].join(' ');
+    }
+    if(firstLower.endsWith('я')){
+      const firstChanged=firstWord.slice(0,-1)+(lastChar==='Я'?'Ю':'ю');
+      return [firstChanged,...words.slice(1)].join(' ');
+    }
+  }
+  const word=words[words.length-1]||'';
+  const wordLower=word.toLowerCase();
+  if(/(ки|ги|хи|ы|и|очки)$/i.test(wordLower))return text;
+  let changed=word;
+  const lastChar=word.slice(-1);
+  if(wordLower.endsWith('а')){
+    changed=word.slice(0,-1)+(lastChar==='А'?'У':'у');
+  }else if(wordLower.endsWith('я')){
+    changed=word.slice(0,-1)+(lastChar==='Я'?'Ю':'ю');
+  }else if(animate&&wordLower.endsWith('ь')){
+    changed=word.slice(0,-1)+(lastChar==='Ь'?'Я':'я');
+  }else if(animate&&/[бвгджзклмнпрстфхцчшщ]$/i.test(wordLower)){
+    changed=word+(lastChar===lastChar.toUpperCase()?'А':'а');
+  }
+  return [...words.slice(0,-1),changed].join(' ');
+}
+
+export function formatChoiceReplica(
+  item:string|{label_ru_accusative?:string;label_ru?:string;label_en?:string;label?:string;id?:string},
+  gender='boy',
+  targetLanguage='ru',
+  action:'chose'|'why_chose'='chose',
+  punctuation='.'
+):string{
+  const isGirl=String(gender||'').trim().toLowerCase()==='girl';
+  const lang=String(targetLanguage||'ru').trim().toLowerCase().slice(0,2);
+  let labelRu='';
+  let labelEn='';
+  if(item&&typeof item==='object'){
+    labelRu=String(item.label_ru_accusative||item.label_ru||item.label||item.id||'').trim();
+    labelEn=String(item.label_en||item.label||item.id||'').trim();
+    if(!item.label_ru_accusative&&labelRu){
+      labelRu=russianAccusative(labelRu);
+    }
+  }else{
+    const raw=String(item||'').trim();
+    labelRu=russianAccusative(raw);
+    labelEn=raw;
+  }
+  if(lang==='ru'){
+    const verb=isGirl?'выбрала':'выбрал';
+    if(action==='why_chose')return `Почему ты ${verb} ${labelRu}?`;
+    const punc=['.','!','?'].includes(punctuation)?punctuation:'.';
+    return `Ты ${verb} ${labelRu}${punc}`;
+  }else{
+    if(action==='why_chose')return `Why did you choose ${labelEn}?`;
+    const punc=['.','!','?'].includes(punctuation)?punctuation:'.';
+    return `You chose ${labelEn}${punc}`;
+  }
+}
+
+export function childIdeaPrompt(itemLabel:string,taskType:string,gender='boy'):string{
   const label=String(itemLabel||'').trim();
   if(String(taskType)==='animal_compare')return label?`Что ты хочешь сказать про ${label}?`:'Что ты хочешь сказать про это животное?';
-  if(String(taskType)==='suitcase')return label?`Ты выбрал ${label}. Что ты хочешь сказать про свой выбор?`:'Что ты хочешь сказать про свой выбор?';
+  if(String(taskType)==='suitcase')return label?formatChoiceReplica(label,gender,'ru','chose','.'):'Что ты хочешь сказать про свой выбор?';
   return label?`Что ты хочешь сказать про ${label}?`:'Что ты хочешь сказать?';
 }
 

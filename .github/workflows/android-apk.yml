@@ -55,7 +55,7 @@ jobs:
         working-directory: DOME_MOBILE_77/android
         env:
           EXPO_PUBLIC_DOME_API_BASE_URL: https://dome-telegram-bot-production-e6f6.up.railway.app
-          EXPO_PUBLIC_BUILD_COMMIT: DOME-APK-30105-c08674c-20260922
+          EXPO_PUBLIC_BUILD_COMMIT: DOME-APK-30105-grammar-latency-v3-20260923
           EXPO_PUBLIC_BUILD_TIMESTAMP: ${{ github.run_id }}
           GRADLE_OPTS: "-Xmx6g -XX:MaxMetaspaceSize=512m -Dfile.encoding=UTF-8"
         run: |
@@ -85,7 +85,7 @@ jobs:
             [Download DOME-v3.1.5-release.apk](https://github.com/rufsalam-ux/dome-telegram-bot/releases/download/v3.1.5-apk-${{ github.run_number }}/DOME-v3.1.5-release.apk)
 
             - **SHA-256:** `${{ steps.prep_apk.outputs.sha256 }}`
-            - **Commit:** `c08674c` + payment fixes `8b5c429` / `af1c311`
+            - **Updates:** Accusative case & gender agreement, AI latency optimization, Cat mascot safe zone, Multi-turn conversational dialogue
             - **Built on:** Ubuntu Linux (Signed Release)
           files: DOME-v3.1.5-release.apk
           draft: false

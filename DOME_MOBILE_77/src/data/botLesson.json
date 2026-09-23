@@ -836,60 +836,70 @@
           "id": "jacket",
           "label_en": "Jacket",
           "label_ru": "куртка",
+          "label_ru_accusative": "куртку",
           "asset": "jacket.png"
         },
         {
           "id": "binoculars",
           "label_en": "Binoculars",
           "label_ru": "бинокль",
+          "label_ru_accusative": "бинокль",
           "asset": "binoculars.png"
         },
         {
           "id": "water",
           "label_en": "Water bottle",
           "label_ru": "бутылка воды",
+          "label_ru_accusative": "бутылку воды",
           "asset": "water.png"
         },
         {
           "id": "compass",
           "label_en": "Compass",
           "label_ru": "компас",
+          "label_ru_accusative": "компас",
           "asset": "compass.png"
         },
         {
           "id": "teddy",
           "label_en": "Teddy bear",
           "label_ru": "мишка",
+          "label_ru_accusative": "мишку",
           "asset": "teddy.png"
         },
         {
           "id": "camera",
           "label_en": "Camera",
           "label_ru": "фотоаппарат",
+          "label_ru_accusative": "фотоаппарат",
           "asset": "camera.png"
         },
         {
           "id": "telescope",
           "label_en": "Telescope",
           "label_ru": "телескоп",
+          "label_ru_accusative": "телескоп",
           "asset": "telescope.png"
         },
         {
           "id": "fish",
           "label_en": "Fish",
           "label_ru": "рыба",
+          "label_ru_accusative": "рыбу",
           "asset": "fish.png"
         },
         {
           "id": "notebook",
           "label_en": "Notebook",
           "label_ru": "блокнот",
+          "label_ru_accusative": "блокнот",
           "asset": "notebook.png"
         },
         {
           "id": "sunglasses",
           "label_en": "Sunglasses",
           "label_ru": "солнцезащитные очки",
+          "label_ru_accusative": "солнцезащитные очки",
           "asset": "sunglasses.png"
         }
       ],
