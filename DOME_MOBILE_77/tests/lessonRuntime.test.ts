@@ -911,3 +911,49 @@ test('DOME interactive mascot supports all 14 emotional states, layout stability
   assert.match(catLayer,/<DomeMascot/);
   assert.match(player,/currentMascotState/);
 });
+
+test('voice recording failure recovery provides visible retry and re-record options without deadlocks (Scenarios A, B, C, D)',()=>{
+  const player=readFileSync(new URL('../src/screens/LessonPlayer.tsx',import.meta.url),'utf8');
+  const shell=readFileSync(new URL('../src/components/LessonPortraitShell.tsx',import.meta.url),'utf8');
+
+  // 1. Timeout verification: 75 seconds covers 20-35s OpenAI assessment on Railway
+  assert.match(player,/VOICE_ANALYSIS_TIMEOUT_MS\s*=\s*75_000/);
+
+  // 2. Scenario A (Normal upload -> success)
+  assert.match(player,/uploadStatus==='UPLOADING'/);
+  assert.match(player,/uploadStatus==='UPLOAD_SUCCESS'/);
+  assert.match(player,/Отправляю запись…/);
+  assert.match(player,/✓ Ответ сохранён/);
+  assert.doesNotMatch(player,/Запись ждёт отправки/,'Never show stagnant waiting message without controls');
+
+  // 3. Scenario B (Upload failure/timeout -> retry flow)
+  // Both portrait (recordingTools) and landscape (controls) expose testID='retry-upload-voice'
+  assert.match(player,/testID='retry-upload-voice'/);
+  assert.match(player,/↻ Отправить снова/);
+  assert.match(player,/retryPendingVoice\(\)/);
+  // In portrait shell, the round answer hotspot retries when uploadStatus === 'UPLOAD_FAILED'
+  assert.match(player,/uploadStatus==='UPLOAD_FAILED'\?\(\)=>void retryPendingVoice\(\)/);
+
+  // 4. Scenario C (Upload failure -> discard & re-record flow)
+  assert.match(player,/testID='discard-and-rerecord-voice'/);
+  assert.match(player,/🎙 Перезаписать/);
+  assert.match(player,/discardPendingAndRerecord\(\)/);
+  assert.match(player,/startRec\('answer',\s*true/);
+
+  // 5. Scenario D: 5 consecutive cycles transition cleanly without deadlock
+  let state: any = 'IDLE';
+  for(let cycle = 1; cycle <= 5; cycle++){
+    state = voiceUploadTransition(state, 'RESET');
+    assert.equal(state, 'IDLE');
+    state = voiceUploadTransition(state, 'START');
+    assert.equal(state, 'RECORDING');
+    state = voiceUploadTransition(state, 'STOP');
+    assert.equal(state, 'FINALIZING');
+    state = voiceUploadTransition(state, 'LOCAL_FINALIZED');
+    assert.equal(state, 'LOCAL_READY');
+    state = voiceUploadTransition(state, 'UPLOAD');
+    assert.equal(state, 'UPLOADING');
+    state = voiceUploadTransition(state, 'ACK');
+    assert.equal(state, 'ACKNOWLEDGED');
+  }
+});
