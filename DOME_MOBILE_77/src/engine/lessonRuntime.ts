@@ -218,7 +218,7 @@ export function nextEnabled(stage:RuntimeStage,visualReady=true,policy:NextPolic
   // persisted. Required movie steps remain blocked until that recording is
   // acknowledged by the backend, regardless of the visible runtime stage.
   if(policy.requiredForMovie===true&&policy.hasValidRecording!==true)return false;
-  if(policy.mode==='after_action')return stage==='COMPLETE';
+  if(policy.mode==='after_action')return stage==='COMPLETE'||(policy.hasValidRecording===true&&stage!=='WAITING_ACTION');
   if(policy.mode==='after_answer')return stage==='COMPLETE'||policy.hasValidRecording===true;
   return true;
 }

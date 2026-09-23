@@ -957,3 +957,48 @@ test('voice recording failure recovery provides visible retry and re-record opti
     assert.equal(state, 'ACKNOWLEDGED');
   }
 });
+
+test('slide 11/27 (slide_20) gift roleplay: recording, listen, retake, and advance flow without deadlock', () => {
+  const player = readFileSync(new URL('../src/screens/LessonPlayer.tsx', import.meta.url), 'utf8');
+  const bundled = JSON.parse(readFileSync(new URL('../src/data/botLesson.json', import.meta.url), 'utf8'));
+  const slides = bundled.slides as any[];
+  const slide20 = slides.find(s => s.slide_id === 'slide_20');
+  const slide21 = slides.find(s => s.slide_id === 'slide_21');
+
+  assert.ok(slide20, 'slide_20 must exist in lesson');
+  assert.ok(slide21, 'slide_21 must exist in lesson');
+  assert.equal(slide20.interaction_kind, 'gift_selector');
+
+  // 1. Both Portrait and Landscape have «Прослушать» and «Перезаписать» buttons
+  assert.match(player, /testID='play-current-recording'/);
+  assert.match(player, /testID='replace-current-recording'/);
+  assert.match(player, /title='🎙 Перезаписать'/);
+  assert.match(player, /title=\{takePlaying\?'Слушаем…':'▶ Прослушать'\}/);
+
+  // 2. Tapping «Перезаписать» is NOT disabled by takePlaying
+  assert.doesNotMatch(player, /testID='replace-current-recording'[^>]*disabled=\{[^}]*takePlaying/);
+
+  // 3. Audio watchdog protects against audio player lockup
+  assert.match(player, /takeWatchdogRef/);
+  assert.match(player, /takeWatchdogRef\.current\s*=\s*setTimeout/);
+
+  // 4. Starting retake cancels takePlaying if active
+  assert.match(player, /if\(takePlaying\)\{[\s\S]*?setTakePlaying\(false\)/);
+
+  // 5. Retake success clears pendingVoice, clears tutorVoiceError, and sets stage to COMPLETE
+  assert.match(player, /if\(intent==='retake'\)\{[\s\S]*?setPendingVoice\(undefined\);setTutorVoiceError\(''\);setFeedback\(replaced\?'Новая запись сохранена ✓':'Новый вариант не прошёл проверку\. Предыдущая запись сохранена\.'\);setStage\('COMPLETE'\)/);
+
+  // 6. nextPolicy recognizes local take as valid recording (never blocking NEXT permanently)
+  assert.match(player, /const hasRecordedAnswer=hasAcknowledgedTake\|\|hasLocalTake/);
+  assert.match(player, /hasValidRecording:hasRecordedAnswer/);
+
+  // 7. Verify nextEnabled allows advancing when hasValidRecording is true on requiredForMovie slides
+  const policyWithTake = { requiredForMovie: true, hasValidRecording: true, mode: 'after_answer' as const };
+  assert.equal(nextEnabled('COMPLETE', true, policyWithTake), true);
+  assert.equal(nextEnabled('WAITING_VOICE', true, policyWithTake), true);
+
+  // 8. enterSlide advances index from 10 (slide 11/27) to 11 (slide 12/27) even if saveSessionProgress fails
+  assert.match(player, /const enterSlide=async\(nextIndex:number\)=>\{[\s\S]*?setIdx\(nextIndex\)/);
+  assert.doesNotMatch(player, /catch\(error:any\)\{[\s\S]*?else setFeedback\(childSafeRuntimeMessage\('progress'\)\)\s*\}/);
+});
+
