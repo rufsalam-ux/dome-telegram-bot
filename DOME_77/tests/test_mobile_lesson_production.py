@@ -166,7 +166,7 @@ def test_mobile_interactions_cover_selection_suitcase_animals_audio_level_and_mo
     assert "runtimePrompt(slide,languageLevel,workingDifficulty,'initial')" in player
     assert "correction_target" in player and "advance_allowed" in (ROOT / "app/webapp/mobile_api.py").read_text(encoding="utf-8")
     assert "MOOD_EMOJIS.map" in player and "completed:true" in player
-    assert "Повторить сборку" in player and "MOVIE JOB:" in player and "MOVIE STAGE:" in player
+    assert "Повторить сборку" in player and "MOVIE JOB:" not in player and "MOVIE STAGE:" not in player
     assert "FFmpeg" not in player and "Railway Logs" not in player
     assert "activeAnimalQuestion" in player and "isGift" in player and "WAITING_ACTION" in player
     assert [row["phrase_id"] for row in by_id["slide_46"]["animal_questions"]] == ["penguin","parrot"]

@@ -65,7 +65,7 @@ export function requiresSelection(slide:any):boolean{
 }
 
 export function requiresVoice(slide:any):boolean{
-  return ['required_voice','optional_voice'].includes(String(slide?.answer_mode||''))||['voice_answer','required_movie_phrase','repeat','repeat_phrase','speak','dialogue','open_dialogue','roleplay','retell','continue_story','read_aloud','echo_reading','shared_reading','read_roles'].includes(String(slide?.type||''))||slide?.type==='card_selector'||slide?.type==='animal_compare';
+  return ['required_voice','optional_voice'].includes(String(slide?.answer_mode||''))||['voice_answer','required_movie_phrase','repeat','repeat_phrase','speak','dialogue','open_dialogue','roleplay','retell','continue_story','read_aloud','echo_reading','shared_reading','read_roles'].includes(String(slide?.type||''))||slide?.type==='card_selector'||slide?.type==='animal_compare'||slide?.type==='mood_choice';
 }
 
 export type VoiceRuntimeItem={id:string;labelTarget:string;labelNative:string};
@@ -474,8 +474,9 @@ export function manualHintExample(slide:any,languageLevel='PRE_A1',difficulty=.1
   return manualHintSource(slide,languageLevel,difficulty,selectedItem).text;
 }
 
-export function advanceAfterAssessment(response:{accepted?:boolean;advance_allowed?:boolean;needs_retry?:boolean;tutor_turn?:{follow_up_target?:string}}):'FOLLOW_UP'|'COMPLETE'|'RETRY'{
-  if(response.accepted&&String(response.tutor_turn?.follow_up_target||'').trim())return 'FOLLOW_UP';
+export function advanceAfterAssessment(response:{accepted?:boolean;advance_allowed?:boolean;needs_retry?:boolean;follow_up_question?:string;tutor_turn?:{follow_up_target?:string}}):'FOLLOW_UP'|'COMPLETE'|'RETRY'{
+  const followUp=String(response.tutor_turn?.follow_up_target||response.follow_up_question||'').trim();
+  if(response.accepted&&followUp)return 'FOLLOW_UP';
   return response.accepted||response.advance_allowed?'COMPLETE':'RETRY';
 }
 

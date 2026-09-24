@@ -21,7 +21,12 @@ const OVERLAY_BTN = {
 };
 
 function Player({source,video,onDone}:{source:ResolvedSource;video:PreSlideVideoDescriptor;onDone:(outcome:'ended'|'failed')=>void}){
-  const player=useVideoPlayer(source as VideoSource,current=>{current.loop=false;if(video.autoplay)current.play()});
+  const player=useVideoPlayer(source as VideoSource,current=>{
+    current.loop=false;
+    current.muted=false;
+    current.volume=1.0;
+    if(video.autoplay)current.play();
+  });
   useEffect(()=>{
     const stop=(outcome:'ended'|'failed')=>{try{player.pause()}catch{}onDone(outcome)};
     const watchdog=setTimeout(()=>stop('failed'),120_000);

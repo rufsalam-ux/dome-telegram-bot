@@ -125,6 +125,8 @@ def build_selected_item_phrase(item: str | dict, child_gender: str = "boy") -> s
             item.get("labelAccusative")
             or item.get("label_accusative")
             or item.get("label_ru_accusative")
+            or item.get("label_target_accusative")
+            or item.get("label_native_accusative")
             or ""
         ).strip()
         if not accusative:
@@ -165,7 +167,7 @@ def format_choice_replica(
             verb = "выбрала" if is_girl else "выбрал"
             acc = ""
             if isinstance(item, dict):
-                acc = str(item.get("labelAccusative") or item.get("label_accusative") or item.get("label_ru_accusative") or "").strip()
+                acc = str(item.get("labelAccusative") or item.get("label_accusative") or item.get("label_ru_accusative") or item.get("label_target_accusative") or item.get("label_native_accusative") or "").strip()
                 if not acc:
                     item_id = str(item.get("id") or "").lower()
                     acc = KNOWN_ITEM_ACCUSATIVE_BY_ID.get(item_id) or russian_accusative(str(item.get("labelNominative") or item.get("label_nominative") or item.get("label_ru") or item.get("label") or ""), animate=True)

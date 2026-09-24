@@ -272,14 +272,14 @@ export function LessonPortraitShell({visual,prompt,progressLabel,replay,answer,h
       style={{
         position:'absolute',
         left:layout.image.left+4*layout.scale,
-        top:layout.image.top+1175*layout.scale,
+        top:layout.image.top+1150*layout.scale,
         zIndex:5,
         elevation:5,
       }}
     >
       <DomeMascot
         state={mascotState||'HELLO'}
-        size={215*layout.scale}
+        size={260*layout.scale}
         testID='dome-portrait-mascot'
         onPress={()=>{console.info('DOME_WORLD_DETAIL_TAP',{detail:'cat'});emitDomeFeedback('tap')}}
       />

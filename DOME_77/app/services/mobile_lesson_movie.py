@@ -239,7 +239,7 @@ def select_movie_voice_takes(voice_attempts: Iterable[object], lesson: dict) -> 
 
 def movie_take_status(status: object) -> bool:
     value = str(status or "").upper()
-    return value.startswith("ACCEPTED") or value == "MOVIE_USABLE_WITH_SUPPORT"
+    return value.startswith("ACCEPTED") or value in ("MOVIE_USABLE_WITH_SUPPORT", "ACCEPTED_RETAKE")
 
 
 async def ensure_movie_voice_slots(db, session_id: int, lesson: dict) -> list[MovieVoiceSlot]:

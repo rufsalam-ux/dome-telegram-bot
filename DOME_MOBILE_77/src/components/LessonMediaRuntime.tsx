@@ -14,7 +14,12 @@ type VideoOutcome='ended'|'skipped'|'failed';
 function VideoStage({source,poster,item,onEnd,onPlaybackChange}:{source:ResolvedSource;poster?:ResolvedSource;item:LessonMediaDescriptor;onEnd:(outcome:VideoOutcome)=>void;onPlaybackChange?:(active:boolean)=>void}){
   const videoSource=source as VideoSource;
   const[ready,setReady]=useState(false);const[ended,setEnded]=useState(false);
-  const player=useVideoPlayer(videoSource,current=>{current.loop=false;if(item.autoplay!==false)current.play()});
+  const player=useVideoPlayer(videoSource,current=>{
+    current.loop=false;
+    current.muted=false;
+    current.volume=1.0;
+    if(item.autoplay!==false)current.play();
+  });
   useEffect(()=>{const endedSubscription=player.addListener('playToEnd',()=>{setEnded(true);onPlaybackChange?.(false);onEnd('ended')});const statusSubscription=player.addListener('statusChange',(event:any)=>{if(event.status==='readyToPlay'||event.status==='ready')setReady(true);if(event.status==='error'){onPlaybackChange?.(false);onEnd('failed')}});const playingSubscription=player.addListener('playingChange',(event:any)=>onPlaybackChange?.(Boolean(event.isPlaying)));return()=>{endedSubscription.remove();statusSubscription.remove();playingSubscription.remove();onPlaybackChange?.(false)}},[player,onEnd,onPlaybackChange]);
   const replay=()=>{try{player.currentTime=0;setEnded(false);player.play()}catch{onEnd('failed')}};
   // transparent background so the fantasy classroom shell artwork shows around the video

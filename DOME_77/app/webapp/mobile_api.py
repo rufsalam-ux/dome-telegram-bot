@@ -1692,6 +1692,11 @@ async def _voice_impl(request:web.Request)->web.Response:
             outcome=replace(outcome,status='MOVIE_USABLE_WITH_SUPPORT',accepted=False,advance_allowed=True,needs_retry=False)
             movie_take_accepted=True
     status=outcome.status;accepted=outcome.accepted
+    # Retakes are stored by movie slot regardless of semantic grading.
+    # Mark them with a dedicated status so select_movie_voice_takes() picks up
+    # the latest take (the child explicitly re-recorded the line).
+    if retake_mode and activity.has_speech and not accepted:
+        status='ACCEPTED_RETAKE';movie_take_accepted=True
     simple_example=str(ph.get('simplified_text') or sl.get('simplified_text') or ph.get('target_text') or goal);richer_example=str(ph.get('richer_model_text') or sl.get('richer_model_text') or '')
     authored_example=richer_example if richer_example and str(c.language_level or '').upper()!='PRE_A1' and float(c.working_difficulty or 0)>=.45 else simple_example
     correction_target=correction_for_assessment(accepted=accepted,semantic_match=assessment.semantic_match,attempt_number=attempt_number,ai_correction=assessment.corrected_target,authored_example=authored_example,goal=goal)
@@ -2046,7 +2051,7 @@ async def complete(request:web.Request,movie_build_trigger:str='complete')->web.
             if db_session:db_session.completion_state='COMPLETING';await db.commit()
     ent,new=await complete_session_once(session_id=sid,child_id=c.id,lesson_id=sess.lesson_id,course_id=course,final_step=len(lesson_data.get('slides',[])))
     run_no=int(ent.completed_runs or 0)
-    hero_path=Path(char.processed_path or char.original_path) if char else Path('__missing_selected_hero__')
+    hero_path=Path(char.processed_path or char.original_path) if char else preset_character_path('dome_cat')
     voice_diagnostics=[]
     for slot in slots:
         try:detail=json.loads(slot.diagnostics_json or '{}')
@@ -2112,8 +2117,17 @@ async def movie_status(request:web.Request)->web.Response:
         movie=await db.scalar(select(LessonMovie).where(LessonMovie.lesson_session_id==sid));slots=(await db.scalars(select(MovieVoiceSlot).where(MovieVoiceSlot.lesson_session_id==sid).order_by(MovieVoiceSlot.id))).all()
         if movie:await _expire_stalled_movie(db,movie)
     if not movie:
+        # Auto-recover: if the lesson is already completed but LessonMovie was
+        # never created (e.g. hero path missing at completion time), silently
+        # trigger complete() again which will create + enqueue the job.
+        if sess and sess.status=='COMPLETED':
+            log.warning('MOVIE_STATUS_AUTO_RECOVER session_id=%s reason=NOT_CREATED',sid)
+            try:
+                return await complete(request)
+            except Exception as exc:
+                log.warning('MOVIE_STATUS_AUTO_RECOVER_FAILED session_id=%s error=%s',sid,exc)
         log.info('MOVIE_STATUS_RESPONSE session_id=%s run_id=None attempt_id=None job_id=None movie_url=None status=NOT_CREATED',sid)
-        return web.json_response({'session_id':sid,'run_id':None,'run_number':None,'status':'NOT_CREATED','url':None,'movie_url':None})
+        return web.json_response({'session_id':sid,'run_id':None,'run_number':None,'status':'QUEUED','stage':'VALIDATING_RECORDINGS','progress':2,'url':None,'movie_url':None})
     url=None;path=Path(movie.output_path) if movie.output_path else None
     if movie.status in MOVIE_SUCCESS_STATES and path and path.exists():
         url=_movie_public_url(c.id,path,_base(request))
