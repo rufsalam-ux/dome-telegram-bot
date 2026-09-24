@@ -55,7 +55,7 @@ jobs:
         working-directory: DOME_MOBILE_77/android
         env:
           EXPO_PUBLIC_DOME_API_BASE_URL: https://dome-telegram-bot-production-e6f6.up.railway.app
-          EXPO_PUBLIC_BUILD_COMMIT: DOME-APK-30106-grammar-latency-v4-20260924
+          EXPO_PUBLIC_BUILD_COMMIT: DOME-APK-30107-mood-followup-retake-movie-20260924
           EXPO_PUBLIC_BUILD_TIMESTAMP: ${{ github.run_id }}
           GRADLE_OPTS: "-Xmx6g -XX:MaxMetaspaceSize=512m -Dfile.encoding=UTF-8"
         run: |
@@ -68,32 +68,39 @@ jobs:
           APK_SRC=$(find DOME_MOBILE_77/android/app/build/outputs/apk/release -name "*.apk" | head -1)
           echo "Found APK at: $APK_SRC"
           ls -lh "$APK_SRC"
-          cp "$APK_SRC" DOME-v3.1.6-release.apk
-          ls -lh DOME-v3.1.6-release.apk
-          SHA256=$(sha256sum DOME-v3.1.6-release.apk | awk '{print $1}')
+          cp "$APK_SRC" DOME-v3.1.7-release.apk
+          ls -lh DOME-v3.1.7-release.apk
+          SHA256=$(sha256sum DOME-v3.1.7-release.apk | awk '{print $1}')
           echo "sha256=$SHA256" >> $GITHUB_OUTPUT
 
       - name: Create GitHub Release with direct APK download link
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v3.1.6-apk-${{ github.run_number }}
-          name: "DOME v3.1.6 Release APK (Build ${{ github.run_number }})"
+          tag_name: v3.1.7-apk-${{ github.run_number }}
+          name: "DOME v3.1.7 Release APK (Build ${{ github.run_number }})"
           body: |
-            ## DOME Mobile v3.1.6 (versionCode 30106)
+            ## DOME Mobile v3.1.7 (versionCode 30107)
 
             ### Direct APK Download:
-            [Download DOME-v3.1.6-release.apk](https://github.com/rufsalam-ux/dome-telegram-bot/releases/download/v3.1.6-apk-${{ github.run_number }}/DOME-v3.1.6-release.apk)
+            [Download DOME-v3.1.7-release.apk](https://github.com/rufsalam-ux/dome-telegram-bot/releases/download/v3.1.7-apk-${{ github.run_number }}/DOME-v3.1.7-release.apk)
 
             - **SHA-256:** `${{ steps.prep_apk.outputs.sha256 }}`
-            - **Updates:** Architectural accusative case & gender agreement, AI latency optimization, Cat mascot safe zone, Multi-turn conversational dialogue
+            - **Updates:**
+              - Mood slide: всегда переходит в WAITING_VOICE (ребёнок отвечает голосом)
+              - Follow-up: микрофон активен сразу после вопроса AI
+              - Прослушать: играет локальный файл без ожидания сервера
+              - Убрана кнопка «Отправить снова» (авто-загрузка в фоне)
+              - Убран debug-блок MOVIE JOB с экрана завершения
+              - Мультфильм: всегда создаётся даже без выбранного героя
+              - Перезапись: статус ACCEPTED_RETAKE для обновления movie-слота
             - **Built on:** Ubuntu Linux (Signed Release)
-          files: DOME-v3.1.6-release.apk
+          files: DOME-v3.1.7-release.apk
           draft: false
           prerelease: false
 
       - name: Upload APK artifact backup
         uses: actions/upload-artifact@v4
         with:
-          name: DOME-v3.1.6-release-apk
-          path: DOME-v3.1.6-release.apk
+          name: DOME-v3.1.7-release-apk
+          path: DOME-v3.1.7-release.apk
           retention-days: 30
