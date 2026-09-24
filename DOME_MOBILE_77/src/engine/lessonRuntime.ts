@@ -112,14 +112,21 @@ export function buildVoiceRuntimeContext(slide:any,items:VoiceRuntimeItem[],sele
   };
 }
 
-const KNOWN_RUSSIAN_ACCUSATIVES:Record<string,string>={
+export const KNOWN_RUSSIAN_ACCUSATIVES:Record<string,string>={
+  'мишка':'мишку',
   'куртка':'куртку',
   'бутылка воды':'бутылку воды',
   'бутылка':'бутылку',
-  'книга':'книгу',
   'камера':'камеру',
+  'книга':'книгу',
   'рыба':'рыбу',
-  'мишка':'мишку',
+  'бинокль':'бинокль',
+  'компас':'компас',
+  'фотоаппарат':'фотоаппарат',
+  'телескоп':'телескоп',
+  'блокнот':'блокнот',
+  'солнцезащитные очки':'солнцезащитные очки',
+  'очки':'очки',
   'машина':'машину',
   'шляпа':'шляпу',
   'шапка':'шапку',
@@ -129,6 +136,28 @@ const KNOWN_RUSSIAN_ACCUSATIVES:Record<string,string>={
   'собака':'собаку',
   'черепаха':'черепаху',
   'птица':'птицу',
+  'медведь':'медведя',
+  'кот':'кота',
+  'слон':'слона',
+  'жираф':'жирафа',
+  'пингвин':'пингвина',
+  'зебра':'зебру',
+  'попугай':'попугая',
+  'лев':'льва',
+};
+
+export const KNOWN_ITEM_ACCUSATIVE_BY_ID:Record<string,string>={
+  'teddy':'мишку',
+  'jacket':'куртку',
+  'water':'бутылку воды',
+  'compass':'компас',
+  'camera':'фотоаппарат',
+  'telescope':'телескоп',
+  'fish':'рыбу',
+  'notebook':'блокнот',
+  'binoculars':'бинокль',
+  'sunglasses':'солнцезащитные очки',
+  'book':'книгу',
 };
 
 export function russianAccusative(value:string,animate=false):string{
@@ -179,8 +208,37 @@ export function russianAccusative(value:string,animate=false):string{
   return [...words.slice(0,-1),changed].join(' ');
 }
 
+export function buildSelectedItemPhrase(item:any, childGender='boy'):string{
+  const isGirl=String(childGender||'').trim().toLowerCase()==='girl';
+  const verb=isGirl?'выбрала':'выбрал';
+  let accusative='';
+  if(item&&typeof item==='object'){
+    accusative=String(
+      item.labelAccusative||item.label_accusative||item.label_ru_accusative||''
+    ).trim();
+    if(!accusative){
+      const id=String(item.id||'').toLowerCase();
+      if(KNOWN_ITEM_ACCUSATIVE_BY_ID[id]){
+        accusative=KNOWN_ITEM_ACCUSATIVE_BY_ID[id];
+      }else{
+        const nom=String(item.labelNominative||item.label_nominative||item.label_ru||item.label||'').trim();
+        accusative=nom?russianAccusative(nom,true):'';
+      }
+    }
+  }else{
+    const raw=String(item||'').trim();
+    const rawId=raw.toLowerCase();
+    if(KNOWN_ITEM_ACCUSATIVE_BY_ID[rawId]){
+      accusative=KNOWN_ITEM_ACCUSATIVE_BY_ID[rawId];
+    }else{
+      accusative=russianAccusative(raw,true);
+    }
+  }
+  return `Ты ${verb} ${accusative}.`;
+}
+
 export function formatChoiceReplica(
-  item:string|{label_ru_accusative?:string;label_ru?:string;label_en?:string;label?:string;id?:string},
+  item:any,
   gender='boy',
   targetLanguage='ru',
   action:'chose'|'why_chose'='chose',
@@ -188,25 +246,34 @@ export function formatChoiceReplica(
 ):string{
   const isGirl=String(gender||'').trim().toLowerCase()==='girl';
   const lang=String(targetLanguage||'ru').trim().toLowerCase().slice(0,2);
-  let labelRu='';
-  let labelEn='';
-  if(item&&typeof item==='object'){
-    labelRu=String(item.label_ru_accusative||item.label_ru||item.label||item.id||'').trim();
-    labelEn=String(item.label_en||item.label||item.id||'').trim();
-    if(!item.label_ru_accusative&&labelRu){
-      labelRu=russianAccusative(labelRu);
-    }
-  }else{
-    const raw=String(item||'').trim();
-    labelRu=russianAccusative(raw);
-    labelEn=raw;
-  }
   if(lang==='ru'){
-    const verb=isGirl?'выбрала':'выбрал';
-    if(action==='why_chose')return `Почему ты ${verb} ${labelRu}?`;
-    const punc=['.','!','?'].includes(punctuation)?punctuation:'.';
-    return `Ты ${verb} ${labelRu}${punc}`;
+    if(action==='why_chose'){
+      const verb=isGirl?'выбрала':'выбрал';
+      let acc='';
+      if(item&&typeof item==='object'){
+        acc=String(item.labelAccusative||item.label_accusative||item.label_ru_accusative||'').trim();
+        if(!acc){
+          const id=String(item.id||'').toLowerCase();
+          acc=KNOWN_ITEM_ACCUSATIVE_BY_ID[id]||russianAccusative(String(item.labelNominative||item.label_nominative||item.label_ru||item.label||''),true);
+        }
+      }else{
+        const raw=String(item||'').trim();
+        acc=KNOWN_ITEM_ACCUSATIVE_BY_ID[raw.toLowerCase()]||russianAccusative(raw,true);
+      }
+      return `Почему ты ${verb} ${acc}?`;
+    }
+    const phrase=buildSelectedItemPhrase(item,gender);
+    if(punctuation&&punctuation!=='.'){
+      return phrase.slice(0,-1)+punctuation;
+    }
+    return phrase;
   }else{
+    let labelEn='';
+    if(item&&typeof item==='object'){
+      labelEn=String(item.label_en||item.label||item.id||'').trim();
+    }else{
+      labelEn=String(item||'').trim();
+    }
     if(action==='why_chose')return `Why did you choose ${labelEn}?`;
     const punc=['.','!','?'].includes(punctuation)?punctuation:'.';
     return `You chose ${labelEn}${punc}`;

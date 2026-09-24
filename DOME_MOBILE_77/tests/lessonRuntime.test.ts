@@ -63,7 +63,10 @@ import {
   withLessonTimeout,
   formatChoiceReplica,
   russianAccusative,
+  buildSelectedItemPhrase,
 } from '../src/engine/lessonRuntime.ts';
+import { SUITCASE_ITEMS } from '../src/data/lessonInteractions.ts';
+import botLesson from '../src/data/botLesson.json' with { type: 'json' };
 
 test('movie completion polling exposes normalized identity, retry and player diagnostics',()=>{
   const lesson=readFileSync(new URL('../src/screens/LessonPlayer.tsx',import.meta.url),'utf8');
@@ -1017,42 +1020,69 @@ test('suitcase item choice declension and gender agreement (Russian accusative)'
   assert.equal(russianAccusative('блокнот'), 'блокнот');
   assert.equal(russianAccusative('солнцезащитные очки'), 'солнцезащитные очки');
 
-  // Test formatChoiceReplica for boy and girl
-  const jacketItem = { id: 'jacket', label_ru: 'куртка', label_ru_accusative: 'куртку', label_en: 'jacket' };
-  const waterItem = { id: 'water_bottle', label_ru: 'бутылка воды', label_ru_accusative: 'бутылку воды', label_en: 'water bottle' };
+  const EXPECTED_PHRASES: Record<string, { boy: string; girl: string }> = {
+    jacket: { boy: 'Ты выбрал куртку.', girl: 'Ты выбрала куртку.' },
+    binoculars: { boy: 'Ты выбрал бинокль.', girl: 'Ты выбрала бинокль.' },
+    water: { boy: 'Ты выбрал бутылку воды.', girl: 'Ты выбрала бутылку воды.' },
+    compass: { boy: 'Ты выбрал компас.', girl: 'Ты выбрала компас.' },
+    teddy: { boy: 'Ты выбрал мишку.', girl: 'Ты выбрала мишку.' },
+    camera: { boy: 'Ты выбрал фотоаппарат.', girl: 'Ты выбрала фотоаппарат.' },
+    telescope: { boy: 'Ты выбрал телескоп.', girl: 'Ты выбрала телескоп.' },
+    fish: { boy: 'Ты выбрал рыбу.', girl: 'Ты выбрала рыбу.' },
+    notebook: { boy: 'Ты выбрал блокнот.', girl: 'Ты выбрала блокнот.' },
+    sunglasses: { boy: 'Ты выбрал солнцезащитные очки.', girl: 'Ты выбрала солнцезащитные очки.' },
+  };
 
-  // Boy: "Ты выбрал куртку."
-  const boyJacket = formatChoiceReplica(jacketItem, 'boy', 'ru', 'chose', '.');
-  assert.equal(boyJacket, 'Ты выбрал куртку.');
+  // 1. Verify buildSelectedItemPhrase for EVERY item in SUITCASE_ITEMS
+  assert.equal(SUITCASE_ITEMS.length, 10);
+  for (const item of SUITCASE_ITEMS) {
+    const expected = EXPECTED_PHRASES[item.id];
+    assert.ok(expected, `Missing expectation for item ${item.id}`);
 
-  // Girl: "Ты выбрала куртку."
-  const girlJacket = formatChoiceReplica(jacketItem, 'girl', 'ru', 'chose', '.');
-  assert.equal(girlJacket, 'Ты выбрала куртку.');
+    // Verify nominative and accusative properties exist on each item
+    assert.ok(item.labelNominative, `Item ${item.id} must have labelNominative`);
+    assert.ok(item.labelAccusative, `Item ${item.id} must have labelAccusative`);
 
-  // Boy water bottle: "Ты выбрал бутылку воды."
-  const boyWater = formatChoiceReplica(waterItem, 'boy', 'ru', 'chose', '.');
-  assert.equal(boyWater, 'Ты выбрал бутылку воды.');
+    // Verify boy phrase
+    const boyPhrase = buildSelectedItemPhrase(item, 'boy');
+    assert.equal(boyPhrase, expected.boy, `Boy phrase mismatch for item ${item.id}`);
 
-  // Girl water bottle: "Ты выбрала бутылку воды."
-  const girlWater = formatChoiceReplica(waterItem, 'girl', 'ru', 'chose', '.');
-  assert.equal(girlWater, 'Ты выбрала бутылку воды.');
+    // Verify girl phrase
+    const girlPhrase = buildSelectedItemPhrase(item, 'girl');
+    assert.equal(girlPhrase, expected.girl, `Girl phrase mismatch for item ${item.id}`);
 
-  // Why chose for boy and girl
-  assert.equal(formatChoiceReplica(jacketItem, 'boy', 'ru', 'why_chose'), 'Почему ты выбрал куртку?');
-  assert.equal(formatChoiceReplica(jacketItem, 'girl', 'ru', 'why_chose'), 'Почему ты выбрала куртку?');
-
-  // Verify NO technical placeholders in any output
-  for (const replica of [boyJacket, girlJacket, boyWater, girlWater]) {
-    assert.doesNotMatch(replica, /выбрал\(а\)/i);
-    assert.doesNotMatch(replica, /выбрал\/выбрала/i);
-    assert.doesNotMatch(replica, /\//);
-    assert.doesNotMatch(replica, /\(/);
+    // Verify NO placeholders or slashes
+    for (const phrase of [boyPhrase, girlPhrase]) {
+      assert.doesNotMatch(phrase, /выбрал\(а\)/i);
+      assert.doesNotMatch(phrase, /выбрал\/выбрала/i);
+      assert.doesNotMatch(phrase, /\//);
+      assert.doesNotMatch(phrase, /\(/);
+    }
   }
 
-  // Verify LessonPlayer uses formatChoiceReplica with child.gender in updateSuitcase
+  // 2. Verify buildSelectedItemPhrase for all drag_items in botLesson.json
+  const suitcaseSlide = (botLesson.slides as any[]).find((s: any) => s.interactive_task === 'suitcase' || s.slide_id === 'slide_24');
+  assert.ok(suitcaseSlide && Array.isArray(suitcaseSlide.drag_items), 'Must find suitcase slide with drag_items');
+  for (const dragItem of suitcaseSlide.drag_items) {
+    const expected = EXPECTED_PHRASES[dragItem.id];
+    if (expected) {
+      assert.equal(buildSelectedItemPhrase(dragItem, 'boy'), expected.boy);
+      assert.equal(buildSelectedItemPhrase(dragItem, 'girl'), expected.girl);
+    }
+  }
+
+  // 3. Verify formatChoiceReplica delegates correctly
+  assert.equal(formatChoiceReplica({ id: 'teddy', labelNominative: 'мишка', labelAccusative: 'мишку' }, 'boy', 'ru', 'chose', '.'), 'Ты выбрал мишку.');
+  assert.equal(formatChoiceReplica({ id: 'teddy', labelNominative: 'мишка', labelAccusative: 'мишку' }, 'girl', 'ru', 'chose', '.'), 'Ты выбрала мишку.');
+  assert.equal(formatChoiceReplica({ id: 'jacket', labelNominative: 'куртка', labelAccusative: 'куртку' }, 'boy', 'ru', 'why_chose'), 'Почему ты выбрал куртку?');
+  assert.equal(formatChoiceReplica({ id: 'jacket', labelNominative: 'куртка', labelAccusative: 'куртку' }, 'girl', 'ru', 'why_chose'), 'Почему ты выбрала куртку?');
+
+  // 4. Verify LessonPlayer uses unified buildSelectedItemPhrase and feeds UI, taskGoal, and TTS
   const player = readFileSync(new URL('../src/screens/LessonPlayer.tsx', import.meta.url), 'utf8');
-  assert.match(player, /formatChoiceReplica\(item,\s*childGender,\s*targetLang/);
-  assert.match(player, /speakTutor\(targetPhrase,\s*spokenHomeHint\(nativePhrase\)/);
+  assert.match(player, /buildSelectedItemPhrase\(item,\s*childGender\)/);
+  assert.match(player, /setTargetText\(phrase\)/);
+  assert.match(player, /setTaskGoal\(phrase\)/);
+  assert.match(player, /speakTutor\(phrase/);
 });
 
 test('Cat mascot safe zone and non-overlapping controls in LessonPortraitShell', () => {

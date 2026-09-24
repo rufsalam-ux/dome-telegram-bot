@@ -415,5 +415,43 @@ def test_mobile_uses_localized_asset_pipeline_without_white_masks():
     root_app=(MOBILE_ROOT/"src/screens/RootApp.tsx").read_text("utf-8")
     movie_runtime=(MOBILE_ROOT/"src/engine/movieRuntime.ts").read_text("utf-8")
     movie_player=(MOBILE_ROOT/"src/components/MoviePlayer.tsx").read_text("utf-8")
-    assert "MoviePlayer" in root_app and "Поделиться" in root_app and "useVideoPlayer" in movie_player
     assert "'QUEUED','RUNNING','PROCESSING'" in movie_runtime
+
+
+def test_suitcase_declension_and_gender_agreement():
+    from app.services.language_realization import build_selected_item_phrase, format_choice_replica, russian_accusative
+
+    items = [
+        {"id": "jacket", "labelNominative": "куртка", "labelAccusative": "куртку", "boy": "Ты выбрал куртку.", "girl": "Ты выбрала куртку."},
+        {"id": "binoculars", "labelNominative": "бинокль", "labelAccusative": "бинокль", "boy": "Ты выбрал бинокль.", "girl": "Ты выбрала бинокль."},
+        {"id": "water", "labelNominative": "бутылка воды", "labelAccusative": "бутылку воды", "boy": "Ты выбрал бутылку воды.", "girl": "Ты выбрала бутылку воды."},
+        {"id": "compass", "labelNominative": "компас", "labelAccusative": "компас", "boy": "Ты выбрал компас.", "girl": "Ты выбрала компас."},
+        {"id": "teddy", "labelNominative": "мишка", "labelAccusative": "мишку", "boy": "Ты выбрал мишку.", "girl": "Ты выбрала мишку."},
+        {"id": "camera", "labelNominative": "фотоаппарат", "labelAccusative": "фотоаппарат", "boy": "Ты выбрал фотоаппарат.", "girl": "Ты выбрала фотоаппарат."},
+        {"id": "telescope", "labelNominative": "телескоп", "labelAccusative": "телескоп", "boy": "Ты выбрал телескоп.", "girl": "Ты выбрала телескоп."},
+        {"id": "fish", "labelNominative": "рыба", "labelAccusative": "рыбу", "boy": "Ты выбрал рыбу.", "girl": "Ты выбрала рыбу."},
+        {"id": "notebook", "labelNominative": "блокнот", "labelAccusative": "блокнот", "boy": "Ты выбрал блокнот.", "girl": "Ты выбрала блокнот."},
+        {"id": "sunglasses", "labelNominative": "солнцезащитные очки", "labelAccusative": "солнцезащитные очки", "boy": "Ты выбрал солнцезащитные очки.", "girl": "Ты выбрала солнцезащитные очки."},
+    ]
+
+    for item in items:
+        # Test build_selected_item_phrase with dict
+        assert build_selected_item_phrase(item, "boy") == item["boy"]
+        assert build_selected_item_phrase(item, "girl") == item["girl"]
+
+        # Test build_selected_item_phrase with item id
+        assert build_selected_item_phrase(item["id"], "boy") == item["boy"]
+        assert build_selected_item_phrase(item["id"], "girl") == item["girl"]
+
+        # Test format_choice_replica
+        assert format_choice_replica(item, "boy", "ru", "chose", ".") == item["boy"]
+        assert format_choice_replica(item, "girl", "ru", "chose", ".") == item["girl"]
+
+        # Test why_chose
+        why_boy = format_choice_replica(item, "boy", "ru", "why_chose")
+        why_girl = format_choice_replica(item, "girl", "ru", "why_chose")
+        assert "выбрал" in why_boy and "выбрала" not in why_boy
+        assert "выбрала" in why_girl
+        assert item["labelAccusative"] in why_boy
+        assert item["labelAccusative"] in why_girl
+

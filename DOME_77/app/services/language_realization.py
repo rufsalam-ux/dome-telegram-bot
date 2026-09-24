@@ -29,6 +29,13 @@ _KNOWN_ACCUSATIVES = {
     "камера": "камеру",
     "рыба": "рыбу",
     "мишка": "мишку",
+    "бинокль": "бинокль",
+    "компас": "компас",
+    "фотоаппарат": "фотоаппарат",
+    "телескоп": "телескоп",
+    "блокнот": "блокнот",
+    "солнцезащитные очки": "солнцезащитные очки",
+    "очки": "очки",
     "машина": "машину",
     "шляпа": "шляпу",
     "шапка": "шапку",
@@ -38,6 +45,28 @@ _KNOWN_ACCUSATIVES = {
     "собака": "собаку",
     "черепаха": "черепаху",
     "птица": "птицу",
+    "медведь": "медведя",
+    "кот": "кота",
+    "слон": "слона",
+    "жираф": "жирафа",
+    "пингвин": "пингвина",
+    "зебра": "зебру",
+    "попугай": "попугая",
+    "лев": "льва",
+}
+
+KNOWN_ITEM_ACCUSATIVE_BY_ID = {
+    "teddy": "мишку",
+    "jacket": "куртку",
+    "water": "бутылку воды",
+    "compass": "компас",
+    "camera": "фотоаппарат",
+    "telescope": "телескоп",
+    "fish": "рыбу",
+    "notebook": "блокнот",
+    "binoculars": "бинокль",
+    "sunglasses": "солнцезащитные очки",
+    "book": "книгу",
 }
 
 
@@ -87,6 +116,34 @@ def russian_accusative(value: str, *, animate: bool = False) -> str:
     return " ".join([*words[:-1], changed])
 
 
+def build_selected_item_phrase(item: str | dict, child_gender: str = "boy") -> str:
+    is_girl = str(child_gender or "").strip().lower() in {"girl", "female", "f"}
+    verb = "выбрала" if is_girl else "выбрал"
+    accusative = ""
+    if isinstance(item, dict):
+        accusative = str(
+            item.get("labelAccusative")
+            or item.get("label_accusative")
+            or item.get("label_ru_accusative")
+            or ""
+        ).strip()
+        if not accusative:
+            item_id = str(item.get("id") or "").lower()
+            if item_id in KNOWN_ITEM_ACCUSATIVE_BY_ID:
+                accusative = KNOWN_ITEM_ACCUSATIVE_BY_ID[item_id]
+            else:
+                nom = str(item.get("labelNominative") or item.get("label_nominative") or item.get("label_ru") or item.get("label") or "").strip()
+                accusative = russian_accusative(nom, animate=True) if nom else ""
+    else:
+        raw = str(item or "").strip()
+        raw_id = raw.lower()
+        if raw_id in KNOWN_ITEM_ACCUSATIVE_BY_ID:
+            accusative = KNOWN_ITEM_ACCUSATIVE_BY_ID[raw_id]
+        else:
+            accusative = russian_accusative(raw, animate=True)
+    return f"Ты {verb} {accusative}."
+
+
 def format_choice_replica(
     item: str | dict,
     child_gender: str = "boy",
@@ -103,43 +160,39 @@ def format_choice_replica(
     t_lang = str(target_language or "").strip().lower()[:2]
     n_lang = str(native_language or "").strip().lower()[:2]
 
-    if isinstance(item, dict):
-        label_ru = (
-            item.get("label_ru_accusative")
-            or (item.get("label_target_accusative") if t_lang == "ru" else None)
-            or (item.get("label_native_accusative") if n_lang == "ru" else None)
-            or (item.get("label_target_accusative") if not t_lang and item.get("label_target_accusative") else None)
-            or item.get("label_ru")
-            or item.get("label")
-            or item.get("id")
-            or ""
-        )
-        label_ru = str(label_ru).strip()
-        label_en = (
-            item.get("label_en_accusative")
-            or (item.get("label_target_accusative") if t_lang == "en" else None)
-            or (item.get("label_native_accusative") if n_lang == "en" else None)
-            or (item.get("label_native_accusative") if not n_lang and item.get("label_native_accusative") else None)
-            or item.get("label_en")
-            or item.get("label")
-            or item.get("id")
-            or ""
-        )
-        label_en = str(label_en).strip()
-        if not (item.get("label_ru_accusative") or item.get("label_target_accusative")) and label_ru:
-            label_ru = russian_accusative(label_ru, animate=bool(item.get("animate")))
-    else:
-        text = str(item or "").strip()
-        label_ru = russian_accusative(text)
-        label_en = text
-
     if lang == "ru":
-        verb = "выбрала" if is_girl else "выбрал"
         if action == "why_chose":
-            return f"Почему ты {verb} {label_ru}?"
-        punc = punctuation if punctuation in {".", "!", "?"} else "."
-        return f"Ты {verb} {label_ru}{punc}"
+            verb = "выбрала" if is_girl else "выбрал"
+            acc = ""
+            if isinstance(item, dict):
+                acc = str(item.get("labelAccusative") or item.get("label_accusative") or item.get("label_ru_accusative") or "").strip()
+                if not acc:
+                    item_id = str(item.get("id") or "").lower()
+                    acc = KNOWN_ITEM_ACCUSATIVE_BY_ID.get(item_id) or russian_accusative(str(item.get("labelNominative") or item.get("label_nominative") or item.get("label_ru") or item.get("label") or ""), animate=True)
+            else:
+                raw = str(item or "").strip()
+                acc = KNOWN_ITEM_ACCUSATIVE_BY_ID.get(raw.lower()) or russian_accusative(raw, animate=True)
+            return f"Почему ты {verb} {acc}?"
+        phrase = build_selected_item_phrase(item, child_gender)
+        if punctuation and punctuation != ".":
+            return phrase[:-1] + punctuation
+        return phrase
     else:
+        label_en = ""
+        if isinstance(item, dict):
+            label_en = (
+                item.get("label_en_accusative")
+                or (item.get("label_target_accusative") if t_lang == "en" else None)
+                or (item.get("label_native_accusative") if n_lang == "en" else None)
+                or (item.get("label_native_accusative") if not n_lang and item.get("label_native_accusative") else None)
+                or item.get("label_en")
+                or item.get("label")
+                or item.get("id")
+                or ""
+            )
+            label_en = str(label_en).strip()
+        else:
+            label_en = str(item or "").strip()
         if action == "why_chose":
             return f"Why did you choose {label_en}?"
         punc = punctuation if punctuation in {".", "!", "?"} else "."

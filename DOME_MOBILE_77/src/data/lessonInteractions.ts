@@ -43,18 +43,28 @@ export const VOICE_EXAMPLES_RU:Record<string,string>={
   invite:'Приезжайте ко мне!',
 };
 
-export const SUITCASE_ITEMS=[
-  {id:'jacket',label:'Jacket'},
-  {id:'binoculars',label:'Binoculars'},
-  {id:'water',label:'Water bottle'},
-  {id:'compass',label:'Compass'},
-  {id:'teddy',label:'Teddy bear'},
-  {id:'camera',label:'Camera'},
-  {id:'telescope',label:'Telescope'},
-  {id:'fish',label:'Fish'},
-  {id:'notebook',label:'Notebook'},
-  {id:'sunglasses',label:'Sunglasses'},
-] as const;
+export interface SuitcaseItemDef {
+  id: string;
+  labelNominative: string;
+  labelAccusative: string;
+  label_ru: string;
+  label_ru_accusative: string;
+  label: string;
+  label_en: string;
+}
+
+export const SUITCASE_ITEMS: readonly SuitcaseItemDef[] = [
+  { id: 'jacket', labelNominative: 'куртка', labelAccusative: 'куртку', label_ru: 'куртка', label_ru_accusative: 'куртку', label: 'Jacket', label_en: 'Jacket' },
+  { id: 'binoculars', labelNominative: 'бинокль', labelAccusative: 'бинокль', label_ru: 'бинокль', label_ru_accusative: 'бинокль', label: 'Binoculars', label_en: 'Binoculars' },
+  { id: 'water', labelNominative: 'бутылка воды', labelAccusative: 'бутылку воды', label_ru: 'бутылка воды', label_ru_accusative: 'бутылку воды', label: 'Water bottle', label_en: 'Water bottle' },
+  { id: 'compass', labelNominative: 'компас', labelAccusative: 'компас', label_ru: 'компас', label_ru_accusative: 'компас', label: 'Compass', label_en: 'Compass' },
+  { id: 'teddy', labelNominative: 'мишка', labelAccusative: 'мишку', label_ru: 'мишка', label_ru_accusative: 'мишку', label: 'Teddy bear', label_en: 'Teddy bear' },
+  { id: 'camera', labelNominative: 'фотоаппарат', labelAccusative: 'фотоаппарат', label_ru: 'фотоаппарат', label_ru_accusative: 'фотоаппарат', label: 'Camera', label_en: 'Camera' },
+  { id: 'telescope', labelNominative: 'телескоп', labelAccusative: 'телескоп', label_ru: 'телескоп', label_ru_accusative: 'телескоп', label: 'Telescope', label_en: 'Telescope' },
+  { id: 'fish', labelNominative: 'рыба', labelAccusative: 'рыбу', label_ru: 'рыба', label_ru_accusative: 'рыбу', label: 'Fish', label_en: 'Fish' },
+  { id: 'notebook', labelNominative: 'блокнот', labelAccusative: 'блокнот', label_ru: 'блокнот', label_ru_accusative: 'блокнот', label: 'Notebook', label_en: 'Notebook' },
+  { id: 'sunglasses', labelNominative: 'солнцезащитные очки', labelAccusative: 'солнцезащитные очки', label_ru: 'солнцезащитные очки', label_ru_accusative: 'солнцезащитные очки', label: 'Sunglasses', label_en: 'Sunglasses' },
+];
 
 export function buildRuntimeOrder(slides:any[]):any[]{
   // Disabled Studio steps are authoring data, not child progress steps.

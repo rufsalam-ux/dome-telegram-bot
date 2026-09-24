@@ -266,13 +266,6 @@ async def synthesize_speech(
             "voice": settings.child_tts_voice,
             "input": text,
             "response_format": "opus",
-            "instructions": (
-                f"Speak to a child learning {language_name(language)}. "
-                "Use a soft, friendly, youthful feminine voice for a child. Sound kind, warm, emotionally expressive and genuinely interested. "
-                "Sound like a warm, lively female children's presenter: smile in the voice, vary intonation naturally, use playful curiosity, gentle excitement, expressive pauses and a calm conversational pace. Questions should sound curious and praise should sound genuinely pleased. "
-                f"{style_instruction} "
-                "Never sound stern, rough, flat, robotic, cold, rushed or babyish. Keep pronunciation very clear."
-            ),
         }
         async with httpx.AsyncClient(timeout=90) as client:
             response = await client.post("https://api.openai.com/v1/audio/speech", headers=headers, content=json.dumps(payload))

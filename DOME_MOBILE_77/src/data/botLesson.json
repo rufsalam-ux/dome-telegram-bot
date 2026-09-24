@@ -834,6 +834,8 @@
       "drag_items": [
         {
           "id": "jacket",
+          "labelNominative": "куртка",
+          "labelAccusative": "куртку",
           "label_en": "Jacket",
           "label_ru": "куртка",
           "label_ru_accusative": "куртку",
@@ -841,6 +843,8 @@
         },
         {
           "id": "binoculars",
+          "labelNominative": "бинокль",
+          "labelAccusative": "бинокль",
           "label_en": "Binoculars",
           "label_ru": "бинокль",
           "label_ru_accusative": "бинокль",
@@ -848,6 +852,8 @@
         },
         {
           "id": "water",
+          "labelNominative": "бутылка воды",
+          "labelAccusative": "бутылку воды",
           "label_en": "Water bottle",
           "label_ru": "бутылка воды",
           "label_ru_accusative": "бутылку воды",
@@ -855,6 +861,8 @@
         },
         {
           "id": "compass",
+          "labelNominative": "компас",
+          "labelAccusative": "компас",
           "label_en": "Compass",
           "label_ru": "компас",
           "label_ru_accusative": "компас",
@@ -862,6 +870,8 @@
         },
         {
           "id": "teddy",
+          "labelNominative": "мишка",
+          "labelAccusative": "мишку",
           "label_en": "Teddy bear",
           "label_ru": "мишка",
           "label_ru_accusative": "мишку",
@@ -869,6 +879,8 @@
         },
         {
           "id": "camera",
+          "labelNominative": "фотоаппарат",
+          "labelAccusative": "фотоаппарат",
           "label_en": "Camera",
           "label_ru": "фотоаппарат",
           "label_ru_accusative": "фотоаппарат",
@@ -876,6 +888,8 @@
         },
         {
           "id": "telescope",
+          "labelNominative": "телескоп",
+          "labelAccusative": "телескоп",
           "label_en": "Telescope",
           "label_ru": "телескоп",
           "label_ru_accusative": "телескоп",
@@ -883,6 +897,8 @@
         },
         {
           "id": "fish",
+          "labelNominative": "рыба",
+          "labelAccusative": "рыбу",
           "label_en": "Fish",
           "label_ru": "рыба",
           "label_ru_accusative": "рыбу",
@@ -890,6 +906,8 @@
         },
         {
           "id": "notebook",
+          "labelNominative": "блокнот",
+          "labelAccusative": "блокнот",
           "label_en": "Notebook",
           "label_ru": "блокнот",
           "label_ru_accusative": "блокнот",
@@ -897,6 +915,8 @@
         },
         {
           "id": "sunglasses",
+          "labelNominative": "солнцезащитные очки",
+          "labelAccusative": "солнцезащитные очки",
           "label_en": "Sunglasses",
           "label_ru": "солнцезащитные очки",
           "label_ru_accusative": "солнцезащитные очки",

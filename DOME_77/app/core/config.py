@@ -20,9 +20,9 @@ class Settings(BaseSettings):
     # Child-turn evaluation is latency-sensitive and has a bounded JSON task.
     # Keep it independent from the heavier general text model used elsewhere.
     openai_tutor_model: str = "gpt-4o-mini"
-    openai_tts_model: str = "gpt-4o-mini-tts"
-    openai_tts_voice: str = "coral"
-    child_tts_voice: str = "coral"
+    openai_tts_model: str = "tts-1"
+    openai_tts_voice: str = "nova"
+    child_tts_voice: str = "nova"
     openai_transcription_model: str = "whisper-1"
     openai_image_model: str = "gpt-image-1-mini"
     # Optional full-body character animation. If Kling keys are empty, DOME uses the stable PNG renderer.

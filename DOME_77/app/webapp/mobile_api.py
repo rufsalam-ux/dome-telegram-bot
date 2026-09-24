@@ -354,7 +354,7 @@ def _session_payload(sess:LessonSession,ent,child:Child,lesson_data:dict,*,resum
         'completion_recovery':runtime.get('completion_recovery'),
         'hero_identity':runtime.get('hero_identity'),
         'interactive_state':interactive_state,
-        'recorded_phrases':recorded_phrases,'pre_slide_video_state':pre_slide_video_state or {'attempt':[],'ever':[]},'adaptive_profile':{
+        'recorded_phrases':recorded_phrases,'pre_slide_video_state':pre_slide_video_state or {'attempt':[],'ever':[]},'child_gender':child.gender or 'boy','adaptive_profile':{
             'language_level':child.language_level or 'PRE_A1',
             'working_difficulty':float(child.working_difficulty or 0.15),
             'proficiency_band':proficiency_band(float(child.working_difficulty or 0.15)),

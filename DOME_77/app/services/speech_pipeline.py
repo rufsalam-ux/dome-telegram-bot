@@ -115,11 +115,12 @@ async def _transcribe_with_model(wav_path: Path, model: str, language: str = "",
         data["prompt"] = prompt[:800]
     async with httpx.AsyncClient(timeout=120) as client:
         with wav_path.open("rb") as fh:
+            mime = "audio/m4a" if wav_path.suffix.lower() in {".m4a", ".mp4"} else "audio/wav"
             response = await client.post(
                 "https://api.openai.com/v1/audio/transcriptions",
                 headers=headers,
                 data=data,
-                files={"file": (wav_path.name, fh, "audio/wav")},
+                files={"file": (wav_path.name, fh, mime)},
             )
     if response.status_code >= 400:
         log.warning("Transcription failed model=%s status=%s body=%s", model, response.status_code, response.text[:500])

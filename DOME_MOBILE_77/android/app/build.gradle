@@ -92,8 +92,8 @@ android {
         applicationId 'com.bilingvadom.dome.mobile'
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 30105
-        versionName "3.1.5"
+        versionCode 30106
+        versionName "3.1.6"
 
         buildConfigField "String", "REACT_NATIVE_RELEASE_LEVEL", "\"${findProperty('reactNativeReleaseLevel') ?: 'stable'}\""
     }
