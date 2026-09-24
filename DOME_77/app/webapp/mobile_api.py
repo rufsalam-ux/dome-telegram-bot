@@ -1444,6 +1444,15 @@ async def session_start(request:web.Request)->web.Response:
             runtime['superseded']={'reason':'LESSON_VERSION_CHANGED','old_version':str(existing.lesson_version or 'legacy-positional'),'new_version':version}
             existing.runtime_state_json=json.dumps(runtime,ensure_ascii=False);existing.status='SUPERSEDED';existing.completion_state='SUPERSEDED'
             reset_reason='LESSON_VERSION_CHANGED';log.warning('MOBILE_SESSION_VERSION_RESET old_session=%s lesson=%s old_version=%s new_version=%s',existing.id,lid,existing.lesson_version or 'legacy-positional',version);await db.commit();existing=None
+        # force_new=true: child explicitly pressed "Начать заново".
+        # Supersede any existing IN_PROGRESS session to start fresh from slide 0.
+        force_new=bool(data.get('force_new',False))
+        if existing and force_new:
+            try:runtime=json.loads(existing.runtime_state_json or '{}')
+            except (TypeError,ValueError,json.JSONDecodeError):runtime={}
+            runtime['superseded']={'reason':'FORCE_NEW','requested_by':'user'}
+            existing.runtime_state_json=json.dumps(runtime,ensure_ascii=False);existing.status='SUPERSEDED';existing.completion_state='SUPERSEDED'
+            log.info('MOBILE_SESSION_FORCE_NEW old_session=%s lesson=%s',existing.id,lid);await db.commit();existing=None
         if existing:
             try:existing_runtime=json.loads(existing.runtime_state_json or '{}')
             except (TypeError,ValueError,json.JSONDecodeError):existing_runtime={}
@@ -2124,6 +2133,18 @@ async def movie_status(request:web.Request)->web.Response:
             log.warning('MOVIE_STATUS_AUTO_RECOVER session_id=%s reason=NOT_CREATED',sid)
             try:
                 return await complete(request)
+            except web.HTTPConflict as exc:
+                # If recordings are missing, return FAILED so the frontend
+                # stops polling and shows a retry button instead of looping forever.
+                try:
+                    body=json.loads(exc.text or '{}')
+                except Exception:
+                    body={}
+                code=body.get('code','')
+                if code=='REQUIRED_MOVIE_RECORDINGS_MISSING':
+                    log.warning('MOVIE_STATUS_AUTO_RECOVER_MISSING session_id=%s missing=%s',sid,body.get('missing_phrase_ids',[]))
+                    return web.json_response({'session_id':sid,'run_id':None,'run_number':None,'status':'FAILED','stage':'MISSING_RECORDINGS','error_code':'REQUIRED_MOVIE_RECORDINGS_MISSING','error_message':'Некоторые записи не были сохранены.','missing_phrase_ids':body.get('missing_phrase_ids',[]),'progress':0,'url':None,'movie_url':None,'can_retry':False})
+                log.warning('MOVIE_STATUS_AUTO_RECOVER_FAILED session_id=%s error=%s',sid,exc)
             except Exception as exc:
                 log.warning('MOVIE_STATUS_AUTO_RECOVER_FAILED session_id=%s error=%s',sid,exc)
         log.info('MOVIE_STATUS_RESPONSE session_id=%s run_id=None attempt_id=None job_id=None movie_url=None status=NOT_CREATED',sid)

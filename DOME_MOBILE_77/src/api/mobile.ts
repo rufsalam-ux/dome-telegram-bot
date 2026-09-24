@@ -363,8 +363,8 @@ export async function lessonMediaSource(lessonId:string,mediaPath:string):Promis
   };
 }
 
-export function startSession(childId:string|number,lessonId='demo_001'){
-  return request('/api/mobile/session/start',jsonInit('POST',{child_id:Number(childId),lesson_id:lessonId}));
+export function startSession(childId:string|number,lessonId='demo_001',forceNew=false){
+  return request('/api/mobile/session/start',jsonInit('POST',{child_id:Number(childId),lesson_id:lessonId,...(forceNew?{force_new:true}:{})}));
 }
 
 export function saveSessionProgress(sessionId:number,currentStepId:string,lessonVersion:string,currentStep?:number){
