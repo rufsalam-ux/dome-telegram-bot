@@ -255,14 +255,20 @@ function EnvironmentMotionLayer({image,scale}:{image:ShellRect;scale:number}){
 
 export function LessonPortraitShell({visual,prompt,progressLabel,replay,answer,hint,more,continueAction,overlay,recordingTools,mascotState}:Props){
   const[size,setSize]=useState({width:360,height:720});const layout=useMemo(()=>lessonShellLayout(size.width,size.height),[size.width,size.height]);
+  // Cat sits at source y=1150. Panel bottom is source y=1212 (506+706).
+  // catSafeBottom = distance from panel bottom to keep recording tools clear of cat.
+  // Formula: (1212 - 1135) * scale = 77 * scale → ensures buttons end 15px above cat.
+  const catSafeBottom=Math.max(7,Math.round(77*layout.scale));
+  // Prompt needs margin so it doesn't overlap recording tools (height≈36 mini + gap 4).
+  const promptRecordingMargin=catSafeBottom+36+4;
   return <View testID='dome-lesson-portrait-shell' onLayout={event=>{const{width,height}=event.nativeEvent.layout;if(width>0&&height>0&&(Math.abs(width-size.width)>.5||Math.abs(height-size.height)>.5))setSize({width,height})}} style={styles.root}>
     <Image testID='dome-lesson-shell-artwork' source={shellArtwork} resizeMode='contain' style={{position:'absolute',...layout.image}}/>
     <EnvironmentMotionLayer image={layout.image} scale={layout.scale}/>
     <View testID='dome-lesson-central-panel' style={[styles.panel,layout.content]}>
       <View style={styles.progressPill}><Text style={styles.progressText}>{progressLabel}</Text></View>
       <View style={styles.visual}>{visual}</View>
-      <View style={[styles.prompt,recordingTools?styles.promptWithRecordingTools:null]}>{prompt}</View>
-      {recordingTools?<View testID='portrait-saved-recording-tools' style={styles.recordingTools}>{recordingTools}</View>:null}
+      <View style={[styles.prompt,recordingTools?{maxHeight:'19%',marginBottom:promptRecordingMargin}:null]}>{prompt}</View>
+      {recordingTools?<View testID='portrait-saved-recording-tools' style={[styles.recordingToolsBase,{bottom:catSafeBottom}]}>{recordingTools}</View>:null}
       {overlay?<View style={styles.overlay}>{overlay}</View>:null}
     </View>
 
@@ -300,7 +306,7 @@ const styles=StyleSheet.create({
   visual:{flex:1,minHeight:0,paddingTop:2},
   prompt:{alignSelf:'flex-end',width:'78%',maxHeight:'27%',marginBottom:'4%',borderRadius:13,backgroundColor:'rgba(255,250,238,.94)',paddingHorizontal:9,paddingVertical:5,borderWidth:1,borderColor:'rgba(224,174,66,.28)'},
   promptWithRecordingTools:{maxHeight:'19%',marginBottom:60},
-  recordingTools:{position:'absolute',left:9,right:9,bottom:7,zIndex:35,elevation:35},
+  recordingToolsBase:{position:'absolute',left:9,right:9,zIndex:35,elevation:35},
   overlay:{position:'absolute',left:8,right:8,bottom:8,zIndex:30,borderRadius:14,backgroundColor:'rgba(255,255,255,.97)',padding:8},
   environmentInteractions:{position:'absolute',left:0,right:0,top:0,bottom:0,zIndex:12},
   hotspot:{flex:1,backgroundColor:'transparent'},

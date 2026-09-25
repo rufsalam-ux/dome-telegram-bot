@@ -18,6 +18,8 @@ import {
   containedMediaFrame,
   lessonBootstrapErrorCode,
   completeHelperLanguage,
+  conversationRecordingTurn,
+  conversationTaskPolicy,
   computeHeroScale,
   droppedObjectTutorPrompt,
   dropInsideTarget,
@@ -1098,12 +1100,27 @@ test('Cat mascot safe zone and non-overlapping controls in LessonPortraitShell',
   assert.match(shell, /size=\{215\*layout\.scale\}/);
 });
 
-test('Multi-turn conversation keeps Continue and Answer enabled concurrently', () => {
+test('Multi-turn conversation waits for the exact next child turn and single-answer stays bounded', () => {
   const player = readFileSync(new URL('../src/screens/LessonPlayer.tsx', import.meta.url), 'utf8');
-  // FOLLOW_UP transition passes 'COMPLETE' as after stage so Next button is unlocked
-  assert.match(player, /transition==='FOLLOW_UP'[\s\S]*?speakTutor\([^)]+,'COMPLETE'/);
-  // Both Continue and Answer are enabled when stage is COMPLETE
-  assert.equal(answerEnabled('COMPLETE', { answer_mode: 'required_voice' }, true, false, false), true);
-  assert.equal(nextEnabled('COMPLETE', true, { requiredForMovie: false, hasValidRecording: true, mode: 'after_answer' }), true);
+  const dialogue={answer_mode:'required_voice',conversation_mode:'multi_turn',max_turns:3};
+  const single={answer_mode:'required_voice',conversation_mode:'single_answer',allow_ai_followup:true,max_ai_followups:7};
+  assert.deepEqual(conversationTaskPolicy(dialogue),{
+    mode:'multi_turn',enabled:true,maxTurns:3,completionCondition:'max_turns_or_natural_close',
+  });
+  assert.equal(conversationTaskPolicy(single).enabled,false);
+  assert.equal(conversationRecordingTurn(dialogue,1,'WAITING_VOICE'),1);
+  assert.equal(conversationRecordingTurn(dialogue,2,'WAITING_VOICE'),2);
+  assert.equal(conversationRecordingTurn(dialogue,2,'COMPLETE'),0);
+  assert.equal(conversationRecordingTurn(single,4,'WAITING_VOICE'),0);
+  assert.match(player, /transition==='FOLLOW_UP'[\s\S]*?completed:false[\s\S]*?speakTutor\([^)]+,'WAITING_VOICE'/);
+  assert.equal(answerEnabled('WAITING_VOICE', dialogue, true, false, false), true);
 });
 
+test('Lyosha voice task explicitly opts into a bounded two-turn dialogue',()=>{
+  const slide=(botLesson.slides as any[]).find((item:any)=>item.slide_id==='slide_19');
+  assert.ok(slide);
+  assert.equal(slide.conversation_mode,'multi_turn');
+  assert.equal(slide.max_turns,2);
+  assert.equal(slide.allow_ai_followup,true);
+  assert.equal(conversationTaskPolicy(slide).maxTurns,2);
+});

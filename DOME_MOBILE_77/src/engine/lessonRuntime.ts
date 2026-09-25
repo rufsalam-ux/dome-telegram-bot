@@ -68,6 +68,34 @@ export function requiresVoice(slide:any):boolean{
   return ['required_voice','optional_voice'].includes(String(slide?.answer_mode||''))||['voice_answer','required_movie_phrase','repeat','repeat_phrase','speak','dialogue','open_dialogue','roleplay','retell','continue_story','read_aloud','echo_reading','shared_reading','read_roles'].includes(String(slide?.type||''))||slide?.type==='card_selector'||slide?.type==='animal_compare'||slide?.type==='mood_choice';
 }
 
+export type ConversationTaskPolicy={mode:'single_answer'|'multi_turn';enabled:boolean;maxTurns:number;completionCondition:string};
+
+/** Normalize the authored dialogue contract without inferring it from a turn number. */
+export function conversationTaskPolicy(slide:any):ConversationTaskPolicy{
+  const rawMode=String(slide?.conversation_mode||slide?.conversationMode||'').trim().toLowerCase();
+  const explicitSingle=['single','single_answer','one_shot','none','off'].includes(rawMode);
+  const legacyEnabled=slide?.allow_ai_followup===true||String(slide?.follow_up_policy||'').toLowerCase()==='optional';
+  const enabled=slide?.suppress_ai_followup!==true&&!explicitSingle&&(['dialogue','conversation','multi_turn','roleplay'].includes(rawMode)||legacyEnabled);
+  const legacyFollowups=Math.max(0,Number(slide?.max_ai_followups||0)||0);
+  const configured=slide?.max_turns??slide?.maxTurns;
+  const parsed=configured===undefined||configured===null?(legacyFollowups?legacyFollowups+1:(enabled?2:1)):Number(configured);
+  const maxTurns=enabled?Math.max(2,Math.min(8,Number.isFinite(parsed)?Math.trunc(parsed):2)):1;
+  return {
+    mode:enabled?'multi_turn':'single_answer',
+    enabled,
+    maxTurns,
+    completionCondition:String(slide?.completion_condition||slide?.completionCondition||(enabled?'max_turns_or_natural_close':'after_first_accepted_answer')),
+  };
+}
+
+/** The server turn being answered; generation of a follow-up already advanced it. */
+export function conversationRecordingTurn(slide:any,currentTurn:number,stage:RuntimeStage):number{
+  const policy=conversationTaskPolicy(slide);
+  if(!policy.enabled||stage==='COMPLETE')return 0;
+  const turn=Math.max(0,Math.trunc(Number(currentTurn)||0));
+  return Math.min(turn,policy.maxTurns-1);
+}
+
 export type VoiceRuntimeItem={id:string;labelTarget:string;labelNative:string};
 export type VoiceRuntimeContext={
   task_type:string;
