@@ -2,7 +2,7 @@ const expo={
   name:'DOME',
   slug:'dome-mobile',
   owner:'bilingvadom',
-  version:'3.1.6',
+  version:'3.1.9',
   scheme:'dome',
   icon:'./assets/branding/dome-app-icon-v2.png',
   orientation:'default',
@@ -10,7 +10,7 @@ const expo={
   ios:{
     supportsTablet:true,
     bundleIdentifier:'com.bilingvadom.dome',
-    buildNumber:'3.1.6',
+    buildNumber:'3.1.9',
     infoPlist:{
       NSMicrophoneUsageDescription:'DOME uses the microphone during speaking activities when the parent has consented.',
       NSCameraUsageDescription:'DOME may use the camera for optional learning activities when the parent has enabled them.',
@@ -22,7 +22,7 @@ const expo={
     // a tester device. This is an Android identity change only: it does not
     // change the DOME EAS project, lesson data, or backend.
     package:'com.bilingvadom.dome.mobile',
-    versionCode:30106,
+    versionCode:30109,
     softwareKeyboardLayoutMode:'resize',
     adaptiveIcon:{
       foregroundImage:'./assets/branding/dome-adaptive-foreground-v2.png',

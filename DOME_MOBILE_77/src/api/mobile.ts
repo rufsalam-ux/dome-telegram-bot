@@ -391,6 +391,15 @@ export async function sendVoice(sessionId:number,uri:string,slideId:string,phras
   console.info('LANG_EVALUATOR_PAIR',{session_id:sessionId,slide_id:slideId,expected_target_language:runtimeContext.target_language||null,explanation_language:runtimeContext.interface_language||null});
   console.info('VOICE_UPLOAD_REQUEST',{recording_id:clientRecordingId||null,session_id:sessionId,slide_id:slideId,phrase_id:phraseId||null,path:uri,mime_type:mimeType,transport:'expo-file-formdata'});
   const response=await request(`/api/mobile/session/${sessionId}/voice`,{method:'POST',headers:clientRecordingId?{'Idempotency-Key':clientRecordingId}:{},body:form});
+  // Rolling-deployment compatibility: older production servers echo the
+  // idempotency id but not request_id. Only restore the request identity when
+  // that server recording id exactly matches the file sent by this client.
+  const expectedRequestId=String(runtimeContext?.request_id||'').trim();
+  const responseRecordingId=String(response?.client_recording_id||'').trim();
+  if(response&&!response.request_id&&expectedRequestId&&clientRecordingId&&responseRecordingId===clientRecordingId){
+    response.request_id=expectedRequestId;
+    console.info('VOICE_RESPONSE_IDENTITY_RESTORED',{request_id:expectedRequestId,recording_id:clientRecordingId,session_id:sessionId,slide_id:slideId});
+  }
   console.info('VOICE_UPLOAD_RESPONSE',{http_status:200,recording_id:clientRecordingId||null,session_id:sessionId,slide_id:slideId,phrase_id:phraseId||null,accepted:Boolean(response?.accepted),movie_take_accepted:Boolean(response?.movie_take_accepted)});
   return response;
 }

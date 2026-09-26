@@ -399,8 +399,9 @@ test('DOME cat is an independent companion and reward star stays in its own laye
   assert.match(player,/childIdeaPrompt\(labelRu,'suitcase'\)/);
   assert.match(player,/const adaptiveContext=\{\.\.\.snapshot\.runtimeContext/);assert.match(player,/recordingSnapshotRef/);
   assert.match(player,/finalizeLocalVoiceRecording\(uri/);assert.match(player,/sendVoice\(localRecording\.sessionId/);
-  assert.match(player,/acknowledgeLocalVoiceRecording\(localRecording\)/);assert.match(player,/retryPendingVoice/);
-  const api=readFileSync(new URL('../src/api/mobile.ts',import.meta.url),'utf8');assert.match(api,/Idempotency-Key/);assert.match(api,/new FormData\(\)/);assert.match(api,/dome-pending-voice/);assert.match(api,/const \{File\}=require\('expo-file-system'\)/);assert.match(api,/new File\(uri\)/);assert.match(api,/form\.append\('audio',audioFile as any\)/);assert.doesNotMatch(api,/form\.append\('audio',\{uri/);
+  assert.match(player,/void acknowledgeLocalVoiceRecording\(localRecording\)/);assert.match(player,/retryPendingVoice/);
+  assert.ok(player.indexOf('serverAcknowledged=true')<player.indexOf('void acknowledgeLocalVoiceRecording(localRecording)'),'local cleanup must not block a valid AI response');
+  const api=readFileSync(new URL('../src/api/mobile.ts',import.meta.url),'utf8');assert.match(api,/Idempotency-Key/);assert.match(api,/new FormData\(\)/);assert.match(api,/dome-pending-voice/);assert.match(api,/const \{File\}=require\('expo-file-system'\)/);assert.match(api,/new File\(uri\)/);assert.match(api,/form\.append\('audio',audioFile as any\)/);assert.doesNotMatch(api,/form\.append\('audio',\{uri/);assert.match(api,/responseRecordingId===clientRecordingId/);assert.match(api,/VOICE_RESPONSE_IDENTITY_RESTORED/);
   assert.doesNotMatch(api.slice(api.indexOf('export async function sendVoice'),api.indexOf('export async function currentVoiceSource')),/audio_base64|readUriBase64/);
 });
 
@@ -1110,17 +1111,17 @@ test('Multi-turn conversation waits for the exact next child turn and single-ans
   assert.equal(conversationTaskPolicy(single).enabled,false);
   assert.equal(conversationRecordingTurn(dialogue,1,'WAITING_VOICE'),1);
   assert.equal(conversationRecordingTurn(dialogue,2,'WAITING_VOICE'),2);
-  assert.equal(conversationRecordingTurn(dialogue,2,'COMPLETE'),0);
+  assert.equal(conversationRecordingTurn(dialogue,2,'COMPLETE'),2);
   assert.equal(conversationRecordingTurn(single,4,'WAITING_VOICE'),0);
   assert.match(player, /transition==='FOLLOW_UP'[\s\S]*?completed:false[\s\S]*?speakTutor\([^)]+,'WAITING_VOICE'/);
   assert.equal(answerEnabled('WAITING_VOICE', dialogue, true, false, false), true);
 });
 
-test('Lyosha voice task explicitly opts into a bounded two-turn dialogue',()=>{
+test('Lyosha voice task explicitly opts into a bounded five-turn dialogue',()=>{
   const slide=(botLesson.slides as any[]).find((item:any)=>item.slide_id==='slide_19');
   assert.ok(slide);
   assert.equal(slide.conversation_mode,'multi_turn');
-  assert.equal(slide.max_turns,2);
+  assert.equal(slide.max_turns,5);
   assert.equal(slide.allow_ai_followup,true);
-  assert.equal(conversationTaskPolicy(slide).maxTurns,2);
+  assert.equal(conversationTaskPolicy(slide).maxTurns,5);
 });

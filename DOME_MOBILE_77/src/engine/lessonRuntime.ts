@@ -91,7 +91,11 @@ export function conversationTaskPolicy(slide:any):ConversationTaskPolicy{
 /** The server turn being answered; generation of a follow-up already advanced it. */
 export function conversationRecordingTurn(slide:any,currentTurn:number,stage:RuntimeStage):number{
   const policy=conversationTaskPolicy(slide);
-  if(!policy.enabled||stage==='COMPLETE')return 0;
+  // COMPLETE means that the authored requirement is satisfied; it does not
+  // terminate an explicitly configured conversation. If the child presses
+  // Answer again, preserve the current turn/history instead of silently
+  // restarting an unrelated turn 0 dialogue.
+  if(!policy.enabled)return 0;
   const turn=Math.max(0,Math.trunc(Number(currentTurn)||0));
   return Math.min(turn,policy.maxTurns-1);
 }

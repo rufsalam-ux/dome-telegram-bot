@@ -303,12 +303,19 @@ async def assess_speech(
     open_question_first: bool = True,
     examples_allowed: bool = True,
     dialogue_history: list[dict] | None = None,
+    conversation_mode: str = "single_answer",
+    completion_condition: str = "after_first_accepted_answer",
     trace_id: str = "",
 ) -> SpeechAssessment:
     log.info("MOBILE_VOICE_TRACE trace=%s stage=T4_STT_START",trace_id or '-')
+    log.info("VOICE_TURN_TRACE turn_id=%s event=ASR_started", trace_id or "-")
     stt_started=time.perf_counter()
     transcript, detected, confidence = await transcribe_audio(wav_path, target_language, native_language, goal)
     log.info("MOBILE_VOICE_TRACE trace=%s stage=T5_STT_DONE elapsed_ms=%d transcript_chars=%d confidence=%.3f",trace_id or '-',round((time.perf_counter()-stt_started)*1000),len(transcript),confidence)
+    log.info(
+        "VOICE_TURN_TRACE turn_id=%s event=ASR_completed elapsed_ms=%d transcript=%r confidence=%.3f",
+        trace_id or "-", round((time.perf_counter()-stt_started)*1000), transcript, confidence,
+    )
     if is_non_speech_transcript(transcript) or confidence < 0.35:
         return SpeechAssessment(
             transcript=transcript,
@@ -341,6 +348,7 @@ async def assess_speech(
         attempt_number=attempt_number,
         transcript=transcript,
         confidence=confidence,
+        required_dialogue=str(conversation_mode or "").lower() in {"dialogue", "conversation", "multi_turn", "roleplay"},
     )
 
     prompt = {
@@ -365,6 +373,8 @@ async def assess_speech(
         "child_name": child_name,
         "child_gender": child_gender or "boy",
         "dialogue_history": (dialogue_history or [])[-12:],
+        "conversation_mode": conversation_mode or "single_answer",
+        "completion_condition": completion_condition or "after_first_accepted_answer",
         "working_difficulty_0_to_1": max(0.0, min(1.0, float(working_difficulty or 0.15))),
         "profile_language_level": language_level or "PRE_A1",
         "dialogue_policy": {
@@ -382,7 +392,20 @@ async def assess_speech(
         "_trace_id": trace_id,
     }
     log.info("MOBILE_VOICE_TRACE trace=%s stage=T6_CONTEXT_VALIDATED history=%d",trace_id or '-',len(prompt["dialogue_history"]))
+    log.info(
+        "MOBILE_DIALOGUE_LLM_CONTEXT trace=%s mode=%s completion=%s turn=%d max_followups=%d history=%d transcript_chars=%d goal_chars=%d",
+        trace_id or "-", conversation_mode or "single_answer", completion_condition or "-",
+        max(0, int(follow_up_count)), bounded_follow_ups, len(prompt["dialogue_history"]),
+        len(transcript), len(str(goal or "")),
+    )
+    log.info("VOICE_TURN_TRACE turn_id=%s event=dialogue_request_started", trace_id or "-")
+    log.info("VOICE_TURN_TRACE turn_id=%s event=AI_request_started", trace_id or "-")
+    ai_started=time.perf_counter()
     result = await _evaluate_with_chat(prompt)
+    log.info(
+        "VOICE_TURN_TRACE turn_id=%s event=AI_response_received elapsed_ms=%d has_response=%s",
+        trace_id or "-", round((time.perf_counter()-ai_started)*1000), bool(result),
+    )
     if not result:
         return SpeechAssessment(transcript=transcript, detected_language=detected, confidence=confidence)
     result=realize_tutor_result(result,target_language,native_language,child_gender)
@@ -421,6 +444,7 @@ async def assess_speech(
         transcript=transcript,
         confidence=confidence,
         semantic_match=semantic_match,
+        required_dialogue=str(conversation_mode or "").lower() in {"dialogue", "conversation", "multi_turn", "roleplay"},
     )
     turn = build_assessed_turn(
         result,
@@ -429,6 +453,14 @@ async def assess_speech(
         follow_up_count=follow_up_count,
         max_follow_ups=bounded_follow_ups,
         answer_text=transcript,
+    )
+    log.info(
+        "MOBILE_DIALOGUE_ASSISTANT_READY trace=%s accepted=%s reaction_chars=%d followup_chars=%d complete=%s reason=%s",
+        trace_id or "-", accepted, len(turn.reaction_target), len(turn.follow_up_target), turn.complete, turn.reason,
+    )
+    log.info(
+        "VOICE_TURN_TRACE turn_id=%s event=AI_text text=%r follow_up=%r",
+        trace_id or "-", turn.reaction_target, turn.follow_up_target,
     )
     return SpeechAssessment(
         transcript=transcript,

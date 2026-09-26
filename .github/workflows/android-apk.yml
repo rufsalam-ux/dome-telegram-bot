@@ -55,7 +55,7 @@ jobs:
         working-directory: DOME_MOBILE_77/android
         env:
           EXPO_PUBLIC_DOME_API_BASE_URL: https://dome-telegram-bot-production-e6f6.up.railway.app
-          EXPO_PUBLIC_BUILD_COMMIT: DOME-APK-30108-restart-movie-fix-grammar-20260924
+          EXPO_PUBLIC_BUILD_COMMIT: DOME-APK-30109-p0-voice-dialogue-20260926
           EXPO_PUBLIC_BUILD_TIMESTAMP: ${{ github.run_id }}
           GRADLE_OPTS: "-Xmx6g -XX:MaxMetaspaceSize=512m -Dfile.encoding=UTF-8"
         run: |
@@ -68,38 +68,35 @@ jobs:
           APK_SRC=$(find DOME_MOBILE_77/android/app/build/outputs/apk/release -name "*.apk" | head -1)
           echo "Found APK at: $APK_SRC"
           ls -lh "$APK_SRC"
-          cp "$APK_SRC" DOME-v3.1.8-release.apk
-          ls -lh DOME-v3.1.8-release.apk
-          SHA256=$(sha256sum DOME-v3.1.8-release.apk | awk '{print $1}')
+          cp "$APK_SRC" DOME-v3.1.9-release.apk
+          ls -lh DOME-v3.1.9-release.apk
+          SHA256=$(sha256sum DOME-v3.1.9-release.apk | awk '{print $1}')
           echo "sha256=$SHA256" >> $GITHUB_OUTPUT
 
       - name: Create GitHub Release with direct APK download link
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v3.1.8-apk-${{ github.run_number }}
-          name: "DOME v3.1.8 Release APK (Build ${{ github.run_number }})"
+          tag_name: v3.1.9-apk-${{ github.run_number }}
+          name: "DOME v3.1.9 Release APK (Build ${{ github.run_number }})"
           body: |
-            ## DOME Mobile v3.1.8 (versionCode 30108)
+            ## DOME Mobile v3.1.9 (versionCode 30109)
 
             ### Direct APK Download:
-            [Download DOME-v3.1.8-release.apk](https://github.com/rufsalam-ux/dome-telegram-bot/releases/download/v3.1.8-apk-${{ github.run_number }}/DOME-v3.1.8-release.apk)
+            [Download DOME-v3.1.9-release.apk](https://github.com/rufsalam-ux/dome-telegram-bot/releases/download/v3.1.9-apk-${{ github.run_number }}/DOME-v3.1.9-release.apk)
 
             - **SHA-256:** `${{ steps.prep_apk.outputs.sha256 }}`
             - **Исправления:**
-              - Баг 1: Мультфильм больше не зависает в бесконечном polling при отсутствии записей — возвращает FAILED с кодом ошибки
-              - Баг 2: Кнопка «Начать заново» на экране завершения — создаёт новую сессию с нуля (force_new=true)
-              - Баг 6: Русский падеж в чемодане — «ты выбрал куртку» (accusative)
-              - Баг 7: AI всегда говорит в женском роде («не услышала»)
-              - Баг 8: Громкость видео перед слайдами = 1.0
-              - Все предыдущие фиксы: mood→WAITING_VOICE, follow-up, ACCEPTED_RETAKE, hero_path fallback
+              - P0: каждый подтверждённый voice turn продолжает ASR → AI → TTS → playback
+              - P0: старый и новый production-контракты ответа безопасно сопоставляются по id записи
+              - P0: история связанного диалога сохраняется между пятью репликами
             - **Built on:** Ubuntu Linux (Signed Release)
-          files: DOME-v3.1.8-release.apk
+          files: DOME-v3.1.9-release.apk
           draft: false
           prerelease: false
 
       - name: Upload APK artifact backup
         uses: actions/upload-artifact@v4
         with:
-          name: DOME-v3.1.8-release-apk
-          path: DOME-v3.1.8-release.apk
+          name: DOME-v3.1.9-release-apk
+          path: DOME-v3.1.9-release.apk
           retention-days: 30

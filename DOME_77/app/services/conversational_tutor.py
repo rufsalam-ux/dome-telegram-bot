@@ -35,6 +35,58 @@ class TutorTurn:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class ConversationPolicy:
+    """Normalized authored policy for one voice task.
+
+    ``max_turns`` counts child answers. A two-turn task therefore permits one
+    follow-up question. Legacy lesson fields remain supported, but an explicit
+    single-answer mode always wins so an ordinary voice task cannot become an
+    open-ended conversation merely because a client sends a non-zero turn.
+    """
+
+    mode: str = "single_answer"
+    enabled: bool = False
+    max_turns: int = 1
+    completion_condition: str = "after_first_accepted_answer"
+
+    @property
+    def max_follow_ups(self) -> int:
+        return max(0, self.max_turns - 1)
+
+
+def conversation_policy_for_task(task: dict | None) -> ConversationPolicy:
+    authored = task if isinstance(task, dict) else {}
+    raw_mode = str(
+        authored.get("conversation_mode")
+        or authored.get("conversationMode")
+        or ""
+    ).strip().lower()
+    explicit_single = raw_mode in {"single", "single_answer", "one_shot", "none", "off"}
+    legacy_enabled = bool(authored.get("allow_ai_followup")) or str(authored.get("follow_up_policy") or "").lower() == "optional"
+    enabled = not bool(authored.get("suppress_ai_followup")) and not explicit_single and (
+        raw_mode in {"dialogue", "conversation", "multi_turn", "roleplay"} or legacy_enabled
+    )
+    legacy_follow_ups = max(0, int(authored.get("max_ai_followups") or 0))
+    raw_max_turns = authored.get("max_turns", authored.get("maxTurns"))
+    try:
+        max_turns = int(raw_max_turns) if raw_max_turns is not None else (legacy_follow_ups + 1 if legacy_follow_ups else (2 if enabled else 1))
+    except (TypeError, ValueError):
+        max_turns = 2 if enabled else 1
+    max_turns = max(2, min(8, max_turns)) if enabled else 1
+    completion = str(
+        authored.get("completion_condition")
+        or authored.get("completionCondition")
+        or ("max_turns_or_natural_close" if enabled else "after_first_accepted_answer")
+    ).strip()
+    return ConversationPolicy(
+        mode=raw_mode or ("multi_turn" if enabled else "single_answer"),
+        enabled=enabled,
+        max_turns=max_turns,
+        completion_condition=completion,
+    )
+
+
 def _compact(text: object, *, max_chars: int = 280) -> str:
     value = " ".join(str(text or "").strip().split())
     return value[:max_chars].strip()
@@ -82,14 +134,27 @@ def adaptive_follow_up_policy(
     transcript: str,
     confidence: float,
     semantic_match: float | None = None,
+    required_dialogue: bool = False,
 ) -> tuple[bool, int, str]:
     """Permit harder follow-ups only after an independent, confident answer."""
 
     level = str(language_level or "PRE_A1").upper()
     level_cap = 2 if level == "PRE_A1" else 3
-    maximum = min(level_cap, max(0, int(authored_max)))
+    authored_limit = max(0, min(7, int(authored_max)))
+    # An explicit authored dialogue controls its own bounded number of turns.
+    # The language-level cap is for opportunistic follow-ups, not for cutting
+    # short a task that intentionally asks the child to keep talking.
+    maximum = authored_limit if required_dialogue else min(level_cap, authored_limit)
     words = re.findall(r"\w+", str(transcript or ""), flags=re.UNICODE)
     is_strong_attempt = int(attempt_number) == 1 or (semantic_match is not None and float(semantic_match) >= 0.85)
+    if required_dialogue:
+        continue_dialogue = (
+            authored_enabled
+            and maximum > 0
+            and float(confidence or 0.0) >= 0.35
+            and bool(words)
+        )
+        return continue_dialogue, maximum, "configured_dialogue" if continue_dialogue else "dialogue_needs_retry"
     strong = (
         authored_enabled
         and maximum > 0
