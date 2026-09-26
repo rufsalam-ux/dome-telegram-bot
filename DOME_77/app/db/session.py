@@ -163,6 +163,8 @@ async def init_db() -> None:
             "next_charge_at": "TIMESTAMP",
             "lessons_allocated": "INTEGER NOT NULL DEFAULT 0",
             "lessons_used": "INTEGER NOT NULL DEFAULT 0",
+            "special_first_year": "BOOLEAN NOT NULL DEFAULT FALSE",
+            "standard_renewal_price": "FLOAT",
         })
         await conn.execute(text("UPDATE subscriptions SET current_plan_id=plan_id WHERE current_plan_id IS NULL OR current_plan_id=''"))
         await conn.execute(text("UPDATE subscriptions SET current_period_start=started_at WHERE current_period_start IS NULL"))

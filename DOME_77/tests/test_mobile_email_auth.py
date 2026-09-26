@@ -168,6 +168,24 @@ async def test_add_columns_is_sqlite_compatible_without_pragma():
     }
 
 
+@pytest.mark.asyncio
+async def test_subscription_compatibility_migration_adds_annual_price_fields():
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.execute(text("CREATE TABLE subscriptions (id INTEGER PRIMARY KEY)"))
+        await _add_columns(connection, "subscriptions", {
+            "special_first_year": "BOOLEAN NOT NULL DEFAULT FALSE",
+            "standard_renewal_price": "FLOAT",
+        })
+        columns = (await connection.execute(text("PRAGMA table_info(subscriptions)"))).mappings().all()
+    await engine.dispose()
+
+    assert {column["name"] for column in columns} >= {
+        "special_first_year",
+        "standard_renewal_price",
+    }
+
+
 def test_verification_code_hash_is_salted_and_bound_to_email_and_purpose():
     first = hash_verification_code("Parent@Example.COM", "123456")
     second = hash_verification_code("parent@example.com", "123456")
