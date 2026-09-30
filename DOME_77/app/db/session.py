@@ -216,21 +216,32 @@ async def init_db() -> None:
             "response_json": "TEXT",
             "audio_size_bytes": "INTEGER",
             "audio_mime_type": "VARCHAR(80)",
+            "speaking_score": "FLOAT",
+            "confidence_score": "FLOAT",
+            "adaptive_level": "INTEGER",
+            "adaptive_reason": "TEXT",
+            "support_language_used": "BOOLEAN NOT NULL DEFAULT FALSE",
+            "visual_hint_used": "BOOLEAN NOT NULL DEFAULT FALSE",
+            "repair_step": "INTEGER NOT NULL DEFAULT 0",
         })
         await conn.execute(text(
             "CREATE UNIQUE INDEX IF NOT EXISTS uq_voice_attempt_session_client_recording "
             "ON voice_attempts(lesson_session_id, client_recording_id) "
             "WHERE client_recording_id IS NOT NULL AND client_recording_id <> ''"
         ))
-        if settings.database_url.startswith("sqlite"):
-            await _add_columns(conn, "children", {
+        await _add_columns(conn, "children", {
                 "country": "VARCHAR(120)", "language_level": "VARCHAR(20) NOT NULL DEFAULT 'PRE_A1'",
                 "working_difficulty": "FLOAT NOT NULL DEFAULT 0.15", "comprehension_score": "FLOAT NOT NULL DEFAULT 0",
                 "grammar_score": "FLOAT NOT NULL DEFAULT 0", "vocabulary_score": "FLOAT NOT NULL DEFAULT 0",
                 "pronunciation_score": "FLOAT NOT NULL DEFAULT 0", "fluency_score": "FLOAT NOT NULL DEFAULT 0",
                 "independence_score": "FLOAT NOT NULL DEFAULT 0", "answers_count": "INTEGER NOT NULL DEFAULT 0", "age_years": "INTEGER",
                 "birth_day": "INTEGER", "birth_month": "INTEGER", "birth_year": "INTEGER", "gender": "VARCHAR(16)",
-                "birthday_greeted_year": "INTEGER", "can_read_target": "BOOLEAN"})
+                "birthday_greeted_year": "INTEGER", "can_read_target": "BOOLEAN",
+                "speaking_score": "FLOAT NOT NULL DEFAULT 0", "confidence_score": "FLOAT NOT NULL DEFAULT 0",
+                "adaptive_level": "INTEGER NOT NULL DEFAULT 0", "adaptive_evidence_json": "TEXT NOT NULL DEFAULT '[]'",
+                "adaptive_reason": "TEXT", "adaptive_support_uses": "INTEGER NOT NULL DEFAULT 0",
+                "adaptive_visual_uses": "INTEGER NOT NULL DEFAULT 0", "adaptive_meaningful_turns": "INTEGER NOT NULL DEFAULT 0"})
+        if settings.database_url.startswith("sqlite"):
             await _add_columns(conn, "lesson_sessions", {
                 "level_at_start": "VARCHAR(20) NOT NULL DEFAULT 'PRE_A1'", "level_at_end": "VARCHAR(20)", "completed_at": "DATETIME",
                 "lesson_revision": "INTEGER NOT NULL DEFAULT 11", "runtime_state_json": "TEXT NOT NULL DEFAULT '{}'"})

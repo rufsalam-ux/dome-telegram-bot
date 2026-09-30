@@ -20,8 +20,8 @@ from app.services.character_processor import process_character
 from app.services.character_geometry import ANALYSIS_VERSION,analyze_character_geometry,confirm_character_geometry,geometry_from_json,geometry_status,upgrade_character_geometry_payload
 from app.services.audio_processing import VoiceActivity, analyze_voice_activity, prepare_child_voice
 from app.services.speech_pipeline import SpeechAssessment, assess_speech
-from app.services.lesson_runtime import apply_adaptive_assessment,classify_voice_feedback,complexity_support,correction_for_assessment,no_speech_feedback,voice_attempt_outcome
-from app.services.adaptive_learning import proficiency_band
+from app.services.lesson_runtime import apply_adaptive_assessment,classify_voice_feedback,complexity_support,correction_for_assessment,no_speech_feedback,persist_adaptive_decision,voice_attempt_outcome
+from app.services.adaptive_learning import adaptive_decision,proficiency_band,skill_profile_payload
 from app.services.conversational_tutor import TutorTurn,conversation_policy_for_task,no_speech_turn
 from app.services.language_realization import format_choice_replica, russian_accusative
 from app.services.lesson_voice_context import authoritative_voice_context,contextual_assessment_goal,selected_item_turn
@@ -314,7 +314,7 @@ async def _active_runtime_character(db,child:Child)->tuple[Character|None,bool]:
     return replacement,True
 
 def _child_json(request:web.Request,c:Child,character:Character|None=None)->dict:
-    return {'id':c.id,'name':c.display_name,'age_years':c.age_years,'native_language':c.native_language,'target_language':c.target_language,'language_level':c.language_level,'working_difficulty':c.working_difficulty,'country':c.country,'gender':c.gender or 'boy','active_character_id':c.active_character_id,'hero_id':_stable_hero_id(character),'hero_url':_hero_url(request,c),'hero_metadata':_character_json(character)}
+    return {'id':c.id,'name':c.display_name,'age_years':c.age_years,'native_language':c.native_language,'target_language':c.target_language,'language_level':c.language_level,'working_difficulty':c.working_difficulty,'adaptive_profile':skill_profile_payload(c),'country':c.country,'gender':c.gender or 'boy','active_character_id':c.active_character_id,'hero_id':_stable_hero_id(character),'hero_url':_hero_url(request,c),'hero_metadata':_character_json(character)}
 
 async def _ensure_character_geometry(character:Character)->dict:
     payload=geometry_from_json(character.visual_metadata_json)
@@ -401,6 +401,7 @@ def _session_payload(sess:LessonSession,ent,child:Child,lesson_data:dict,*,resum
             'language_level':child.language_level or 'PRE_A1',
             'working_difficulty':float(child.working_difficulty or 0.15),
             'proficiency_band':proficiency_band(float(child.working_difficulty or 0.15)),
+            **skill_profile_payload(child),
         },
     }
 
@@ -1668,6 +1669,7 @@ async def _voice_impl(request:web.Request)->web.Response:
     else:
         activity=await asyncio.to_thread(analyze_voice_activity,raw)
     wav=raw.with_suffix('.wav');request['_voice_temp_paths'].append(str(wav));max_sec=None
+    current_adaptive_profile=skill_profile_payload(c)
     if activity.has_speech:
         try:await asyncio.to_thread(prepare_child_voice,raw,wav,max_sec)
         except Exception as exc:
@@ -1708,6 +1710,7 @@ async def _voice_impl(request:web.Request)->web.Response:
         allow_follow_up=conversation_policy.enabled or context_follow_up
         max_follow_ups=max(conversation_policy.max_follow_ups,1 if context_follow_up else 0)
         effective_attempt_number=1 if is_conversational_turn else attempt_number
+        adaptive_repair_step=max(0,min(5,effective_attempt_number-1+_bounded_int(client_context.get('hints_used'),5)))
         log.info(
             'MOBILE_DIALOGUE_POLICY trace=%s slide=%s mode=%s turn=%d max_turns=%d completion=%s enabled=%s history=%d',
             trace_id,slide_id,conversation_policy.mode,conversation_turn,conversation_policy.max_turns,
@@ -1733,6 +1736,9 @@ async def _voice_impl(request:web.Request)->web.Response:
             conversation_mode=conversation_policy.mode,
             completion_condition=conversation_policy.completion_condition,
             trace_id=trace_id,
+            adaptive_profile=current_adaptive_profile,
+            child_age=c.age_years,
+            adaptive_repair_step=adaptive_repair_step,
         )
     else:
         assessment=SpeechAssessment(status='NO_SPEECH')
@@ -1803,6 +1809,7 @@ async def _voice_impl(request:web.Request)->web.Response:
     follow_up_translation=str((tutor_turn.follow_up_native if tutor_turn else '') or assessment.follow_up_native or '')
     model_translation=str((tutor_turn.model_answer_native if tutor_turn else '') or assessment.model_answer_native or '')
     child_phrase_translation=str(assessment.child_phrase_native or '')
+    model_adaptive_response=assessment.adaptive_response if isinstance(assessment.adaptive_response,dict) else {}
     native_lang=c.native_language or 'ru';target_lang=c.target_language or 'ru'
     if native_lang!=target_lang:
         need_helper=not helper_translation and bool(target_response)
@@ -1852,14 +1859,45 @@ async def _voice_impl(request:web.Request)->web.Response:
                 'hints_used':_bounded_int(client_context.get('hints_used'),5) if isinstance(client_context,dict) else 0,
                 'open_question':bool(client_context.get('open_question')) if isinstance(client_context,dict) else False,
                 'used_native_language':bool(assessment.detected_language and c.native_language and c.target_language and assessment.detected_language==c.native_language and c.native_language!=c.target_language),
+                'choice_only':bool(client_context.get('choice_only')) if isinstance(client_context,dict) else False,
             }
             if retake_mode:
                 working_difficulty=float(db_child.working_difficulty or 0.15);language_level=db_child.language_level or 'PRE_A1'
             else:
                 working_difficulty,language_level=apply_adaptive_assessment(db_child,va,assessment,adaptive_signals)
+            profile_before_decision=skill_profile_payload(db_child)
+            decision=adaptive_decision(
+                profile=profile_before_decision,
+                previous_level=int(current_adaptive_profile.get('derived_level',0) or 0),
+                accepted=accepted,
+                attempt_number=attempt_number,
+                hints_used=int(adaptive_signals.get('hints_used') or 0),
+                target_language=c.target_language or 'ru',
+                support_language=c.native_language or 'ru',
+                visible_items=runtime_context.get('visible_items') or [],
+                model_visual_action=model_adaptive_response.get('visualAction'),
+                model_support_needed=bool(model_adaptive_response.get('supportNeeded')),
+            )
+            if assessment.transcript and str(assessment.status or '') not in {'NO_SPEECH','TECHNICAL_UNCERTAINTY','ASR_FAILED','ANSWER_UNCLEAR'} and not retake_mode:
+                adaptive_profile=persist_adaptive_decision(db_child,va,assessment,adaptive_signals,decision)
+                working_difficulty=float(db_child.working_difficulty or working_difficulty)
+                language_level=str(db_child.language_level or language_level)
+            else:
+                adaptive_profile=skill_profile_payload(db_child,reason=decision.reason)
+            adaptive_response={
+                'spokenTextTarget':str(model_adaptive_response.get('spokenTextTarget') or ' '.join(value for value in (target_response,follow_up_question) if value)).strip(),
+                'spokenTextSupport':str(model_adaptive_response.get('spokenTextSupport') or (helper_translation if decision.support_needed else '')).strip() if decision.support_needed else '',
+                'supportNeeded':decision.support_needed,
+                'difficultyUsed':decision.difficulty_used,
+                'repairStep':decision.repair_step,
+                'visualAction':decision.visual_action,
+                'expectedResponseType':decision.expected_response_type,
+                'conversationContinues':bool(follow_up_question) or bool(model_adaptive_response.get('conversationContinues')),
+                'reason':decision.reason,
+            }
             try:runtime=json.loads(sess.runtime_state_json or '{}')
             except (TypeError,ValueError,json.JSONDecodeError):runtime={}
-            runtime['adaptive_profile']={'working_difficulty':working_difficulty,'language_level':language_level,'proficiency_band':proficiency_band(working_difficulty),'answers_count':int(db_child.answers_count or 0)}
+            runtime['adaptive_profile']={'working_difficulty':working_difficulty,'language_level':language_level,'proficiency_band':proficiency_band(working_difficulty),'answers_count':int(db_child.answers_count or 0),**adaptive_profile}
             dialogue_by_step=runtime.get('dialogue_history_by_step') if isinstance(runtime.get('dialogue_history_by_step'),dict) else {}
             hist=list(dialogue_by_step.get(slide_id) or [])
             dialogue_by_step[slide_id]=_append_dialogue_turn(
@@ -1880,7 +1918,7 @@ async def _voice_impl(request:web.Request)->web.Response:
                 trace_id,slide_id,conversation_turn,len(dialogue_by_step[slide_id]),len(target_response),len(follow_up_question),
             )
             db_session=await db.get(LessonSession,sid);db_session.runtime_state_json=json.dumps(runtime,ensure_ascii=False)
-            response_payload={'status':status,'feedback_state':feedback_state,'accepted':accepted,'movie_take_accepted':movie_take_accepted,'retake':retake_mode,'retake_replaced':retake_mode and (accepted or movie_take_accepted),'advance_allowed':outcome.advance_allowed,'needs_retry':outcome.needs_retry,'attempt_number':attempt_number,'max_attempts':max_attempts,'transcript':assessment.transcript,'task_goal':goal,'task_goal_source':'active_follow_up' if conversation_turn else 'authored_lesson','accepted_intents':accepted_meaning,'target_meaning':sl.get('target_meaning') or authored_goal,'model_examples':sl.get('model_examples') or [simple_example],'target_response':target_response,'helper_translation':helper_translation,'follow_up_question':follow_up_question,'follow_up_translation':follow_up_translation,'model_phrase':model_phrase,'model_translation':model_translation,'child_phrase_target':assessment.transcript if accepted else '','child_phrase_translation':child_phrase_translation,'feedback':feedback,'feedback_source_language':c.native_language or 'ru','correction_target':correction_target if not accepted else '','correction_source_language':c.target_language or 'ru','response_target':assessment.response_target,'response_native':tutor_turn.reaction_native if tutor_turn else '','semantic_match':assessment.semantic_match,'semantic_response':{'task_type':runtime_context.get('task_type'),'selection_policy':runtime_context.get('selection_policy'),'selected_item_ids':[item.get('id') for item in runtime_context.get('selected_items') or []],'reaction_target':target_response,'reaction_native':helper_translation,'follow_up_target':follow_up_question,'follow_up_native':follow_up_translation},'runtime_context':runtime_context,'tutor_turn':tutor_turn.payload() if tutor_turn else None,'conversation':{'mode':conversation_policy.mode,'max_turns':conversation_policy.max_turns,'completion_condition':conversation_policy.completion_condition,'current_turn':conversation_turn,'complete':not bool(follow_up_question)},'voice_activity':{'reason':activity.reason,'duration_seconds':activity.duration_seconds,'speech_seconds':activity.speech_seconds,'speech_ratio':activity.speech_ratio,'mean_volume_db':activity.mean_volume_db,'max_volume_db':activity.max_volume_db},'adaptive_profile':{'working_difficulty':working_difficulty,'language_level':language_level,'support':complexity_support(working_difficulty)},'client_recording_id':recording_id or None,'request_id':runtime_context.get('request_id') or recording_id or None,'step_id':slide_id,'turn_id':conversation_turn,'hero_id':session_hero or None,'audio_size_bytes':upload_size,'audio_mime_type':audio_mime_type,'idempotent_replay':False}
+            response_payload={'status':status,'feedback_state':feedback_state,'accepted':accepted,'movie_take_accepted':movie_take_accepted,'retake':retake_mode,'retake_replaced':retake_mode and (accepted or movie_take_accepted),'advance_allowed':outcome.advance_allowed,'needs_retry':outcome.needs_retry,'attempt_number':attempt_number,'max_attempts':max_attempts,'transcript':assessment.transcript,'task_goal':goal,'task_goal_source':'active_follow_up' if conversation_turn else 'authored_lesson','accepted_intents':accepted_meaning,'target_meaning':sl.get('target_meaning') or authored_goal,'model_examples':sl.get('model_examples') or [simple_example],'target_response':target_response,'helper_translation':helper_translation,'follow_up_question':follow_up_question,'follow_up_translation':follow_up_translation,'model_phrase':model_phrase,'model_translation':model_translation,'child_phrase_target':assessment.transcript if accepted else '','child_phrase_translation':child_phrase_translation,'feedback':feedback,'feedback_source_language':c.native_language or 'ru','correction_target':correction_target if not accepted else '','correction_source_language':c.target_language or 'ru','response_target':assessment.response_target,'response_native':tutor_turn.reaction_native if tutor_turn else '','semantic_match':assessment.semantic_match,'semantic_response':{'task_type':runtime_context.get('task_type'),'selection_policy':runtime_context.get('selection_policy'),'selected_item_ids':[item.get('id') for item in runtime_context.get('selected_items') or []],'reaction_target':target_response,'reaction_native':helper_translation,'follow_up_target':follow_up_question,'follow_up_native':follow_up_translation},'runtime_context':runtime_context,'tutor_turn':tutor_turn.payload() if tutor_turn else None,'conversation':{'mode':conversation_policy.mode,'max_turns':conversation_policy.max_turns,'completion_condition':conversation_policy.completion_condition,'current_turn':conversation_turn,'complete':not bool(follow_up_question)},'voice_activity':{'reason':activity.reason,'duration_seconds':activity.duration_seconds,'speech_seconds':activity.speech_seconds,'speech_ratio':activity.speech_ratio,'mean_volume_db':activity.mean_volume_db,'max_volume_db':activity.max_volume_db},'adaptive_profile':{'working_difficulty':working_difficulty,'language_level':language_level,'support':complexity_support(working_difficulty),**adaptive_profile},'adaptive_response':adaptive_response,'client_recording_id':recording_id or None,'request_id':runtime_context.get('request_id') or recording_id or None,'step_id':slide_id,'turn_id':conversation_turn,'hero_id':session_hero or None,'audio_size_bytes':upload_size,'audio_mime_type':audio_mime_type,'idempotent_replay':False}
             va.response_json=json.dumps(response_payload,ensure_ascii=False)
             await db.commit()
     except Exception as exc:
@@ -1895,7 +1933,7 @@ async def _voice_impl(request:web.Request)->web.Response:
     log.info('MOBILE_VOICE_LATENCY session=%s slide=%s phrase=%s upload_ms=%d prepare_ms=%d assess_ms=%d save_ms=%d total_ms=%d attempt=%d status=%s activity=%s speech_ms=%d retake=%s',sid,slide_id,storage_phrase_id,round((uploaded-started)*1000),round((prepared-uploaded)*1000),round((assessed-prepared)*1000),round((saved-assessed)*1000),round((saved-started)*1000),attempt_number,status,activity.reason,round(activity.speech_seconds*1000),retake_mode)
     if target_response or helper_translation:
         try:
-            spoken_target=target_response;spoken_native=helper_translation if (c.native_language or 'ru')!=(c.target_language or 'ru') else ''
+            spoken_target=str(response_payload.get('adaptive_response',{}).get('spokenTextTarget') or target_response);spoken_native=str(response_payload.get('adaptive_response',{}).get('spokenTextSupport') or '')
             style=str(tutor_turn.emotion if tutor_turn else 'warm')
             asyncio.create_task(synthesize_bilingual_speech(spoken_target,c.target_language or 'ru',spoken_native,c.native_language or 'ru',settings.storage_root/'tts-cache-mobile','mobile',style),name='dome-mobile-tts-prewarm')
         except Exception as exc:log.warning('TTS_PREWARM_SCHEDULE_FAILED: %s',exc)
@@ -1942,6 +1980,21 @@ async def update_child_language(request:web.Request)->web.Response:
         await db.commit();await db.refresh(c);character=await db.get(Character,c.active_character_id) if c.active_character_id else None
         if character:await _ensure_character_geometry(character);await db.commit()
     return web.json_response(_child_json(request,c,character))
+
+
+async def adaptive_profile_debug(request:web.Request)->web.Response:
+    """Authenticated, read-only adaptive profile for admin/debug acceptance."""
+
+    parent=await _parent(request);child_id=int(request.match_info['child_id'])
+    child=await _owned_child(parent.id,child_id)
+    return web.json_response({
+        'child_id':child.id,
+        'target_language':child.target_language or 'ru',
+        'support_language':child.native_language or 'ru',
+        'age_years':child.age_years,
+        'gender':child.gender or 'boy',
+        'adaptive_profile':skill_profile_payload(child),
+    })
 
 async def tts(request:web.Request)->web.StreamResponse:
     started=time.perf_counter();await _parent(request)
@@ -2727,6 +2780,6 @@ def register_mobile_routes(app:web.Application):
     app.router.add_get('/api/mobile/hero/file/{child_id}/{character_id}',hero_file);app.router.add_post('/api/mobile/child/{child_id}/hero/preset',hero_preset);app.router.add_post('/api/mobile/child/{child_id}/hero/upload',hero_upload);app.router.add_patch('/api/mobile/child/{child_id}/hero/{character_id}/geometry',hero_geometry_confirm)
     app.router.add_get('/api/mobile/child/{child_id}/subscription',subscription_overview);app.router.add_post('/api/mobile/child/{child_id}/promo/validate',mobile_validate_promo);app.router.add_post('/api/mobile/child/{child_id}/subscription/checkout',subscription_checkout);app.router.add_post('/api/mobile/child/{child_id}/subscription/verify',subscription_verify);app.router.add_get('/api/mobile/plans',mobile_list_plans);app.router.add_get('/api/mobile/legal/documents',mobile_get_legal_documents);app.router.add_post('/api/mobile/auth/register-full',register_full);app.router.add_post('/api/mobile/auth/verify-and-onboard',verify_and_onboard);app.router.add_post('/api/mobile/child/{child_id}/subscription/cancel',subscription_cancel);app.router.add_get('/api/mobile/child/{child_id}/payment/history',payment_history);app.router.add_post('/api/mobile/child/{child_id}/subscription/plan-change/preview',subscription_plan_change_preview);app.router.add_post('/api/mobile/child/{child_id}/subscription/plan-change',subscription_plan_change_confirm);app.router.add_delete('/api/mobile/child/{child_id}/subscription/plan-change',subscription_plan_change_cancel)
     app.router.add_post('/api/mobile/session/start',session_start);app.router.add_post('/api/mobile/session/{session_id}/progress',session_progress);app.router.add_post('/api/mobile/session/{session_id}/voice',voice);app.router.add_get('/api/mobile/session/{session_id}/voice/{phrase_id}',current_voice_take);app.router.add_post('/api/mobile/session/{session_id}/interactive',interactive);app.router.add_post('/api/mobile/session/{session_id}/complete',complete);app.router.add_get('/api/mobile/session/{session_id}/movie',movie_status);app.router.add_post('/api/mobile/session/{session_id}/movie/retry',retry_movie)
-    app.router.add_get('/api/mobile/tts',tts);app.router.add_get('/api/mobile/tts.ogg',tts);app.router.add_post('/api/mobile/translate',translate);app.router.add_patch('/api/mobile/child/{child_id}/language',update_child_language);app.router.add_get('/api/mobile/child/{child_id}/movies',movies);app.router.add_route('*','/api/mobile/movie/{child_id}/{filename}',movie_file)
+    app.router.add_get('/api/mobile/tts',tts);app.router.add_get('/api/mobile/tts.ogg',tts);app.router.add_post('/api/mobile/translate',translate);app.router.add_patch('/api/mobile/child/{child_id}/language',update_child_language);app.router.add_get('/api/mobile/child/{child_id}/adaptive-profile',adaptive_profile_debug);app.router.add_get('/api/mobile/child/{child_id}/movies',movies);app.router.add_route('*','/api/mobile/movie/{child_id}/{filename}',movie_file)
     app.router.add_get('/api/mobile/content/manifest', content_manifest)
     app.router.add_get('/api/mobile/manifest', content_manifest)

@@ -252,7 +252,7 @@ async def synthesize_speech(
     # V5 deliberately invalidates the old, unnormalised cache.  The player is
     # already capped at 1.0, so serving an old low-level source would preserve
     # the physical-device quiet-voice regression forever.
-    digest = hashlib.sha256(f"DOME_TTS_V5_LOUDNESS|{settings.openai_tts_model}|{settings.child_tts_voice}|{language}|{style}|{text}".encode()).hexdigest()[:24]
+    digest = hashlib.sha256(f"DOME_TTS_V6_WARM_STYLE|{settings.openai_tts_model}|{settings.child_tts_voice}|{language}|{style}|{text}".encode()).hexdigest()[:24]
     filename = f"{purpose}_{digest}.ogg"
     cached = _existing_tts_path(cache_dir, filename)
     if cached:
@@ -267,6 +267,14 @@ async def synthesize_speech(
             "input": text,
             "response_format": "opus",
         }
+        if "gpt-4o-mini-tts" in str(settings.openai_tts_model).lower():
+            payload["instructions"] = (
+                f"Speak to a child learning {language_name(language)}. "
+                "Use a soft, friendly, youthful feminine voice. Sound kind, warm, emotionally expressive and genuinely interested. "
+                "Smile in the voice, vary intonation naturally, and use clear expressive pauses at a calm conversational pace. "
+                f"{style_instruction} "
+                "Never sound stern, flat, robotic, cold, rushed or babyish. Keep pronunciation very clear."
+            )
         async with httpx.AsyncClient(timeout=90) as client:
             response = await client.post("https://api.openai.com/v1/audio/speech", headers=headers, content=json.dumps(payload))
         if response.status_code >= 400:

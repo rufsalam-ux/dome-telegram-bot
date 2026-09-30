@@ -1,10 +1,10 @@
 /**
  * Product policy for the current DOME release.
  *
- * The domain and backend remain multilingual, but Russian is the only
- * selectable studied language in this mobile release.  The explanation
- * language intentionally remains independent and can be any supported UI
- * language.
+ * Russian remains the only selectable studied language in this release, but
+ * an authoritative session may carry another valid target.  Keeping runtime
+ * resolution generic lets the adaptive engine support any configured pair
+ * without changing the current add-child UI.
  */
 export const STUDIED_LANGUAGE_CODE='ru' as const;
 
@@ -17,7 +17,8 @@ export const EXPLANATION_LANGUAGE_OPTIONS=[
   ['it','Italiano'],['pt','Português'],['tr','Türkçe'],['ar','العربية'],['zh','中文'],
 ] as const;
 
-/** A session snapshot may predate this policy; never let it change the studied language at runtime. */
-export function studiedLanguageForMobile(_requested?:unknown):typeof STUDIED_LANGUAGE_CODE{
-  return STUDIED_LANGUAGE_CODE;
+/** Honor a valid server/profile target; current product selection still defaults to Russian. */
+export function studiedLanguageForMobile(requested?:unknown):string{
+  const code=String(requested||'').trim().toLowerCase();
+  return /^[a-z]{2,3}(?:-[a-z]{2,4})?$/.test(code)?code:STUDIED_LANGUAGE_CODE;
 }

@@ -95,11 +95,15 @@ class SpeechAssessment:
     model_answer_target: str = ""
     model_answer_native: str = ""
     child_phrase_native: str = ""
+    adaptive_assessment: dict | None = None
+    adaptive_response: dict | None = None
     tutor_turn: TutorTurn | None = None
 
     def __post_init__(self):
         self.grammar_errors = self.grammar_errors or []
         self.pronunciation_errors = self.pronunciation_errors or []
+        self.adaptive_assessment = self.adaptive_assessment or {}
+        self.adaptive_response = self.adaptive_response or {}
 
 
 async def _transcribe_with_model(wav_path: Path, model: str, language: str = "", prompt: str = "") -> tuple[str, str, float]:
@@ -208,7 +212,9 @@ async def _evaluate_with_chat(prompt: dict, trace_id: str = "") -> dict | None:
         "Return valid JSON only with keys: detected_language_code, semantic_match, grammar_errors, "
         "pronunciation_errors, feedback_native, corrected_target, reaction_target, reaction_native, "
         "response_native, follow_up_target, follow_up_native, model_answer_target, model_answer_native, "
-        "child_phrase_native, native_hint, referenced_item_ids, emotion, decision. "
+        "child_phrase_native, native_hint, referenced_item_ids, emotion, decision, "
+        "adaptive_assessment, spoken_text_target, spoken_text_support, support_needed, difficulty_used, "
+        "visual_action, expected_response_type, conversation_continues. "
         "decision must be CORRECT, RETRY, WRONG_LANGUAGE, or TECHNICAL_UNCERTAINTY. "
         "Bilingual requirement: Provide native_language equivalents alongside target_language utterances in a single pass. "
         "reaction_target is in target_language; reaction_native is its natural Russian/native_language counterpart. "
@@ -240,6 +246,14 @@ async def _evaluate_with_chat(prompt: dict, trace_id: str = "") -> dict | None:
         "You are female. In Russian self-reference always use feminine grammar: я поняла, услышала, заметила, рада, готова. "
         "dialogue_history contains recent turns of conversation in this lesson. Maintain conversational continuity and do not repeat previous questions. "
         "response_native/native_hint are brief and only needed for wrong-language, off-topic, confused, or explicitly requested progressive help. "
+        "Adaptive language rules: target language is always first. Do not automatically translate every reply. "
+        "Use adaptive_profile.derived_level (0 ZERO, 1 WORDS, 2 SIMPLE, 3 CONVERSATIONAL, 4 CONFIDENT) for sentence length, but keep age-appropriate topics and tone. "
+        "Weak speaking never proves weak comprehension. A support-language answer can show understanding even when target-language speaking is limited. "
+        "Each failed repair must become simpler, never repeat the identical question. Follow repair_step: 1 simpler target phrase; 2 visual highlight; 3 two visible choices; 4 one target word/model; 5 a short support-language instruction. "
+        "Support language is permitted only when adaptive_policy.support_allowed is true. Return it in spoken_text_support; otherwise return an empty string. "
+        "visual_action must be null or {type: highlight|animate|point|showChoice, objectIds:[published visible IDs]}; never reference an absent object. "
+        "adaptive_assessment must contain understood_question, on_topic, target_word_count, lexical_diversity_0_to_1, grammar_complexity_0_to_1, confidence_0_to_1, hesitation. "
+        "spoken_text_target is the exact target-language reaction plus at most one next prompt. conversation_continues says whether another answer is expected. "
         "emotion must be one of warm, happy, curious, surprised, encouraging, gentle_correction. "
         "When runtime_context.visual_metadata is present it describes the REAL visible object in the image. "
         "If the child states a clearly wrong factual attribute about that object (e.g. wrong colour, wrong animal species, wrong quantity) "
@@ -306,6 +320,9 @@ async def assess_speech(
     conversation_mode: str = "single_answer",
     completion_condition: str = "after_first_accepted_answer",
     trace_id: str = "",
+    adaptive_profile: dict | None = None,
+    child_age: int | None = None,
+    adaptive_repair_step: int = 0,
 ) -> SpeechAssessment:
     log.info("MOBILE_VOICE_TRACE trace=%s stage=T4_STT_START",trace_id or '-')
     log.info("VOICE_TURN_TRACE turn_id=%s event=ASR_started", trace_id or "-")
@@ -372,11 +389,23 @@ async def assess_speech(
         "attempt_number": attempt_number,
         "child_name": child_name,
         "child_gender": child_gender or "boy",
+        "child_age": child_age,
         "dialogue_history": (dialogue_history or [])[-12:],
         "conversation_mode": conversation_mode or "single_answer",
         "completion_condition": completion_condition or "after_first_accepted_answer",
         "working_difficulty_0_to_1": max(0.0, min(1.0, float(working_difficulty or 0.15))),
         "profile_language_level": language_level or "PRE_A1",
+        "adaptive_profile": adaptive_profile or {},
+        "adaptive_policy": {
+            "repair_step": max(0, min(5, int(adaptive_repair_step or 0))),
+            "support_allowed": target_language != native_language and (
+                int((adaptive_profile or {}).get("derived_level") or 0) == 0
+                or max(0, min(5, int(adaptive_repair_step or 0))) >= 1
+            ),
+            "target_first": True,
+            "do_not_translate_automatically": True,
+            "use_only_visible_object_ids": True,
+        },
         "dialogue_policy": {
             "use_name_sparingly": True,
             "avoid_echo_if_answer_is_understandable": True,
@@ -462,6 +491,21 @@ async def assess_speech(
         "VOICE_TURN_TRACE turn_id=%s event=AI_text text=%r follow_up=%r",
         trace_id or "-", turn.reaction_target, turn.follow_up_target,
     )
+    model_adaptive = result.get("adaptive_assessment") if isinstance(result.get("adaptive_assessment"), dict) else {}
+    model_action = result.get("visual_action") if isinstance(result.get("visual_action"), dict) else None
+    try:
+        difficulty_used = int(result.get("difficulty_used") or (adaptive_profile or {}).get("derived_level") or 0)
+    except (TypeError, ValueError):
+        difficulty_used = int((adaptive_profile or {}).get("derived_level") or 0)
+    structured = {
+        "spokenTextTarget": str(result.get("spoken_text_target") or " ".join(value for value in (turn.reaction_target, turn.follow_up_target) if value)).strip(),
+        "spokenTextSupport": str(result.get("spoken_text_support") or "").strip(),
+        "supportNeeded": bool(result.get("support_needed")),
+        "difficultyUsed": max(0, min(4, difficulty_used)),
+        "visualAction": model_action,
+        "expectedResponseType": str(result.get("expected_response_type") or "voice"),
+        "conversationContinues": bool(result.get("conversation_continues", bool(turn.follow_up_target))),
+    }
     return SpeechAssessment(
         transcript=transcript,
         detected_language=str(result.get("detected_language_code") or detected),
@@ -479,5 +523,7 @@ async def assess_speech(
         model_answer_target=turn.model_answer_target,
         model_answer_native=turn.model_answer_native or str(result.get("model_answer_native") or ""),
         child_phrase_native=str(result.get("child_phrase_native") or ""),
+        adaptive_assessment=model_adaptive,
+        adaptive_response=structured,
         tutor_turn=turn,
     )

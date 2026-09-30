@@ -14,14 +14,20 @@ class RuntimeItem:
     label_native: str
     label_target_accusative: str
     label_native_accusative: str
+    asset_reference: str = ""
+    position_reference: Any = None
+    selectable: bool = True
 
-    def payload(self) -> dict[str, str]:
+    def payload(self) -> dict[str, object]:
         return {
             "id": self.id,
             "label_target": self.label_target,
             "label_native": self.label_native,
             "label_target_accusative": self.label_target_accusative,
             "label_native_accusative": self.label_native_accusative,
+            "asset_reference": self.asset_reference,
+            "position_reference": self.position_reference,
+            "selectable": self.selectable,
         }
 
 
@@ -58,7 +64,9 @@ def _label_case(item: dict, language: str, case: str, *, fallback: str = "") -> 
 
 def _authored_items(slide: dict, target_language: str, native_language: str) -> list[RuntimeItem]:
     raw: list[dict] = []
-    if isinstance(slide.get("drag_items"), list):
+    if isinstance(slide.get("visible_objects"), list):
+        raw = [item for item in slide["visible_objects"] if isinstance(item, dict)]
+    elif isinstance(slide.get("drag_items"), list):
         raw = [item for item in slide["drag_items"] if isinstance(item, dict)]
     elif isinstance(slide.get("selection_options"), list):
         raw = [item for item in slide["selection_options"] if isinstance(item, dict)]
@@ -85,6 +93,9 @@ def _authored_items(slide: dict, target_language: str, native_language: str) -> 
             label_native=_label(item, native_language, fallback=item_id),
             label_target_accusative=_label_case(item, target_language, "accusative", fallback=item_id),
             label_native_accusative=_label_case(item, native_language, "accusative", fallback=item_id),
+            asset_reference=str(item.get("image") or item.get("src") or item.get("asset") or item.get("emoji") or ""),
+            position_reference=item.get("rect") or item.get("position") or item.get("reference"),
+            selectable=item.get("selectable") is not False,
         ))
     return output
 

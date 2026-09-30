@@ -6,6 +6,7 @@
 /.github/
 /.pytest_tmp/
 /DOME_77/
+DOME_77/
 /content/
 /storage/
 /scratch_*.png
@@ -21,6 +22,7 @@
 /DOME_MOBILE_77/android/.cxx/
 /DOME_MOBILE_77/android/build/
 /DOME_MOBILE_77/android/app/build/
+/DOME_MOBILE_77/dist-*/
 /DOME_MOBILE_77/android/app/dome-release.keystore
 /DOME_MOBILE_77/android/app/*.keystore
 /DOME_MOBILE_77/*.apk
@@ -31,6 +33,7 @@ node_modules/
 .npm-cache/
 graphify-out/
 dist/
+dist-*/
 .env
 .env.*
 !.env.example
@@ -72,6 +75,7 @@ unicode_qr.txt
 # Gradle build cache & local build artifacts
 android/.cxx/
 android/app/build/
+**/android/app/build/
 android/build/
 android/.gradle/
 android/app/src/main/assets/index.android.bundle

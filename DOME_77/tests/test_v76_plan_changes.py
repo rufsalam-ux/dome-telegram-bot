@@ -53,7 +53,7 @@ async def paid_subscription(session,*,now:datetime):
 
 @pytest.mark.asyncio
 async def test_request_update_cancel_are_next_period_only_and_audited():
-    engine,Session=await database();now=datetime(2026,8,23,12,0,0)
+    engine,Session=await database();now=datetime.utcnow().replace(microsecond=0)
     async with Session() as db:
         parent,_,sub,effective=await paid_subscription(db,now=now)
         preview=await preview_plan_change(db,sub,parent_id=parent.id,requested_plan_id='weekly2',now=now)
@@ -78,7 +78,7 @@ async def test_request_update_cancel_are_next_period_only_and_audited():
 
 @pytest.mark.asyncio
 async def test_successful_recurring_payment_activates_pending_plan_and_allocation():
-    engine,Session=await database();now=datetime(2026,8,23,12,0,0)
+    engine,Session=await database();now=datetime.utcnow().replace(microsecond=0)
     async with Session() as db:
         parent,_,sub,effective=await paid_subscription(db,now=now)
         preview=await preview_plan_change(db,sub,parent_id=parent.id,requested_plan_id='weekly2',now=now)
@@ -146,7 +146,7 @@ def test_stripe_plan_change_disables_proration_and_immediate_invoice():
 
 @pytest.mark.asyncio
 async def test_authenticated_mobile_plan_change_api_uses_same_domain(monkeypatch):
-    engine,Session=await database();now=datetime(2026,8,23,12,0,0)
+    engine,Session=await database();now=datetime.utcnow().replace(microsecond=0)
     async with Session() as db:
         parent,child,sub,effective=await paid_subscription(db,now=now);await db.commit()
         parent_id=parent.id;child_id=child.id

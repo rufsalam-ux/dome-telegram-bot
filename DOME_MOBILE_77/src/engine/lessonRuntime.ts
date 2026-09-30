@@ -14,6 +14,129 @@ export type RectTuple = [number,number,number,number];
 export type NextPolicy={requiredForMovie?:boolean;recoveryAvailable?:boolean;hasValidRecording?:boolean;mode?:'always'|'after_action'|'after_answer'};
 export type RuntimeLanguagePair={targetLanguage:string;explanationLanguage:string};
 export type SourcedRuntimeText={text:string;sourceLanguage:string};
+export type AdaptiveVisualAction={type:'highlight'|'animate'|'point'|'showChoice';objectIds:string[]};
+export type AdaptiveResponse={
+  spokenTextTarget:string;
+  spokenTextSupport:string;
+  supportNeeded:boolean;
+  difficultyUsed:0|1|2|3|4;
+  repairStep:number;
+  visualAction:AdaptiveVisualAction|null;
+  expectedResponseType:string;
+  conversationContinues:boolean;
+};
+
+export type AdaptiveSkillSnapshot={
+  comprehension?:number;
+  vocabulary?:number;
+  speaking?:number;
+  grammar?:number;
+  confidence?:number;
+  derived_level?:number;
+  meaningful_turns?:number;
+};
+
+export type AdaptivePromptPlan={
+  text:string;
+  sourceLanguage:string;
+  difficulty:0|1|2|3|4;
+  supportNeeded:boolean;
+  objectIds:string[];
+  expectedResponseType:'word'|'short_phrase'|'sentence'|'open_answer';
+};
+
+/** Validate the server decision against objects rendered in this exact turn. */
+export function normalizeAdaptiveResponse(value:any,visibleIds:string[]):AdaptiveResponse{
+  const visible=new Set((visibleIds||[]).map(String));
+  const rawAction=value?.visualAction;
+  const type=String(rawAction?.type||'');
+  const requested:string[]=Array.isArray(rawAction?.objectIds)?rawAction.objectIds.map((item:unknown)=>String(item)):[];
+  const safeIds:string[]=Array.from(new Set<string>(requested)).filter(id=>visible.has(id)).slice(0,2);
+  const visualAction:AdaptiveVisualAction|null=(['highlight','animate','point','showChoice'].includes(type)&&safeIds.length===requested.length&&safeIds.length)
+    ?{type:type as AdaptiveVisualAction['type'],objectIds:safeIds}
+    :null;
+  const rawDifficulty=Number(value?.difficultyUsed);
+  const difficulty=Math.max(0,Math.min(4,Number.isFinite(rawDifficulty)?Math.trunc(rawDifficulty):0)) as 0|1|2|3|4;
+  const supportNeeded=value?.supportNeeded===true&&String(value?.spokenTextSupport||'').trim().length>0;
+  return {
+    spokenTextTarget:String(value?.spokenTextTarget||'').trim(),
+    spokenTextSupport:supportNeeded?String(value?.spokenTextSupport||'').trim():'',
+    supportNeeded,
+    difficultyUsed:difficulty,
+    repairStep:Math.max(0,Math.min(5,Math.trunc(Number(value?.repairStep)||0))),
+    visualAction,
+    expectedResponseType:String(value?.expectedResponseType||'voice'),
+    conversationContinues:Boolean(value?.conversationContinues),
+  };
+}
+
+function adaptiveLevel(profile:AdaptiveSkillSnapshot|undefined,languageLevel='PRE_A1',difficulty=.15,hintDepth=0):0|1|2|3|4{
+  const explicit=Number(profile?.derived_level);
+  const live=Math.floor(Math.max(0,Math.min(.99,Number(difficulty)||0))*5);
+  const score=Number(profile?.meaningful_turns||0)>0
+    ?live
+    :Number.isFinite(explicit)?explicit:String(languageLevel||'').toUpperCase()==='PRE_A1'?live:Math.round(Math.max(0,Math.min(1,Number(difficulty)||0))*4);
+  return Math.max(0,Math.min(4,Math.trunc(score)-Math.max(0,Math.trunc(hintDepth)))) as 0|1|2|3|4;
+}
+
+function adaptiveText(value:any):string{
+  return String(value?.text??value??'').replace(/\s+/g,' ').trim();
+}
+
+function uniqueAdaptiveModels(slide:any,items:VoiceRuntimeItem[]):string[]{
+  const firstLabel=adaptiveText(items[0]?.labelTarget);
+  const authoredModels=(Array.isArray(slide?.adaptive_models)?slide.adaptive_models:[]).map(adaptiveText);
+  const regularModels=(slide?.target_language_options||slide?.model_examples||[]).map(adaptiveText);
+  const candidates=[
+    authoredModels[0]||firstLabel,
+    authoredModels[1]||adaptiveText(slide?.simplified_text)||regularModels[0]||firstLabel,
+    authoredModels[2]||regularModels[1]||adaptiveText(slide?.model_answer_target)||regularModels[0]||firstLabel,
+    authoredModels[3]||adaptiveText(slide?.richer_model_text)||adaptiveText(slide?.model_answer_richer)||regularModels[2]||regularModels[1],
+    authoredModels[4]||adaptiveText(slide?.task_goal)||adaptiveText(slide?.question)||adaptiveText(slide?.bot_says_target),
+  ];
+  const output:string[]=[];
+  for(const value of candidates){if(value&&!output.includes(value))output.push(value)}
+  return output;
+}
+
+/**
+ * Build the next child-facing target-language prompt before rendering it.
+ * Content supplies the language itself; the engine only selects a rung, so it
+ * works for future lessons and never guesses morphology from an object ID.
+ */
+export function adaptivePromptPlan(
+  slide:any,
+  profile:AdaptiveSkillSnapshot|undefined,
+  items:VoiceRuntimeItem[],
+  languageLevel='PRE_A1',
+  difficulty=.15,
+  phase:'initial'|'hint'='initial',
+  hintDepth=0,
+  sourceLanguage=authoredTextLanguage(undefined,slide),
+  targetLanguage='ru',
+  supportLanguage='ru',
+):AdaptivePromptPlan{
+  const level=adaptiveLevel(profile,languageLevel,difficulty,phase==='hint'?hintDepth:0);
+  const models=uniqueAdaptiveModels(slide,items);
+  const authored=adaptiveText(slide?.task_goal||slide?.bot_says_target||slide?.question);
+  const model=models[Math.min(level,Math.max(0,models.length-1))]||models[0]||authored;
+  const text=phase==='initial'&&level>=4&&authored?authored:model;
+  const comprehension=Number(profile?.comprehension);
+  const supportNeeded=normalizeRuntimeLanguage(targetLanguage)!==normalizeRuntimeLanguage(supportLanguage)
+    &&(level===0||(Number.isFinite(comprehension)&&comprehension<30&&Number(difficulty)<.38));
+  const objectIds=((phase==='hint'||level<=2)&&items[0]?.id)?[String(items[0].id)]:[];
+  const expectedResponseType=(['word','short_phrase','sentence','open_answer','open_answer'] as const)[level];
+  return {text,sourceLanguage:normalizeRuntimeLanguage(sourceLanguage),difficulty:level,supportNeeded,objectIds,expectedResponseType};
+}
+
+/** Never let a translated target duplicate masquerade as support language. */
+export function distinctSupportSpeech(target:string,support:string,targetLanguage:string,supportLanguage:string):string{
+  if(normalizeRuntimeLanguage(targetLanguage)===normalizeRuntimeLanguage(supportLanguage))return '';
+  const clean=(value:string)=>String(value||'').replace(/\s+/g,' ').trim();
+  const targetText=clean(target);const supportText=clean(support);
+  if(!supportText||supportText.localeCompare(targetText,undefined,{sensitivity:'base'})===0)return '';
+  return supportText;
+}
 
 export function normalizeRuntimeLanguage(value:unknown,fallback='ru'):string{
   const code=String(value||'').trim().toLowerCase();
@@ -24,9 +147,8 @@ export function normalizeRuntimeLanguage(value:unknown,fallback='ru'):string{
 export function resolveRuntimeLanguagePair(profile:any,session?:any):RuntimeLanguagePair{
   const server=session?.language_pair||session?.languagePair||{};
   return {
-    // A session can carry an old multilingual target snapshot.  Keep it in the
-    // backend/domain for future releases, but the active mobile lesson is
-    // deliberately Russian-first until another studied language is enabled.
+    // The server snapshot is authoritative, so the same runtime supports any
+    // configured target/support pair without a language-specific code path.
     targetLanguage:studiedLanguageForMobile(server.target_language??server.targetLanguage??profile?.learningLanguage??profile?.target_language),
     explanationLanguage:normalizeRuntimeLanguage(server.explanation_language??server.native_language??server.explanationLanguage??server.nativeLanguage??profile?.nativeLanguage??profile?.native_language,'ru'),
   };
@@ -75,11 +197,12 @@ export function conversationTaskPolicy(slide:any):ConversationTaskPolicy{
   const rawMode=String(slide?.conversation_mode||slide?.conversationMode||'').trim().toLowerCase();
   const explicitSingle=['single','single_answer','one_shot','none','off'].includes(rawMode);
   const legacyEnabled=slide?.allow_ai_followup===true||String(slide?.follow_up_policy||'').toLowerCase()==='optional';
-  const enabled=slide?.suppress_ai_followup!==true&&!explicitSingle&&(['dialogue','conversation','multi_turn','roleplay'].includes(rawMode)||legacyEnabled);
+  const isVoice=requiresVoice(slide);
+  const enabled=slide?.suppress_ai_followup!==true&&!explicitSingle&&(['dialogue','conversation','multi_turn','roleplay'].includes(rawMode)||legacyEnabled||isVoice);
   const legacyFollowups=Math.max(0,Number(slide?.max_ai_followups||0)||0);
   const configured=slide?.max_turns??slide?.maxTurns;
-  const parsed=configured===undefined||configured===null?(legacyFollowups?legacyFollowups+1:(enabled?2:1)):Number(configured);
-  const maxTurns=enabled?Math.max(2,Math.min(8,Number.isFinite(parsed)?Math.trunc(parsed):2)):1;
+  const parsed=configured===undefined||configured===null?(legacyFollowups?legacyFollowups+1:(enabled?5:1)):Number(configured);
+  const maxTurns=enabled?Math.max(2,Math.min(8,Number.isFinite(parsed)?Math.trunc(parsed):5)):1;
   return {
     mode:enabled?'multi_turn':'single_answer',
     enabled,
@@ -89,14 +212,17 @@ export function conversationTaskPolicy(slide:any):ConversationTaskPolicy{
 }
 
 /** The server turn being answered; generation of a follow-up already advanced it. */
-export function conversationRecordingTurn(slide:any,currentTurn:number,stage:RuntimeStage):number{
+export function conversationRecordingTurn(slide:any,currentTurn:number,stage:RuntimeStage,hasRecordedAnswer=false):number{
   const policy=conversationTaskPolicy(slide);
   // COMPLETE means that the authored requirement is satisfied; it does not
   // terminate an explicitly configured conversation. If the child presses
   // Answer again, preserve the current turn/history instead of silently
   // restarting an unrelated turn 0 dialogue.
   if(!policy.enabled)return 0;
-  const turn=Math.max(0,Math.trunc(Number(currentTurn)||0));
+  let turn=Math.max(0,Math.trunc(Number(currentTurn)||0));
+  if(hasRecordedAnswer&&stage==='COMPLETE'){
+    turn=Math.max(1,turn+1);
+  }
   return Math.min(turn,policy.maxTurns-1);
 }
 
@@ -455,18 +581,15 @@ export function recoveryStageAfterFailure(slide:any,hasSelection=false):RuntimeS
 export type ProgressiveHint={step:'REPHRASE'|'CHOICES'|'MODEL'|'RECOVER';prompt:string};
 
 export function progressiveHint(slide:any,attempt:number):ProgressiveHint{
-  const question=String(slide?.task_goal||slide?.question||slide?.bot_says_target||'Попробуй ещё раз.').trim();
-  const semanticHint=String(slide?.semantic_hint_target||slide?.semantic_hint||slide?.hint_target||question).trim();
   const examplesAllowed=slide?.examples_allowed!==false;
-  const examples=examplesAllowed?(slide?.target_language_options||slide?.model_examples||[]).map((item:any)=>String(item?.text||item||'').trim()).filter(Boolean).slice(0,3):[];
-  const example=String(examples[0]||slide?.simplified_text||slide?.model_answer_target||question).trim();
+  const examples=examplesAllowed?(slide?.adaptive_models||slide?.target_language_options||slide?.model_examples||[]).map((item:any)=>String(item?.text||item||'').trim()).filter(Boolean).filter((text:string)=>!text.includes('?')).slice(0,5):[];
+  const example=String(examples[0]||slide?.hint_example_target||slide?.simplified_text||slide?.model_answer_target||'').trim();
   const step=Math.max(1,Number(attempt)||1);
-  if(step===1)return {step:'REPHRASE',prompt:semanticHint};
-  if(!examplesAllowed&&step===2)return {step:'REPHRASE',prompt:semanticHint};
+  // A hint is an answer model, never a paraphrased question. Repeated help
+  // moves down the same model ladder rather than asking the child to think.
+  if(examplesAllowed&&example)return {step:'MODEL',prompt:example};
   if(!examplesAllowed)return {step:'RECOVER',prompt:'Спасибо за попытку. Продолжим без готового примера.'};
-  if(step===2&&examples.length>1)return {step:'CHOICES',prompt:`Можно спросить или сказать так: ${examples.join(' / ')}`};
-  if(step<=3)return {step:'MODEL',prompt:`Можно сказать: ${example}`};
-  return {step:'RECOVER',prompt:`Скажи вместе со мной: ${example}`};
+  return {step:'RECOVER',prompt:''};
 }
 
 export function adaptiveModelPhrase(slide:any,languageLevel='PRE_A1',difficulty=.15):string{
@@ -527,7 +650,14 @@ export function complexitySupport(difficulty=0.15):string{
 export function runtimePrompt(slide:any,_languageLevel='PRE_A1',_difficulty=0.15,phase:PromptPhase='initial'):string{
   const authored=String(slide?.task_goal||slide?.bot_says_target||slide?.question||'').trim();
   const simplified=String(slide?.simplified_text||'').trim();
-  return phase==='retry'&&simplified?simplified:authored;
+  if(phase==='retry'&&simplified)return simplified;
+  // Legacy callers still receive a safe first rung instead of an advanced
+  // open prompt. New callers should use adaptivePromptPlan with the profile.
+  if(phase==='initial'&&(String(_languageLevel).toUpperCase()==='PRE_A1'||_difficulty<.25)){
+    const models=(slide?.adaptive_models||slide?.model_examples||[]).map(adaptiveText).filter(Boolean);
+    return models[0]||simplified||authored;
+  }
+  return authored;
 }
 
 export type CardQuestion={id:string;text:string;preA1Text?:string};
@@ -678,7 +808,7 @@ export function updatePackedItems(current:string[],itemId:string,outcome:Suitcas
 export function suitcaseTapFallbackAvailable(failedDrags:number,threshold=3):boolean{return failedDrags>=threshold}
 
 export function initialBilingualHint(text:string,languageLevel='PRE_A1',difficulty=0.15,maxLength=120):string{
-  void languageLevel;void difficulty;
+  if(String(languageLevel||'').toUpperCase()!=='PRE_A1'&&Number(difficulty)>=.55)return '';
   const compact=String(text||'').replace(/\s+/g,' ').trim();if(!compact)return '';
   const sentences=compact.match(/[^.!?]+[.!?]?/g)?.map(value=>value.trim()).filter(Boolean).slice(0,2)||[compact];const complete=sentences.join(' ');
   if(complete.length<=maxLength)return complete;

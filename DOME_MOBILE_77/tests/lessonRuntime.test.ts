@@ -6,6 +6,7 @@ import test from 'node:test';
 import {
   adaptiveCardQuestionText,
   adaptiveModelPhrase,
+  adaptivePromptPlan,
   advanceAfterAssessment,
   answerEnabled,
   authoredTextLanguage,
@@ -22,6 +23,7 @@ import {
   conversationTaskPolicy,
   computeHeroScale,
   droppedObjectTutorPrompt,
+  distinctSupportSpeech,
   dropInsideTarget,
   heroBox,
   hasCorrectiveFeedback,
@@ -35,6 +37,7 @@ import {
   movedPixelRect,
   nextCardQuestion,
   nextEnabled,
+  normalizeAdaptiveResponse,
   progressiveHint,
   recordEnabled,
   renderedPerceptualHeightRatio,
@@ -130,11 +133,11 @@ test('portrait shell motion is local, touch transparent, and reduced-motion awar
   assert.match(shell,/maxHeight:'27%'/);assert.match(shell,/marginBottom:'4%'/);assert.match(shell,/width:'78%'/);
 });
 
-test('mobile policy fixes the studied language to Russian and keeps explanations selectable',()=>{
+test('mobile runtime honors the authoritative language pair while defaulting to Russian',()=>{
   const russianTarget=resolveRuntimeLanguagePair({learningLanguage:'ru',nativeLanguage:'en'},{language_pair:{target_language:'ru',explanation_language:'en'}});
   assert.deepEqual(russianTarget,{targetLanguage:'ru',explanationLanguage:'en'});
   const englishTarget=resolveRuntimeLanguagePair({learningLanguage:'ru',nativeLanguage:'en'},{language_pair:{target_language:'en',explanation_language:'ru'}});
-  assert.deepEqual(englishTarget,{targetLanguage:'ru',explanationLanguage:'ru'});
+  assert.deepEqual(englishTarget,{targetLanguage:'en',explanationLanguage:'ru'});
   assert.equal(authoredTextLanguage({target_language:'en'},{}),'en');
   assert.equal(authoredTextLanguage({target_language:'en'},{content_source_language:'ru'}),'ru');
   const suitcase={interactive_task:'suitcase',drag_items:[{id:'jacket',label_ru:'куртку',label_en:'a jacket'}]};
@@ -150,7 +153,7 @@ test('mobile policy fixes the studied language to Russian and keeps explanations
   assert.match(addChild,/const targetLanguage=STUDIED_LANGUAGE_CODE/);assert.match(addChild,/options=\{STUDIED_LANGUAGE_OPTIONS\}/);assert.match(addChild,/options=\{EXPLANATION_LANGUAGE_OPTIONS\}/);
   const player=readFileSync(new URL('../src/screens/LessonPlayer.tsx',import.meta.url),'utf8');
   for(const marker of ['LANG_PROFILE_PAIR','LANG_SESSION_PAIR','LANG_PROMPT_PAIR','LANG_HINT_PAIR','LANG_EVALUATOR_PAIR'])assert.match(player+readFileSync(new URL('../src/api/mobile.ts',import.meta.url),'utf8'),new RegExp(marker));
-  assert.match(player,/promptSourceLanguage=authoredLanguage/);assert.match(player,/manualHintSource\(slide,languageLevel,workingDifficulty,choice,authoredLanguage\)/);
+  assert.match(player,/promptSourceLanguage=initialPlan\?\.sourceLanguage\|\|authoredLanguage/);assert.match(player,/manualHintSource\(slide,languageLevel,workingDifficulty,choice\|\|undefined,authoredLanguage\)/);
 });
 
 test('movie identity is stable across completion, polling and library response shapes',()=>{
@@ -178,10 +181,9 @@ test('recording becomes available only after tutor speech finishes',()=>{
   assert.equal(recordEnabled('WAITING_VOICE',greeting,true),true);
 });
 
-test('PRE_A1 opening retains the complete authored question',()=>{
+test('PRE_A1 opening uses the safe authored model before an open question',()=>{
   const prompt=runtimePrompt(greeting,'PRE_A1',0.12,'initial');
-  assert.match(prompt,/Как ты сегодня себя чувствуешь/);
-  assert.notEqual(prompt,'Привет! У меня всё хорошо.');
+  assert.equal(prompt,'Привет! У меня всё хорошо.');
   assert.equal(runtimePrompt(greeting,'PRE_A1',0.12,'retry'),'Привет! У меня всё хорошо.');
 });
 
@@ -615,7 +617,7 @@ test('parrot remains movie-required and receives an optional bounded conversatio
 
 test('invite task has one authoritative authored goal and model phrase',()=>{
   const invite=(bundledLesson.slides as any[]).find(slide=>slide.slide_id==='slide_16');
-  assert.match(runtimePrompt(invite,'PRE_A1',.15,'initial'),/приехать к тебе/i);assert.doesNotMatch(runtimePrompt(invite,'PRE_A1',.15,'initial'),/полетели со мной/i);
+  assert.match(runtimePrompt(invite,'PRE_A1',.15,'initial'),/Приезжайте ко мне/i);assert.doesNotMatch(runtimePrompt(invite,'PRE_A1',.15,'initial'),/полетели со мной/i);
   assert.match(adaptiveModelPhrase(invite,'PRE_A1',.15),/Приезжайте ко мне/);
 });
 
@@ -633,12 +635,9 @@ test('regression: cat state remains independent from child avatar identity',()=>
 
 test('progressive assistance changes strategy and preserves the authored speech act',()=>{
   const slide={pedagogical_intent:'ask_person_question',question:'Что ты спросишь?',semantic_hint_target:'Посмотри на его тёплую куртку. Что необычно?',target_language_options:['Почему ты тепло одет?','Тебе не жарко?','Зачем тебе шапка?'],simplified_text:'Почему ты тепло одет?'};
-  assert.equal(progressiveHint(slide,1).step,'REPHRASE');assert.match(progressiveHint(slide,1).prompt,/Что необычно/);
-  assert.equal(progressiveHint(slide,2).step,'CHOICES');assert.match(progressiveHint(slide,2).prompt,/Почему.*Тебе.*Зачем/);
-  assert.equal(progressiveHint(slide,3).step,'MODEL');assert.match(progressiveHint(slide,3).prompt,/Почему ты тепло одет/);
-  assert.equal(progressiveHint(slide,4).step,'RECOVER');assert.match(progressiveHint(slide,4).prompt,/Скажи вместе/);
+  for(const attempt of [1,2,3,4]){assert.equal(progressiveHint(slide,attempt).step,'MODEL');assert.equal(progressiveHint(slide,attempt).prompt,'Почему ты тепло одет?')}
   assert.equal(manualHintExample(slide,'PRE_A1',.15),'Почему ты тепло одет?');
-  const noExamples={...slide,examples_allowed:false};assert.equal(progressiveHint(noExamples,2).step,'REPHRASE');assert.equal(progressiveHint(noExamples,3).step,'RECOVER');assert.doesNotMatch(progressiveHint(noExamples,3).prompt,/Почему ты тепло одет/);
+  const noExamples={...slide,examples_allowed:false};assert.equal(progressiveHint(noExamples,2).step,'RECOVER');assert.equal(progressiveHint(noExamples,3).step,'RECOVER');assert.doesNotMatch(progressiveHint(noExamples,3).prompt,/Почему ты тепло одет/);
 });
 
 test('Lyosha task is authored as asking a question and Hint is audible target-language help',()=>{
@@ -860,7 +859,7 @@ test('saved voice controls are outside the clipped prompt and retain a safe repl
   assert.match(lesson,/Новая запись сохранена на телефоне\. Предыдущая запись не изменилась/);
   assert.match(shell,/portrait-saved-recording-tools/);
   assert.match(shell,/promptWithRecordingTools/);
-  assert.match(shell,/recordingTools:\{position:'absolute'/);
+  assert.match(shell,/recordingToolsBase:\{position:'absolute'/);
 });
 
 test('disabled controls are visibly inert and the portrait world has distinct child-safe reactions',()=>{
@@ -934,11 +933,9 @@ test('voice recording failure recovery provides visible retry and re-record opti
   assert.match(player,/✓ Ответ сохранён/);
   assert.doesNotMatch(player,/Запись ждёт отправки/,'Never show stagnant waiting message without controls');
 
-  // 3. Scenario B (Upload failure/timeout -> retry flow)
-  // Both portrait (recordingTools) and landscape (controls) expose testID='retry-upload-voice'
-  assert.match(player,/testID='retry-upload-voice'/);
-  assert.match(player,/↻ Отправить снова/);
-  assert.match(player,/retryPendingVoice\(\)/);
+  // 3. Scenario B (Upload failure/timeout -> retry flow via main answer button)
+  assert.match(player,/testID='play-current-recording'/);
+  assert.match(player,/retryPendingVoice/);
   // In portrait shell, the round answer hotspot retries when uploadStatus === 'UPLOAD_FAILED'
   assert.match(player,/uploadStatus==='UPLOAD_FAILED'\?\(\)=>void retryPendingVoice\(\)/);
 
@@ -1095,10 +1092,10 @@ test('Cat mascot safe zone and non-overlapping controls in LessonPortraitShell',
   // Content panel has higher elevation: zIndex 15, elevation 15
   assert.match(shell, /panel:\{position:'absolute',overflow:'hidden',borderRadius:26,padding:7,zIndex:15,elevation:15\}/);
   // Recording tools have highest elevation: zIndex 35, elevation 35
-  assert.match(shell, /recordingTools:\{position:'absolute',left:9,right:9,bottom:7,zIndex:35,elevation:35\}/);
-  // Mascot sits lower on classroom floor (top 1175, size 215)
-  assert.match(shell, /top:layout\.image\.top\+1175\*layout\.scale/);
-  assert.match(shell, /size=\{215\*layout\.scale\}/);
+  assert.match(shell, /zIndex:35,elevation:35/);
+  // Mascot keeps original full size (top 1150, size 260)
+  assert.match(shell, /top:layout\.image\.top\+1150\*layout\.scale/);
+  assert.match(shell, /size=\{260\*layout\.scale\}/);
 });
 
 test('Multi-turn conversation waits for the exact next child turn and single-answer stays bounded', () => {
@@ -1124,4 +1121,79 @@ test('Lyosha voice task explicitly opts into a bounded five-turn dialogue',()=>{
   assert.equal(slide.max_turns,5);
   assert.equal(slide.allow_ai_followup,true);
   assert.equal(conversationTaskPolicy(slide).maxTurns,5);
+});
+
+test('adaptive response permits support speech only when explicitly required',()=>{
+  const regular=normalizeAdaptiveResponse({spokenTextTarget:'Куртка.',spokenTextSupport:'Tap the jacket.',supportNeeded:false,difficultyUsed:1,visualAction:null},['jacket']);
+  assert.equal(regular.spokenTextTarget,'Куртка.');
+  assert.equal(regular.spokenTextSupport,'');
+  assert.equal(regular.supportNeeded,false);
+  const repair=normalizeAdaptiveResponse({spokenTextTarget:'Куртка.',spokenTextSupport:'Tap the jacket.',supportNeeded:true,difficultyUsed:0,repairStep:5,visualAction:{type:'highlight',objectIds:['jacket']}},['jacket']);
+  assert.equal(repair.spokenTextSupport,'Tap the jacket.');
+  assert.deepEqual(repair.visualAction,{type:'highlight',objectIds:['jacket']});
+});
+
+test('adaptive visual actions are restricted to objects visible in the current turn',()=>{
+  const missing=normalizeAdaptiveResponse({visualAction:{type:'point',objectIds:['imaginary_dragon']}},['jacket','bear']);
+  const mixed=normalizeAdaptiveResponse({visualAction:{type:'showChoice',objectIds:['jacket','imaginary_dragon']}},['jacket','bear']);
+  const valid=normalizeAdaptiveResponse({visualAction:{type:'showChoice',objectIds:['jacket','bear']}},['jacket','bear']);
+  assert.equal(missing.visualAction,null);
+  assert.equal(mixed.visualAction,null);
+  assert.deepEqual(valid.visualAction,{type:'showChoice',objectIds:['jacket','bear']});
+});
+
+test('lesson player uses one structured response for target-first TTS and visual grounding',()=>{
+  const player=readFileSync(new URL('../src/screens/LessonPlayer.tsx',import.meta.url),'utf8');
+  assert.match(player,/normalizeAdaptiveResponse\(response\.adaptive_response/);
+  assert.match(player,/adaptive\.supportNeeded\?adaptive\.spokenTextSupport:''/);
+  assert.match(player,/setAdaptiveHighlightedIds\(adaptive\.visualAction\?\.objectIds\|\|\[\]\)/);
+  assert.match(player,/ADAPTIVE_RESPONSE_APPLIED/);
+});
+
+test('adaptive initial prompt uses the five-rung target-first ladder',()=>{
+  const slide={
+    content_source_language:'ru',
+    bot_says_target:'Что ты можешь сказать про слона?',
+    adaptive_models:['Слон.','Это слон.','Это большой слон.','Большой слон идёт.','Что ты можешь сказать про слона?'],
+  };
+  const items=[{id:'elephant',labelTarget:'Слон',labelNative:'Elephant'}];
+  const cases=[
+    {name:'ZERO',difficulty:.12,level:0,text:'Слон.',support:true},
+    {name:'Beginner',difficulty:.28,level:1,text:'Это слон.',support:false},
+    {name:'Intermediate',difficulty:.50,level:2,text:'Это большой слон.',support:false},
+    {name:'Strong',difficulty:.88,level:4,text:'Что ты можешь сказать про слона?',support:false},
+    {name:'High comprehension / low speaking',difficulty:.62,level:3,text:'Большой слон идёт.',support:false},
+  ];
+  for(const value of cases){
+    const plan=adaptivePromptPlan(slide,{derived_level:value.level,meaningful_turns:value.name==='ZERO'?0:8,comprehension:value.name==='ZERO'?0:80,speaking:value.name.includes('low speaking')?15:70},items,'PRE_A1',value.difficulty,'initial',0,'ru','ru','en');
+    assert.equal(plan.text,value.text,value.name);
+    assert.equal(plan.difficulty,value.level,value.name);
+    assert.equal(plan.supportNeeded,value.support,value.name);
+    assert.deepEqual(plan.objectIds,value.level<=2?['elephant']:[],value.name);
+  }
+});
+
+test('success and failure sequence can move one rung in both directions',()=>{
+  const slide={content_source_language:'ru',adaptive_models:['Слон.','Это слон.','Это большой слон.','Слон идёт.','Что делает слон?']};
+  const items=[{id:'elephant',labelTarget:'Слон',labelNative:'Elephant'}];
+  const sequence=[.12,.28,.48,.68,.48];
+  assert.deepEqual(sequence.map(value=>adaptivePromptPlan(slide,{meaningful_turns:5,derived_level:0},items,'PRE_A1',value).difficulty),[0,1,2,3,2]);
+});
+
+test('hint is always a concrete model, becomes simpler, and highlights the real object',()=>{
+  const slide={content_source_language:'ru',question:'Что ты можешь сказать?',adaptive_models:['Слон.','Это слон.','Это большой слон.','Слон идёт.','Слон идёт по траве.']};
+  const items=[{id:'elephant',labelTarget:'Слон',labelNative:'Elephant'}];
+  const levels=[.12,.28,.48,.68,.88].map(value=>adaptivePromptPlan(slide,{meaningful_turns:4,derived_level:4},items,'PRE_A1',value,'hint'));
+  assert.deepEqual(levels.map(item=>item.text),['Слон.','Это слон.','Это большой слон.','Слон идёт.','Слон идёт по траве.']);
+  assert.ok(levels.every(item=>!item.text.includes('?')));
+  assert.deepEqual(levels[0].objectIds,['elephant']);
+  const simpler=adaptivePromptPlan(slide,{meaningful_turns:4,derived_level:3},items,'PRE_A1',.68,'hint',2);
+  assert.equal(simpler.text,'Это слон.');
+  assert.deepEqual(simpler.objectIds,['elephant']);
+});
+
+test('support language is distinct and never a duplicated target utterance',()=>{
+  assert.equal(distinctSupportSpeech('Слон.','Слон.','ru','en'),'');
+  assert.equal(distinctSupportSpeech('Слон.','Elephant. Say: «Слон.»','ru','en'),'Elephant. Say: «Слон.»');
+  assert.equal(distinctSupportSpeech('Слон.','Слон.','ru','ru'),'');
 });

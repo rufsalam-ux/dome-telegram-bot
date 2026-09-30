@@ -64,15 +64,27 @@ def conversation_policy_for_task(task: dict | None) -> ConversationPolicy:
     ).strip().lower()
     explicit_single = raw_mode in {"single", "single_answer", "one_shot", "none", "off"}
     legacy_enabled = bool(authored.get("allow_ai_followup")) or str(authored.get("follow_up_policy") or "").lower() == "optional"
+    is_voice = (
+        bool(authored.get("required_voice"))
+        or authored.get("answer_mode") in {"required_voice", "optional_voice"}
+        or authored.get("type") in {
+            "voice_answer", "required_movie_phrase", "repeat", "repeat_phrase",
+            "speak", "dialogue", "open_dialogue", "roleplay", "retell", "continue_story",
+            "read_aloud", "echo_reading", "shared_reading", "read_roles",
+            "card_selector", "animal_compare", "mood_choice",
+        }
+        or authored.get("interactive_task") in {"suitcase"}
+        or bool(authored.get("task_goal") or authored.get("question") or authored.get("bot_says_target"))
+    )
     enabled = not bool(authored.get("suppress_ai_followup")) and not explicit_single and (
-        raw_mode in {"dialogue", "conversation", "multi_turn", "roleplay"} or legacy_enabled
+        raw_mode in {"dialogue", "conversation", "multi_turn", "roleplay"} or legacy_enabled or is_voice
     )
     legacy_follow_ups = max(0, int(authored.get("max_ai_followups") or 0))
     raw_max_turns = authored.get("max_turns", authored.get("maxTurns"))
     try:
-        max_turns = int(raw_max_turns) if raw_max_turns is not None else (legacy_follow_ups + 1 if legacy_follow_ups else (2 if enabled else 1))
+        max_turns = int(raw_max_turns) if raw_max_turns is not None else (legacy_follow_ups + 1 if legacy_follow_ups else (5 if enabled else 1))
     except (TypeError, ValueError):
-        max_turns = 2 if enabled else 1
+        max_turns = 5 if enabled else 1
     max_turns = max(2, min(8, max_turns)) if enabled else 1
     completion = str(
         authored.get("completion_condition")
@@ -182,10 +194,10 @@ def build_assessed_turn(
     """
 
     reaction = _compact(result.get("reaction_target") or result.get("response_target")).replace("?", ".")
-    if _is_generic_praise(reaction):
-        # A bare "Great!" is not evidence that the tutor listened. Ground a
-        # successful reaction in the actual answer; never praise a failed take.
+    if not allow_follow_up and _is_generic_praise(reaction):
         reaction = f"{_compact(answer_text, max_chars=60).rstrip('.!?')}!" if accepted and _compact(answer_text) else ""
+    elif not reaction and accepted and _compact(answer_text):
+        reaction = f"{_compact(answer_text, max_chars=60).rstrip('.!?')}!"
     correction = _compact(result.get("corrected_target"))
     follow_up = _one_question(result.get("follow_up_target"))
     can_follow = accepted and allow_follow_up and follow_up_count < max(0, int(max_follow_ups))
