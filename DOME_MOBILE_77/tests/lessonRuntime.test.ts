@@ -1260,14 +1260,32 @@ test('cleanChildFacingText strips debug artifacts, prompt variables, and localiz
   assert.match(cleaned, /Это жираф\./);
 });
 
-test('buildAdaptiveHint returns concise model answers in target language based on current question',()=>{
-  const giraffeHint = buildAdaptiveHint('Какой жираф?', 'giraffe', 2, { slide_id: 'slide_45' });
-  assert.equal(giraffeHint, 'Жираф высокий.');
+test('buildAdaptiveHint returns concise model answers in target language based on current question and level ladder (0..4)',()=>{
+  // Level 0: ready model answer («Можно сказать: ...»)
+  const giraffeL0 = buildAdaptiveHint('Какой жираф?', 'giraffe', 0, { slide_id: 'slide_45' });
+  assert.equal(giraffeL0, 'Можно сказать: Жираф высокий.');
 
-  const bearHint = buildAdaptiveHint('Что делает белый медведь?', 'polar_bear', 3, { slide_id: 'slide_46' });
-  assert.equal(bearHint, 'Медведь гуляет.');
+  // Level 1: choice of 2 options
+  const giraffeL1 = buildAdaptiveHint('Какой жираф?', 'giraffe', 1, { slide_id: 'slide_45' });
+  assert.equal(giraffeL1, 'Высокий или низкий?');
 
-  const moodHint = buildAdaptiveHint('Расскажи, почему у тебя такое настроение?', 'mood', 1, { type: 'mood_choice' });
-  assert.equal(moodHint, 'У меня отличное настроение!');
+  // Level 2: sentence starter («Скажи: ...»)
+  const giraffeL2 = buildAdaptiveHint('Какой жираф?', 'giraffe', 2, { slide_id: 'slide_45' });
+  assert.equal(giraffeL2, 'Скажи: Жираф высокий.');
+
+  // Level 3..4: keyword / clue («Подсказка: ...»)
+  const bearL3 = buildAdaptiveHint('Что делает белый медведь?', 'polar_bear', 3, { slide_id: 'slide_46' });
+  assert.equal(bearL3, 'Подсказка: гуляет');
+
+  // Card question support without reverting to first question
+  const breakfastHint = buildAdaptiveHint('На завтрак я люблю...', 'card_a', 0, { slide_id: 'slide_09' });
+  assert.equal(breakfastHint, 'Можно сказать: Я люблю кашу и яблоки.');
+
+  const breakfastL1 = buildAdaptiveHint('На завтрак я люблю...', 'card_a', 1, { slide_id: 'slide_09' });
+  assert.equal(breakfastL1, 'Кашу или блинчики?');
+
+  // Mood choice
+  const moodHint = buildAdaptiveHint('Расскажи, почему у тебя такое настроение?', 'mood', 0, { type: 'mood_choice' });
+  assert.equal(moodHint, 'Можно сказать: У меня отличное настроение!');
 });
 

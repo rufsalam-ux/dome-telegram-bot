@@ -19,7 +19,7 @@ import {getLessonWithOfflineFallback} from '../engine/contentSync';
 import {lessonImages,suitcaseImages} from '../data/lessonImages';
 import {ANIMAL_PAIR_OPTIONS,CARD_OPTIONS,MOOD_EMOJIS,SUITCASE_ITEMS,buildRuntimeOrder,type NormalizedRect,type SelectableImageOption} from '../data/lessonInteractions';
 import {API_BASE,acknowledgeLocalVoiceRecording,cacheChildRecordingSource,cacheTutorAudioSource,completeSession,currentVoiceSource,finalizeLocalVoiceRecording,getLesson,getMovieStatus,invalidateChildRecordingCache,isUnauthorizedError,lessonVisualSource,pendingLocalVoiceRecording,retryMovieBuild,saveSessionProgress,sendInteractive,sendVoice,startSession,translateText,ttsSource,TUTOR_AUDIO_CACHE_TIMEOUT_MS,type PendingVoiceRecording} from '../api/mobile';
-import {adaptiveCardQuestionText,adaptiveModelPhrase,adaptivePromptPlan,adaptiveQuestionForLevel,advanceAfterAssessment,answerEnabled,authoredTextLanguage,buildAdaptiveHint,buildNaturalReaction,buildSelectedItemPhrase,buildVoiceRuntimeContext,cardQuestions,cardSelectionAllowed,cardVoiceKey,childIdeaPrompt,childSafeRuntimeMessage,cleanChildFacingText,completeHelperLanguage,containedMediaFrame,conversationRecordingTurn,conversationTaskPolicy,distinctSupportSpeech,formatChoiceReplica,hasCorrectiveFeedback,heroBox,initialBilingualHint,interactionGuidance,isRequiredForMovie,lessonBootstrapErrorCode,lessonLayoutPolicy,localizedItemLabel,manualHintSource,microphonePermissionDecision,nextCardQuestion,nextEnabled,normalizeAdaptiveResponse,progressiveHint,recorderDurationForGate,recordingGate,recoveryStageAfterFailure,requiresSelection,requiresVoice,resolveRuntimeLanguagePair,runtimePrompt,sanitizeTutorReaction,slideTargetObject,stageAfterTutorSpeech,tutorAudioErrorCode,tutorAudioFailureStage,tutorAudioTransition,tutorAudioWatchdogStage,visualRequiredForSlide,voiceUploadFailureStage,voiceUploadTransition,withLessonTimeout,type AdaptiveDialogueState,type AdaptiveSkillSnapshot,type AnswerEvaluation,type LessonBootstrapStage,type RecordingGateState,type RuntimeStage,type VoiceUploadState} from '../engine/lessonRuntime';
+import {adaptiveCardQuestionText,adaptiveModelPhrase,adaptivePromptPlan,adaptiveQuestionForLevel,advanceAfterAssessment,answerEnabled,authoredTextLanguage,buildAdaptiveHint,buildAdaptiveHintPair,buildNaturalReaction,buildSelectedItemPhrase,buildVoiceRuntimeContext,cardQuestions,cardSelectionAllowed,cardVoiceKey,childIdeaPrompt,childSafeRuntimeMessage,cleanChildFacingText,completeHelperLanguage,containedMediaFrame,conversationRecordingTurn,conversationTaskPolicy,distinctSupportSpeech,formatChoiceReplica,hasCorrectiveFeedback,heroBox,initialBilingualHint,interactionGuidance,isRequiredForMovie,lessonBootstrapErrorCode,lessonLayoutPolicy,localizedItemLabel,manualHintSource,microphonePermissionDecision,nextCardQuestion,nextEnabled,normalizeAdaptiveResponse,progressiveHint,recorderDurationForGate,recordingGate,recoveryStageAfterFailure,requiresSelection,requiresVoice,resolveRuntimeLanguagePair,runtimePrompt,sanitizeTutorReaction,slideTargetObject,stageAfterTutorSpeech,tutorAudioErrorCode,tutorAudioFailureStage,tutorAudioTransition,tutorAudioWatchdogStage,visualRequiredForSlide,voiceUploadFailureStage,voiceUploadTransition,withLessonTimeout,type AdaptiveDialogueState,type AdaptiveSkillSnapshot,type AnswerEvaluation,type CurrentConversationTurn,type LessonBootstrapStage,type RecordingGateState,type RuntimeStage,type VoiceUploadState} from '../engine/lessonRuntime';
 import {avatarFacing,canonicalChildAvatarUri,lessonAvatarConfig,slideAvatarConfig,type AvatarFacing} from '../engine/avatarRuntime';
 import {isStandaloneVideoStep,usesGenericMediaRuntime,videoStepBehavior} from '../engine/mediaRuntime';
 import {markPreSlideVideoShown,preSlideVideoTargetIndex,type PreSlideVideoDescriptor,type PreSlideVideoState} from '../engine/preSlideVideo';
@@ -107,6 +107,20 @@ export function LessonPlayer({lessonId}:{lessonId:string}){
   const[adaptiveHighlightedIds,setAdaptiveHighlightedIds]=useState<string[]>([]);
   const[dialogueState,setDialogueState]=useState<AdaptiveDialogueState|null>(null);
   const dialogueStateRef=useRef<AdaptiveDialogueState|null>(null);
+  const currentTurnRef=useRef<CurrentConversationTurn>({
+    currentSlideId:'',
+    currentConversationTurnId:0,
+    currentQuestion:'',
+    currentQuestionNative:'',
+    currentIntent:'initial',
+    currentTargetObject:'',
+    currentDifficultyLevel:0,
+    lastChildAnswer:'',
+    currentExpectedAnswerType:'word',
+    targetLanguage:'ru',
+    explanationLanguage:'ru',
+  });
+  const spokenSlideTurnRef=useRef<string>('');
   const recorder=useAudioRecorder(CHILD_RECORDING_OPTIONS);const recorderState=useAudioRecorderState(recorder,160);const voicePlayer=useAudioPlayer(null,{updateInterval:100,keepAudioSessionActive:true});const voiceStatus=useAudioPlayerStatus(voicePlayer);
   const heroAnim=useRef(new Animated.Value(0)).current;const interactionAttention=useRef(new Animated.Value(.35)).current;const hintInProgressRef=useRef(false);const stoppingRef=useRef(false);const stopPromiseRef=useRef<Promise<void>|null>(null);const completionLockRef=useRef(false);const recordingGateRef=useRef<RecordingGateState>({speechStarted:false,silenceStartedAt:null,stopReason:null});const recordingStartedAtRef=useRef(0);const voiceUploadStateRef=useRef<VoiceUploadState>('IDLE');const recordingIntentRef=useRef<'answer'|'retake'>('answer');const recordingReturnStageRef=useRef<RuntimeStage>('WAITING_VOICE');const recordingSnapshotRef=useRef<Omit<PendingVoiceRecording,'version'|'recordingId'|'uri'|'size'|'mimeType'|'createdAt'>|null>(null);const conversationTurnRef=useRef(0);const interactionCommitRef=useRef(false);const activeSlideIdRef=useRef('');const afterSpeechRef=useRef<RuntimeStage>('COMPLETE');const wasSpeakingRef=useRef(false);const speechPlaybackArmedRef=useRef(false);const takePlaybackArmedRef=useRef(false);const takeSawPlaybackRef=useRef(false);const takeWatchdogRef=useRef<any>(null);const speechTokenRef=useRef(0);const speechWatchdogRef=useRef<any>(null);const voiceStatusRef=useRef<any>({playing:false,isBuffering:false,didJustFinish:false});const voiceTraceRef=useRef('');const visualRequestRef=useRef(0);const interactiveRef=useRef<Record<string,any>>({});const answerReadyAtRef=useRef<number|null>(null);const responseLatencyRef=useRef(0);const latestLocalTakesRef=useRef<Record<string,string>>({});
   async function activateLessonPlayback(reason:string){
@@ -135,6 +149,28 @@ export function LessonPlayer({lessonId}:{lessonId:string}){
   activeSlideIdRef.current=String(slide?.slide_id||'');
   conversationTurnRef.current=conversationTurn;
   const profileLanguagePair=resolveRuntimeLanguagePair(child);const activeLanguagePair=sessionLanguagePair?.childId===String(child?.id)?sessionLanguagePair:profileLanguagePair;const targetLang=activeLanguagePair.targetLanguage;const nativeLang=activeLanguagePair.explanationLanguage;const authoredLanguage=authoredTextLanguage(lesson,slide);const layout=lessonLayoutPolicy(dimensions.width,dimensions.height,insets.bottom);
+  function updateConversationTurn(update:Partial<CurrentConversationTurn>){
+    const next:CurrentConversationTurn={
+      ...currentTurnRef.current,
+      ...update,
+      targetLanguage:targetLang,
+      explanationLanguage:nativeLang,
+    };
+    currentTurnRef.current=next;
+    const adaptive:AdaptiveDialogueState={
+      ...next,
+      slideId:next.currentSlideId,
+      currentObject:next.currentTargetObject,
+      currentLevel:next.currentDifficultyLevel,
+      lastChildAnswer:next.lastChildAnswer,
+      answerEvaluation:(dialogueStateRef.current?.answerEvaluation||'NONE') as AnswerEvaluation,
+      nextQuestion:dialogueStateRef.current?.nextQuestion||'',
+      currentHint:dialogueStateRef.current?.currentHint||'',
+      awaitingChildAnswer:stage==='WAITING_VOICE',
+    };
+    dialogueStateRef.current=adaptive;
+    setDialogueState(adaptive);
+  }
   const isSelector=slide?.interaction_kind==='card_question_sequence'||slide?.type==='card_selector';const isSuitcase=slide?.interactive_task==='suitcase';const isTemplateTask=isStableTaskTemplate(slide);const isAnimalPair=slide?.type==='animal_compare';const isMood=slide?.type==='mood_choice';const isGift=slide?.interaction_kind==='gift_selector';const isRiddle=Array.isArray(slide?.riddle_options);const standaloneVideo=isStandaloneVideoStep(slide);const videoBehavior=videoStepBehavior(slide);const isGenericSelector=requiresSelection(slide)&&!isSelector&&!isSuitcase&&!isTemplateTask&&!isAnimalPair&&!isMood&&!isGift&&!isRiddle;const genericOptions=genericChoiceOptions(slide);
   // A selected card changes only the conversation. Legacy slide_10..15 artwork
   // must never replace the currently visible card-selection scene.
@@ -203,10 +239,40 @@ export function LessonPlayer({lessonId}:{lessonId:string}){
       if(isMood)finalStage=restoredChoice?'COMPLETE':'WAITING_ACTION';
       if(isRiddle)finalStage=restoredRiddle?(recordedPhrases.includes(baseVoiceKey)?'COMPLETE':'WAITING_VOICE'):(requiresVoice(slide)?'WAITING_VOICE':'WAITING_ACTION');
       if(requiresVoice(slide)&&!isSelector&&!isSuitcase&&!isGift&&!isAnimalPair&&!isRiddle&&recordedPhrases.includes(baseVoiceKey)){if(stored.conversation_complete===false&&stored.current_prompt){sourcePrompt=String(stored.current_prompt);promptSourceLanguage=String(stored.current_prompt_language||targetLang);sourceNative=String(stored.current_native_hint||'');nativeSourceLanguage=String(stored.current_native_hint_language||nativeLang);finalStage='WAITING_VOICE'}else finalStage='COMPLETE'}
-      const primaryObject=initialPlan?.objectIds.length?runtimeVisibleItems.find(item=>initialPlan.objectIds.includes(item.id)):undefined;const supportPrefixSource=String(slide?.adaptive_support_prefix||'');console.info('LANG_PROMPT_PAIR',{slide_id:slide.slide_id,target_language:targetLang,explanation_language:nativeLang,prompt_source_language:promptSourceLanguage,native_source_language:nativeSourceLanguage,adaptive_difficulty:initialPlan?.difficulty,support_needed:initialPlan?.supportNeeded});const[translatedTarget,translatedNative,translatedPromptNative,translatedObjectNative,translatedSupportPrefix]=await Promise.all([translateSafely(sourcePrompt,targetLang,promptSourceLanguage),translateSafely(sourceNative,nativeLang,nativeSourceLanguage),translateSafely(sourcePrompt,nativeLang,promptSourceLanguage),primaryObject?translateSafely(primaryObject.labelTarget,nativeLang,targetLang):Promise.resolve(''),supportPrefixSource?translateSafely(supportPrefixSource,nativeLang,authoredLanguage):Promise.resolve('')]);if(!active)return;const targetPrompt=cleanChildFacingText(translatedTarget||sourcePrompt);const homePrompt=cleanChildFacingText(completeHelperLanguage(translatedNative,translatedPromptNative));const adaptiveSupport=initialPlan?.supportNeeded?[translatedObjectNative,translatedSupportPrefix,targetPrompt?`«${targetPrompt}»`:''].filter(Boolean).join(' '):'';const initialSupport=distinctSupportSpeech(targetPrompt,adaptiveSupport||homePrompt,targetLang,nativeLang);const targetObj=slideTargetObject(slide);const currentLevel=dialogueStateRef.current?.currentLevel!==undefined?dialogueStateRef.current.currentLevel:(initialPlan?.difficulty??Math.max(0,Math.min(4,Math.floor(workingDifficulty*5))));const initialDialogue:AdaptiveDialogueState={slideId:String(slide?.slide_id||''),currentObject:targetObj,currentLevel,currentQuestion:targetPrompt,currentQuestionNative:homePrompt,lastChildAnswer:'',answerEvaluation:'NONE',nextQuestion:'',currentHint:buildAdaptiveHint(targetPrompt,targetObj,currentLevel,slide,targetLang,nativeLang),explanationLanguage:nativeLang,targetLanguage:targetLang,awaitingChildAnswer:requiresVoice(slide)};dialogueStateRef.current=initialDialogue;setDialogueState(initialDialogue);setAdaptiveHighlightedIds(initialPlan?.objectIds||[]);setTargetText(targetPrompt);setTaskGoal(targetPrompt);setNativeText(initialPlan?.supportNeeded?initialSupport:homePrompt);
-      if(finalStage==='COMPLETE'&&(stored.completed||recordedPhrases.includes(baseVoiceKey)||restoredChoice&&isMood)){setStage('COMPLETE');return}
-      const initialHint=slide.always_bilingual?homePrompt:(initialPlan?.supportNeeded?initialSupport:homePrompt);await speakTutor(targetPrompt,initialHint,finalStage,initialPlan?.difficulty===0?'encouraging':'curious');
+      const primaryObject=initialPlan?.objectIds.length?runtimeVisibleItems.find(item=>initialPlan.objectIds.includes(item.id)):undefined;const supportPrefixSource=String(slide?.adaptive_support_prefix||'');console.info('LANG_PROMPT_PAIR',{slide_id:slide.slide_id,target_language:targetLang,explanation_language:nativeLang,prompt_source_language:promptSourceLanguage,native_source_language:nativeSourceLanguage,adaptive_difficulty:initialPlan?.difficulty,support_needed:initialPlan?.supportNeeded});const[translatedTarget,translatedNative,translatedPromptNative,translatedObjectNative,translatedSupportPrefix]=await Promise.all([translateSafely(sourcePrompt,targetLang,promptSourceLanguage),translateSafely(sourceNative,nativeLang,nativeSourceLanguage),translateSafely(sourcePrompt,nativeLang,promptSourceLanguage),primaryObject?translateSafely(primaryObject.labelTarget,nativeLang,targetLang):Promise.resolve(''),supportPrefixSource?translateSafely(supportPrefixSource,nativeLang,authoredLanguage):Promise.resolve('')]);if(!active)return;const targetPrompt=cleanChildFacingText(translatedTarget||sourcePrompt);const homePrompt=cleanChildFacingText(completeHelperLanguage(translatedNative,translatedPromptNative));const adaptiveSupport=initialPlan?.supportNeeded?[translatedObjectNative,translatedSupportPrefix,targetPrompt?`«${targetPrompt}»`:''].filter(Boolean).join(' '):'';const initialSupport=distinctSupportSpeech(targetPrompt,adaptiveSupport||homePrompt,targetLang,nativeLang);const targetObj=slideTargetObject(slide);const currentLevel=currentTurnRef.current?.currentDifficultyLevel!==undefined?currentTurnRef.current.currentDifficultyLevel:(initialPlan?.difficulty??Math.max(0,Math.min(4,Math.floor(workingDifficulty*5))));const currentNative=nativeLang!==targetLang?(homePrompt||initialSupport):'';
+      updateConversationTurn({
+        currentSlideId:String(slide?.slide_id||''),
+        currentConversationTurnId:restoredConversation,
+        currentQuestion:targetPrompt,
+        currentQuestionNative:currentNative,
+        currentIntent:'initial',
+        currentTargetObject:targetObj,
+        currentDifficultyLevel:currentLevel,
+        lastChildAnswer:'',
+        currentExpectedAnswerType:initialPlan?.expectedResponseType||'word',
+      });
+      setAdaptiveHighlightedIds(initialPlan?.objectIds||[]);setTargetText(targetPrompt);setTaskGoal(targetPrompt);setNativeText(currentNative);
+      const turnKey=`${slide.slide_id}:${restoredConversation}:${restoredChoice||''}`;
+      if(spokenSlideTurnRef.current!==turnKey&&!pendingPreSlide&&!videoPlaying){
+        spokenSlideTurnRef.current=turnKey;
+        await speakTutor(targetPrompt,currentNative,finalStage,initialPlan?.difficulty===0?'encouraging':'curious');
+      }else if(spokenSlideTurnRef.current===turnKey){
+        setStage(finalStage);
+      }
     }catch(error:any){console.error('tutor preparation error',error);if(active)failTutorSpeech('TUTOR_PREPARATION_FAILED',error)}})();return()=>{active=false;speechTokenRef.current+=1}},[idx,session,targetLang,nativeLang,authoredLanguage]);
+
+  useEffect(()=>{
+    if(pendingPreSlide||videoPlaying||!slide||!session||standaloneVideo)return;
+    const turnKey=`${slide.slide_id}:${conversationTurn}:${choice||''}`;
+    if(spokenSlideTurnRef.current===turnKey)return;
+    if(targetText&&(stage==='ENTER'||stage==='WAITING_VOICE'||stage==='WAITING_ACTION'||stage==='COMPLETE')){
+      spokenSlideTurnRef.current=turnKey;
+      const turn=currentTurnRef.current;
+      const q=turn.currentQuestion||targetText;
+      const nat=nativeLang!==targetLang?(turn.currentQuestionNative||nativeText):'';
+      void speakTutor(q,nat,stageAfterTutorSpeech(slide,hasSelection),'curious');
+    }
+  },[pendingPreSlide,videoPlaying,slide?.slide_id,conversationTurn,choice,targetText,stage]);
 
   useEffect(()=>{if(!session||!slide?.slide_id||!voiceKey)return;let active=true;setPendingVoice(undefined);void pendingLocalVoiceRecording(session,String(slide.slide_id),voiceKey).then(value=>{if(!active||!value)return;voiceUploadStateRef.current='UPLOAD_FAILED';setPendingVoice(value);setFeedback('Запись сохранена на телефоне. Можно отправить снова или записать заново.');console.info('VOICE_PENDING_RESTORED',{recording_id:value.recordingId,session_id:value.sessionId,slide_id:value.slideId,phrase_id:value.phraseId,size:value.size,path:value.uri})}).catch(error=>console.warn('VOICE_PENDING_RESTORE_FAILED',{session_id:session,slide_id:slide.slide_id,phrase_id:voiceKey,error:String((error as any)?.message||error)}));return()=>{active=false}},[session,slide?.slide_id,voiceKey]);
   useEffect(()=>{if(!recording||stoppingRef.current||Date.now()-recordingStartedAtRef.current<450)return;const duration=recorderDurationForGate(recordingStartedAtRef.current,Date.now(),recorderState.durationMillis);const nextGate=recordingGate(recordingGateRef.current,duration,recorderState.metering,Date.now());recordingGateRef.current=nextGate;if(nextGate.stopReason)void stopRec(nextGate.stopReason)},[recording,recorderState.durationMillis,recorderState.metering,slide?.slide_id]);
@@ -215,9 +281,16 @@ export function LessonPlayer({lessonId}:{lessonId:string}){
   useEffect(()=>{const subscription=AppState.addEventListener('change',nextState=>{if(nextState==='active')return;if(recording){void stopRec('MANUAL');return}if(speechPlaybackArmedRef.current)cancelTutorSpeech(tutorAudioFailureStage(afterSpeechRef.current));if(takePlaybackArmedRef.current){try{voicePlayer.pause()}catch{}takePlaybackArmedRef.current=false;takeSawPlaybackRef.current=false;setTakePlaying(false);setExperienceAudioSuppressed('lesson-primary-audio',false)}});return()=>subscription.remove()},[recording,session,slide?.slide_id]);
 
   async function speakTutor(text:string,nativeHint='',after:RuntimeStage=stageAfterTutorSpeech(slide,hasSelection),emotion='warm'){
-    const cleanTarget=cleanChildFacingText(text);const cleanNative=cleanChildFacingText(nativeHint);
+    const cleanTarget=cleanChildFacingText(text);let cleanNative=cleanChildFacingText(nativeHint);
     if(videoPlaying||pendingPreSlide){console.info('TUTOR_TTS_BLOCKED_BY_VIDEO',{slide_id:slide?.slide_id,video_playing:videoPlaying,pre_slide:Boolean(pendingPreSlide)});return}
-    if(takePlaybackArmedRef.current){try{voicePlayer.pause()}catch{}takePlaybackArmedRef.current=false;takeSawPlaybackRef.current=false;setTakePlaying(false)}if(!cleanTarget&&!cleanNative){answerReadyAtRef.current=Date.now();setStage(after);return}const token=++speechTokenRef.current;afterSpeechRef.current=after;wasSpeakingRef.current=false;speechPlaybackArmedRef.current=false;if(speechWatchdogRef.current)clearTimeout(speechWatchdogRef.current);setTutorVoiceError('');setStage('AI_SPEAKING');console.info('TUTOR_TTS_REQUEST',{slide_id:slide?.slide_id,target_language:targetLang,native_language:nativeLang,source_language:targetLang,native_source_language:nativeLang,text_length:cleanTarget.length,native_length:cleanNative.length});
+    if(takePlaybackArmedRef.current){try{voicePlayer.pause()}catch{}takePlaybackArmedRef.current=false;takeSawPlaybackRef.current=false;setTakePlaying(false)}if(!cleanTarget&&!cleanNative){answerReadyAtRef.current=Date.now();setStage(after);return}
+    if(!cleanNative&&cleanTarget&&nativeLang!==targetLang){
+      try{
+        const translated=await translateSafely(cleanTarget,nativeLang,targetLang);
+        cleanNative=cleanChildFacingText(translated);
+      }catch{}
+    }
+    const token=++speechTokenRef.current;afterSpeechRef.current=after;wasSpeakingRef.current=false;speechPlaybackArmedRef.current=false;if(speechWatchdogRef.current)clearTimeout(speechWatchdogRef.current);setTutorVoiceError('');setStage('AI_SPEAKING');console.info('TUTOR_TTS_REQUEST',{slide_id:slide?.slide_id,target_language:targetLang,native_language:nativeLang,source_language:targetLang,native_source_language:nativeLang,text_length:cleanTarget.length,native_length:cleanNative.length});
     let remoteSource:any=null;let lastError:any=null;
     for(let attempt=0;attempt<3;attempt++){
       if(token!==speechTokenRef.current)return;
@@ -264,12 +337,14 @@ export function LessonPlayer({lessonId}:{lessonId:string}){
       }
       cancelTutorSpeech();
       const nextCount=hintUseCount+1;
-      const currentQ=dialogueStateRef.current?.currentQuestion||targetText;
-      const currentObj=dialogueStateRef.current?.currentObject||slideTargetObject(slide);
-      const currentLvl=dialogueStateRef.current?.currentLevel??Math.max(0,Math.min(4,Math.floor(workingDifficulty*5)));
+      const turn=currentTurnRef.current;
+      const currentQ=turn.currentQuestion||targetText;
+      const currentObj=turn.currentTargetObject||slideTargetObject(slide);
+      const currentLvl=turn.currentDifficultyLevel;
       const manualFallback=manualHintSource(slide,languageLevel,workingDifficulty,choice||undefined,authoredLanguage);
-      const dynamicHint=buildAdaptiveHint(currentQ,currentObj,currentLvl,slide,targetLang,nativeLang)||manualFallback.text;
-      const source=cleanChildFacingText(dynamicHint);
+      const hintPair=buildAdaptiveHintPair(currentQ,currentObj,currentLvl,slide,targetLang,nativeLang);
+      const source=cleanChildFacingText(hintPair.hintTarget||manualFallback.text);
+      const nativeSource=cleanChildFacingText(hintPair.hintNative);
       if(!source)return;
       setHintUseCount(nextCount);
       setHintText(source);
@@ -277,9 +352,9 @@ export function LessonPlayer({lessonId}:{lessonId:string}){
       setHintSpeaking(true);
       setFeedback('Вот подсказка. Слушай пример:');
       void persistInteraction({hints_used:nextCount,last_hint_kind:'TARGET_LANGUAGE_MODEL',adaptive_hint_model:source}).catch(()=>{});
-      console.info('LANG_HINT_PAIR',{slide_id:slide?.slide_id,target_language:targetLang,explanation_language:nativeLang,hint_model:source});
+      console.info('LANG_HINT_PAIR',{slide_id:slide?.slide_id,target_language:targetLang,explanation_language:nativeLang,hint_model:source,hint_native:nativeSource});
       const spoken=source;
-      await speakTutor(spoken||source,'','WAITING_VOICE','encouraging');
+      await speakTutor(spoken||source,nativeLang!==targetLang?nativeSource:'','WAITING_VOICE','encouraging');
     }catch(error){
       console.error('hint error',error);
     }finally{
@@ -292,17 +367,17 @@ export function LessonPlayer({lessonId}:{lessonId:string}){
   async function updateTemplateTask(result:TemplateTaskResult){const previous=templateResult;setTemplateResult(result);try{await persistInteraction({template_result:result,...result});if(result.completed){playExperience('TASK_COMPLETE');setFeedback('Готово! ✓');setRewardNonce(current=>current+1);setStage(requiresVoice(slide)?'WAITING_VOICE':'COMPLETE')}else setStage('WAITING_ACTION')}catch(error){console.error('template task persistence error',error);setTemplateResult(previous);setFeedback(childSafeRuntimeMessage('interaction'));setStage('WAITING_ACTION')}}
 
   async function chooseArtwork(value:string){if(stage!=='WAITING_ACTION'||busy||interactionCommitRef.current)return;if(isSelector&&!cardSelectionAllowed(stage,choice))return;const slideId=String(slide.slide_id);const previousChoice=choice;interactionCommitRef.current=true;playClick();setFeedback('');try{
-    if(isAnimalPair&&value!==String(activeAnimalQuestion?.correct_id)){setFeedback('Посмотри ещё раз и выбери животное из вопроса.');await speakTutor(targetText,spokenHomeHint(nativeText),'WAITING_ACTION','encouraging');return}
+    if(isAnimalPair&&value!==String(activeAnimalQuestion?.correct_id)){setFeedback('Посмотри ещё раз и выбери животное из вопроса.');await speakTutor(targetText,nativeLang!==targetLang?nativeText:'','WAITING_ACTION','encouraging');return}
     setBusy(true);setStage('PROCESSING');
-    if(isSelector){const questions=cardQuestions(slide,value);const first=questions[0];if(!first)throw new Error('У выбранной карточки нет вопросов');const source=adaptiveCardQuestionText(first,languageLevel,workingDifficulty);setChoice(value);setCardQuestionIndex(0);await persistInteraction({selected_card_id:value,card_question_index:0,completed:false,question_ids:questions.map(item=>item.id)});if(activeSlideIdRef.current!==slideId)return;const[translated,nativeHint]=await Promise.all([translateSafely(source,targetLang,authoredLanguage),translateSafely(source,nativeLang,authoredLanguage)]);if(activeSlideIdRef.current!==slideId)return;setTargetText(translated||source);setTaskGoal(translated||source);setNativeText(nativeHint||source);setFeedback(`Карточка ${value} выбрана.`);setRewardNonce(current=>current+1);await speakTutor(translated||source,spokenHomeHint(nativeHint||source),'WAITING_VOICE','curious');return}
-    if(isAnimalPair){const question=activeAnimalQuestion;if(!question)return;setChoice(value);await persistInteraction({selected_animal:value,animal_question_index:animalQuestionIndex,completed:false});if(activeSlideIdRef.current!==slideId)return;const source=String(question.idea_prompt_ru||question.prompt_ru||childIdeaPrompt(question.label_ru||question.correct_id,'animal_compare'));const[translated,nativeHint]=await Promise.all([translateSafely(source,targetLang,'ru'),translateSafely(source,nativeLang,'ru')]);if(activeSlideIdRef.current!==slideId)return;setTargetText(translated||source);setTaskGoal(translated||source);setNativeText(nativeHint||source);setFeedback('Выбрано. Теперь скажи свою идею.');setRewardNonce(current=>current+1);await speakTutor(translated||source,spokenHomeHint(nativeHint||source),'WAITING_VOICE','curious');return}
-    if(isGift){setChoice(value);await persistInteraction({selected_gift:value,completed:false});if(activeSlideIdRef.current!==slideId)return;const source=String(slide.task_goal||slide.question||'Что Мила привезла тебе?');const[translated,nativeHint]=await Promise.all([translateSafely(source,targetLang,authoredLanguage),translateSafely(source,nativeLang,authoredLanguage)]);if(activeSlideIdRef.current!==slideId)return;setTargetText(translated||source);setTaskGoal(translated||source);setNativeText(nativeHint||source);setFeedback(`Подарок выбран: ${selectedAnswerValueRu(slide,value)}. Теперь ответь голосом.`);setRewardNonce(current=>current+1);await speakTutor(translated||source,spokenHomeHint(nativeHint||source),'WAITING_VOICE','curious');return}
+    if(isSelector){const questions=cardQuestions(slide,value);const first=questions[0];if(!first)throw new Error('У выбранной карточки нет вопросов');const source=adaptiveCardQuestionText(first,languageLevel,workingDifficulty);setChoice(value);setCardQuestionIndex(0);await persistInteraction({selected_card_id:value,card_question_index:0,completed:false,question_ids:questions.map(item=>item.id)});if(activeSlideIdRef.current!==slideId)return;const[translated,nativeHint]=await Promise.all([translateSafely(source,targetLang,authoredLanguage),translateSafely(source,nativeLang,authoredLanguage)]);if(activeSlideIdRef.current!==slideId)return;const finalTarget=translated||source;const finalNative=nativeHint||source;setTargetText(finalTarget);setTaskGoal(finalTarget);setNativeText(finalNative);setFeedback(`Карточка ${value} выбрана.`);setRewardNonce(current=>current+1);updateConversationTurn({currentSlideId:slideId,currentConversationTurnId:0,currentQuestion:finalTarget,currentQuestionNative:finalNative,currentTargetObject:value,currentIntent:'card_question',currentExpectedAnswerType:'sentence'});spokenSlideTurnRef.current=`${slideId}:0:${value}`;await speakTutor(finalTarget,nativeLang!==targetLang?finalNative:'','WAITING_VOICE','curious');return}
+    if(isAnimalPair){const question=activeAnimalQuestion;if(!question)return;setChoice(value);await persistInteraction({selected_animal:value,animal_question_index:animalQuestionIndex,completed:false});if(activeSlideIdRef.current!==slideId)return;const source=String(question.idea_prompt_ru||question.prompt_ru||childIdeaPrompt(question.label_ru||question.correct_id,'animal_compare'));const[translated,nativeHint]=await Promise.all([translateSafely(source,targetLang,'ru'),translateSafely(source,nativeLang,'ru')]);if(activeSlideIdRef.current!==slideId)return;const finalTarget=translated||source;const finalNative=nativeHint||source;setTargetText(finalTarget);setTaskGoal(finalTarget);setNativeText(finalNative);setFeedback('Выбрано. Теперь скажи свою идею.');setRewardNonce(current=>current+1);updateConversationTurn({currentSlideId:slideId,currentConversationTurnId:animalQuestionIndex,currentQuestion:finalTarget,currentQuestionNative:finalNative,currentTargetObject:value,currentIntent:'animal_compare_idea',currentExpectedAnswerType:'sentence'});spokenSlideTurnRef.current=`${slideId}:${animalQuestionIndex}:${value}`;await speakTutor(finalTarget,nativeLang!==targetLang?finalNative:'','WAITING_VOICE','curious');return}
+    if(isGift){setChoice(value);await persistInteraction({selected_gift:value,completed:false});if(activeSlideIdRef.current!==slideId)return;const source=String(slide.task_goal||slide.question||'Что Мила привезла тебе?');const[translated,nativeHint]=await Promise.all([translateSafely(source,targetLang,authoredLanguage),translateSafely(source,nativeLang,authoredLanguage)]);if(activeSlideIdRef.current!==slideId)return;const finalTarget=translated||source;const finalNative=nativeHint||source;setTargetText(finalTarget);setTaskGoal(finalTarget);setNativeText(finalNative);setFeedback(`Подарок выбран: ${selectedAnswerValueRu(slide,value)}. Теперь ответь голосом.`);setRewardNonce(current=>current+1);updateConversationTurn({currentSlideId:slideId,currentConversationTurnId:0,currentQuestion:finalTarget,currentQuestionNative:finalNative,currentTargetObject:value,currentIntent:'gift_answer',currentExpectedAnswerType:'sentence'});spokenSlideTurnRef.current=`${slideId}:0:${value}`;await speakTutor(finalTarget,nativeLang!==targetLang?finalNative:'','WAITING_VOICE','curious');return}
     if(isGenericSelector){const multiple=String(slide.type)==='multi_select';const selected=new Set(multiple&&previousChoice?previousChoice.split('|'):[]);if(multiple){selected.has(value)?selected.delete(value):selected.add(value)}else{selected.clear();selected.add(value)}const nextChoice=[...selected].join('|');const correctIds=new Set(genericOptions.filter(item=>item.correct).map(item=>item.id));const correct=correctIds.size>0&&selected.size===correctIds.size&&[...selected].every(id=>correctIds.has(id));setChoice(nextChoice);await persistInteraction({selected:[...selected],completed:correct,correct});if(correct){setFeedback('Верно! ✓');setRewardNonce(current=>current+1);setStage(requiresVoice(slide)?'WAITING_VOICE':'COMPLETE')}else{setFeedback(multiple?'Выбери все подходящие варианты.':'Попробуй ещё раз.');setStage('WAITING_ACTION')}return}
   }catch(error:any){console.error('lesson interaction error',error);if(activeSlideIdRef.current===slideId){setChoice(previousChoice);setFeedback(childSafeRuntimeMessage('interaction'));setStage(recoveryStageAfterFailure(slide,Boolean(previousChoice)))}}finally{interactionCommitRef.current=false;setBusy(false)}}
 
-  async function chooseRiddle(value:string){if(stage!=='WAITING_ACTION'||busy)return;playClick();if(value!==String(slide.correct_choice_id)){setFeedback('Почти! Послушай признаки ещё раз.');await speakTutor(targetText,spokenHomeHint(nativeText),'WAITING_ACTION','encouraging');return}try{setBusy(true);setStage('PROCESSING');setChoice(value);setRiddleRevealed(true);await persistInteraction({choice:value,revealed:true,completed:false});const source=String(slide.simplified_text||'Это правильный ответ.');const[translated,nativeHint]=await Promise.all([translateSafely(source,targetLang,authoredLanguage),translateSafely(source,nativeLang,authoredLanguage)]);setTargetText(translated||source);setNativeText(nativeHint||source);setFeedback('Верно. Теперь скажи короткую фразу.');setRewardNonce(current=>current+1);await speakTutor(translated||source,spokenHomeHint(nativeHint||source),'WAITING_VOICE','happy')}catch(error:any){console.error('riddle interaction error',error);setChoice('');setRiddleRevealed(false);setFeedback(childSafeRuntimeMessage('interaction'));setStage('WAITING_ACTION')}finally{setBusy(false)}}
-  async function updateSuitcase(next:string[]){const previous=packed;const previousRemoved=removedItems;const addedId=next.find(id=>!previous.includes(id));const removedId=previous.find(id=>!next.includes(id));const nextRemoved=Array.from(new Set([...previousRemoved.filter(id=>!next.includes(id)),...(removedId?[removedId]:[])]));setPacked(next);setRemovedItems(nextRemoved);const item=(Array.isArray(slide?.drag_items)?slide.drag_items:SUITCASE_ITEMS).find((value:any)=>String(value.id)===addedId)||SUITCASE_ITEMS.find((value:any)=>String(value.id)===addedId)||{id:addedId};const labelRu=String(item.labelNominative||item.label_ru||item.label||addedId);const childGender=String(child?.gender||'boy');const phrase=addedId?buildSelectedItemPhrase(item,childGender):(childIdeaPrompt(labelRu,'suitcase')||'');try{await persistInteraction({packed_items:next,selected:next,removed_items:nextRemoved,selection_policy:'child_choice',last_spoken_item_id:addedId||interactiveRef.current[slide.slide_id]?.last_spoken_item_id,selected_phrase:phrase,completed:false})}catch(error:any){console.error('suitcase persistence error',error);setPacked(previous);setRemovedItems(previousRemoved);setFeedback(childSafeRuntimeMessage('interaction'));setStage(previous.length?'WAITING_VOICE':'WAITING_ACTION');return}if(!next.length){setStage('WAITING_ACTION');return}setStage('WAITING_VOICE');if(addedId&&slide.speak_dropped_object!==false){setTargetText(phrase);setTaskGoal(phrase);setNativeText(phrase);setFeedback(phrase);setRewardNonce(current=>current+1);await speakTutor(phrase,'','WAITING_VOICE','curious')}}
-  async function chooseMood(index:number){if(stage!=='WAITING_ACTION'||busy)return;const mood=String(slide.mood_options?.[index]||`mood_${index}`);try{setBusy(true);setStage('PROCESSING');setChoice(mood);await persistInteraction({mood,index,emoji:MOOD_EMOJIS[index],input_source:'user_tap',input_at:new Date().toISOString(),completed:false});const moodQuestion='Расскажи, почему у тебя такое настроение?';const[spoken,nativeHint]=await Promise.all([translateSafely(moodQuestion,targetLang,authoredLanguage),translateSafely(moodQuestion,nativeLang,authoredLanguage)]);setTargetText(spoken||moodQuestion);setTaskGoal(spoken||moodQuestion);setNativeText(nativeHint||'');setFeedback('Настроение выбрано ✓ Теперь расскажи, почему!');setRewardNonce(current=>current+1);await speakTutor(spoken||moodQuestion,nativeLang!==targetLang?nativeHint:'','WAITING_VOICE','curious')}catch(error:any){console.error('mood interaction error',error);setChoice('');setFeedback(childSafeRuntimeMessage('interaction'));setStage('WAITING_ACTION')}finally{setBusy(false)}}
+  async function chooseRiddle(value:string){if(stage!=='WAITING_ACTION'||busy)return;playClick();if(value!==String(slide.correct_choice_id)){setFeedback('Почти! Послушай признаки ещё раз.');await speakTutor(targetText,nativeLang!==targetLang?nativeText:'','WAITING_ACTION','encouraging');return}try{setBusy(true);setStage('PROCESSING');setChoice(value);setRiddleRevealed(true);await persistInteraction({choice:value,revealed:true,completed:false});const source=String(slide.simplified_text||'Это правильный ответ.');const[translated,nativeHint]=await Promise.all([translateSafely(source,targetLang,authoredLanguage),translateSafely(source,nativeLang,authoredLanguage)]);const finalTarget=translated||source;const finalNative=nativeHint||source;setTargetText(finalTarget);setNativeText(finalNative);setFeedback('Верно. Теперь скажи короткую фразу.');setRewardNonce(current=>current+1);updateConversationTurn({currentSlideId:String(slide.slide_id),currentConversationTurnId:0,currentQuestion:finalTarget,currentQuestionNative:finalNative,currentTargetObject:value,currentIntent:'riddle_answer',currentExpectedAnswerType:'phrase'});spokenSlideTurnRef.current=`${slide.slide_id}:0:${value}`;await speakTutor(finalTarget,nativeLang!==targetLang?finalNative:'','WAITING_VOICE','happy')}catch(error:any){console.error('riddle interaction error',error);setChoice('');setRiddleRevealed(false);setFeedback(childSafeRuntimeMessage('interaction'));setStage('WAITING_ACTION')}finally{setBusy(false)}}
+  async function updateSuitcase(next:string[]){const previous=packed;const previousRemoved=removedItems;const addedId=next.find(id=>!previous.includes(id));const removedId=previous.find(id=>!next.includes(id));const nextRemoved=Array.from(new Set([...previousRemoved.filter(id=>!next.includes(id)),...(removedId?[removedId]:[])]));setPacked(next);setRemovedItems(nextRemoved);const item=(Array.isArray(slide?.drag_items)?slide.drag_items:SUITCASE_ITEMS).find((value:any)=>String(value.id)===addedId)||SUITCASE_ITEMS.find((value:any)=>String(value.id)===addedId)||{id:addedId};const labelRu=String(item.labelNominative||item.label_ru||item.label||addedId);const childGender=String(child?.gender||'boy');const phrase=addedId?buildSelectedItemPhrase(item,childGender):(childIdeaPrompt(labelRu,'suitcase')||'');try{await persistInteraction({packed_items:next,selected:next,removed_items:nextRemoved,selection_policy:'child_choice',last_spoken_item_id:addedId||interactiveRef.current[slide.slide_id]?.last_spoken_item_id,selected_phrase:phrase,completed:false})}catch(error:any){console.error('suitcase persistence error',error);setPacked(previous);setRemovedItems(previousRemoved);setFeedback(childSafeRuntimeMessage('interaction'));setStage(previous.length?'WAITING_VOICE':'WAITING_ACTION');return}if(!next.length){setStage('WAITING_ACTION');return}setStage('WAITING_VOICE');if(addedId&&slide.speak_dropped_object!==false){let nativePhrase=phrase;if(nativeLang!==targetLang){try{nativePhrase=await translateSafely(phrase,nativeLang,targetLang)}catch{}}setTargetText(phrase);setTaskGoal(phrase);setNativeText(nativePhrase);setFeedback(phrase);setRewardNonce(current=>current+1);updateConversationTurn({currentSlideId:String(slide.slide_id),currentConversationTurnId:0,currentQuestion:phrase,currentQuestionNative:nativePhrase,currentTargetObject:addedId,currentIntent:'suitcase_item',currentExpectedAnswerType:'phrase'});spokenSlideTurnRef.current=`${slide.slide_id}:0:${addedId}`;await speakTutor(phrase,nativeLang!==targetLang?nativePhrase:'','WAITING_VOICE','curious')}}
+  async function chooseMood(index:number){if(stage!=='WAITING_ACTION'||busy)return;const mood=String(slide.mood_options?.[index]||`mood_${index}`);try{setBusy(true);setStage('PROCESSING');setChoice(mood);await persistInteraction({mood,index,emoji:MOOD_EMOJIS[index],input_source:'user_tap',input_at:new Date().toISOString(),completed:false});const moodQuestion='Расскажи, почему у тебя такое настроение?';const[spoken,nativeHint]=await Promise.all([translateSafely(moodQuestion,targetLang,authoredLanguage),translateSafely(moodQuestion,nativeLang,authoredLanguage)]);const finalTarget=spoken||moodQuestion;const finalNative=nativeHint||'';setTargetText(finalTarget);setTaskGoal(finalTarget);setNativeText(finalNative);setFeedback('Настроение выбрано ✓ Теперь расскажи, почему!');setRewardNonce(current=>current+1);updateConversationTurn({currentSlideId:String(slide.slide_id),currentConversationTurnId:0,currentQuestion:finalTarget,currentQuestionNative:finalNative,currentTargetObject:mood,currentIntent:'mood_explanation',currentExpectedAnswerType:'sentence'});spokenSlideTurnRef.current=`${slide.slide_id}:0:${mood}`;await speakTutor(finalTarget,nativeLang!==targetLang?finalNative:'','WAITING_VOICE','curious')}catch(error:any){console.error('mood interaction error',error);setChoice('');setFeedback(childSafeRuntimeMessage('interaction'));setStage('WAITING_ACTION')}finally{setBusy(false)}}
 
   async function startRec(intent:'answer'|'retake'='answer',forceWithoutPending=false,overrideStage?:RuntimeStage){
     if(takePlaying){
@@ -395,25 +470,22 @@ export function LessonPlayer({lessonId}:{lessonId:string}){
     if(isMood){
       void persistInteraction({conversation_turn:responseTurn,conversation_complete:true,completed:true,mood_comment:transcript}).catch(()=>{});
       const moodReaction=naturalReaction||'Здорово! Спасибо, что поделился своим настроением!';
+      let nativeMoodReaction='';
+      if(nativeLang!==targetLang){
+        try{nativeMoodReaction=cleanChildFacingText(await translateSafely(moodReaction,nativeLang,targetLang))}catch{}
+      }
       setFeedback('Настроение сохранено ✓');
       setStage('FEEDBACK');
-      const updatedDialogue:AdaptiveDialogueState={
-        slideId,
-        currentObject:currentObj,
-        currentLevel:nextLvl,
-        currentQuestion:targetText,
-        currentQuestionNative:nativeText,
+      updateConversationTurn({
+        currentSlideId:slideId,
+        currentConversationTurnId:responseTurn,
+        currentQuestion:moodReaction,
+        currentQuestionNative:nativeMoodReaction,
         lastChildAnswer:transcript,
-        answerEvaluation:evaluation,
-        nextQuestion:'',
-        currentHint:'',
-        explanationLanguage:nativeLang,
-        targetLanguage:targetLang,
-        awaitingChildAnswer:false,
-      };
-      dialogueStateRef.current=updatedDialogue;
-      setDialogueState(updatedDialogue);
-      await speakTutor(moodReaction,'','COMPLETE','happy');
+        currentIntent:'mood_complete',
+        currentExpectedAnswerType:'none',
+      });
+      await speakTutor(moodReaction,nativeLang!==targetLang?nativeMoodReaction:'','COMPLETE','happy');
       return;
     }
 
@@ -423,29 +495,31 @@ export function LessonPlayer({lessonId}:{lessonId:string}){
       const correctiveQuestion=adaptiveQuestionForLevel(currentObj,nextLvl,slide);
       const speech=[naturalReaction||'Попробуем ещё раз!',correctiveQuestion.questionTarget].filter(Boolean).join(' ');
       const hint=correctiveQuestion.questionNative;
+      let speechNative=hint;
+      if(nativeLang!==targetLang&&naturalReaction){
+        try{
+          const natReaction=cleanChildFacingText(await translateSafely(naturalReaction,nativeLang,targetLang));
+          speechNative=[natReaction,hint].filter(Boolean).join(' ');
+        }catch{}
+      }
       setTargetText(correctiveQuestion.questionTarget);
       setNativeText(hint);
       setFeedback(String(hint||speech||'Попробуй ещё раз.'));
-      const updatedDialogue:AdaptiveDialogueState={
-        slideId,
-        currentObject:currentObj,
-        currentLevel:nextLvl,
+      updateConversationTurn({
+        currentSlideId:slideId,
+        currentConversationTurnId:responseTurn,
         currentQuestion:correctiveQuestion.questionTarget,
         currentQuestionNative:hint,
+        currentTargetObject:currentObj,
+        currentDifficultyLevel:nextLvl,
         lastChildAnswer:transcript,
-        answerEvaluation:evaluation,
-        nextQuestion:correctiveQuestion.questionTarget,
-        currentHint:buildAdaptiveHint(correctiveQuestion.questionTarget,currentObj,nextLvl,slide,targetLang,nativeLang),
-        explanationLanguage:nativeLang,
-        targetLanguage:targetLang,
-        awaitingChildAnswer:true,
-      };
-      dialogueStateRef.current=updatedDialogue;
-      setDialogueState(updatedDialogue);
+        currentIntent:'corrective_retry',
+        currentExpectedAnswerType:'sentence',
+      });
       void persistInteraction({retry_attempt:attempt,current_level:nextLvl,completed:false}).catch(()=>{});
       setStage('FEEDBACK');
       console.info('VOICE_T4_TTS_START',{slide_id:slide?.slide_id,branch:'corrective',elapsed_ms:Date.now()-_voiceT2Start});
-      await speakTutor(speech,hint,'WAITING_VOICE',String(turn.emotion||'encouraging'));
+      await speakTutor(speech,nativeLang!==targetLang?speechNative:'','WAITING_VOICE',String(turn.emotion||'encouraging'));
       return;
     }
 
@@ -456,16 +530,59 @@ export function LessonPlayer({lessonId}:{lessonId:string}){
         setCardQuestionIndex(nextQuestion.index);
         void persistInteraction({selected_card_id:choice,card_question_index:nextQuestion.index,completed:false}).catch(()=>{});
         const source=adaptiveCardQuestionText(nextQuestion.question,nextLevel,nextDifficulty);
-        const translated=await translateSafely(source,targetLang,authoredLanguage);
-        setTargetText(translated||source);
-        setTaskGoal(translated||source);
-        setNativeText(adaptive.supportNeeded?adaptive.spokenTextSupport:'');
-        await speakTutor([naturalReaction||turn.reaction_target,translated||source].filter(Boolean).join(' '),adaptive.supportNeeded?adaptive.spokenTextSupport:'','WAITING_VOICE',String(turn.emotion||'curious'));
+        const [translated,nativeHint]=await Promise.all([
+          translateSafely(source,targetLang,authoredLanguage),
+          translateSafely(source,nativeLang,authoredLanguage)
+        ]);
+        const adaptiveSupport=adaptive.supportNeeded?adaptive.spokenTextSupport:'';
+        const finalTarget=translated||source;
+        const finalNative=adaptiveSupport||nativeHint||source;
+        setTargetText(finalTarget);
+        setTaskGoal(finalTarget);
+        setNativeText(finalNative);
+        updateConversationTurn({
+          currentSlideId:slideId,
+          currentConversationTurnId:nextQuestion.index,
+          currentQuestion:finalTarget,
+          currentQuestionNative:finalNative,
+          currentTargetObject:choice,
+          currentDifficultyLevel:nextLvl,
+          lastChildAnswer:transcript,
+          currentIntent:'card_question',
+          currentExpectedAnswerType:'sentence',
+        });
+        const speech=[naturalReaction||turn.reaction_target,finalTarget].filter(Boolean).join(' ');
+        let nativeSpeech=finalNative;
+        if(nativeLang!==targetLang&&(naturalReaction||turn.reaction_target)){
+          try{
+            const natReaction=cleanChildFacingText(await translateSafely(naturalReaction||turn.reaction_target,nativeLang,targetLang));
+            nativeSpeech=[natReaction,finalNative].filter(Boolean).join(' ');
+          }catch{}
+        }
+        await speakTutor(speech,nativeLang!==targetLang?nativeSpeech:'','WAITING_VOICE',String(turn.emotion||'curious'));
         return;
       }
       void persistInteraction({selected_card_id:choice,card_question_index:cardQuestions(slide,choice).length,completed:true}).catch(()=>{});
       setStage('FEEDBACK');
-      await speakTutor(naturalReaction||adaptive.spokenTextTarget||String(turn.reaction_target||''),adaptive.supportNeeded?adaptive.spokenTextSupport:'','COMPLETE',String(turn.emotion||'happy'));
+      const reactionTarget=naturalReaction||adaptive.spokenTextTarget||String(turn.reaction_target||'Отлично!');
+      let reactionNative=adaptive.supportNeeded?adaptive.spokenTextSupport:'';
+      if(!reactionNative&&nativeLang!==targetLang){
+        try{
+          reactionNative=cleanChildFacingText(await translateSafely(reactionTarget,nativeLang,targetLang));
+        }catch{}
+      }
+      updateConversationTurn({
+        currentSlideId:slideId,
+        currentConversationTurnId:cardQuestions(slide,choice).length,
+        currentQuestion:reactionTarget,
+        currentQuestionNative:reactionNative,
+        currentTargetObject:choice,
+        currentDifficultyLevel:nextLvl,
+        lastChildAnswer:transcript,
+        currentIntent:'card_complete',
+        currentExpectedAnswerType:'none',
+      });
+      await speakTutor(reactionTarget,nativeLang!==targetLang?reactionNative:'','COMPLETE',String(turn.emotion||'happy'));
       return;
     }
 
@@ -477,14 +594,57 @@ export function LessonPlayer({lessonId}:{lessonId:string}){
         setAnimalQuestionIndex(nextIndex);
         void persistInteraction({selected_animal:'',animal_question_index:nextIndex,completed:false}).catch(()=>{});
         const source=String(nextQuestion.prompt_ru);
-        const translated=await translateSafely(source,targetLang,'ru');
-        setTargetText(translated||source);
-        setNativeText(adaptive.supportNeeded?adaptive.spokenTextSupport:'');
-        await speakTutor([naturalReaction||turn.reaction_target,translated||source].filter(Boolean).join(' '),adaptive.supportNeeded?adaptive.spokenTextSupport:'','WAITING_ACTION',String(turn.emotion||'curious'));
+        const [translated,nativeHint]=await Promise.all([
+          translateSafely(source,targetLang,'ru'),
+          translateSafely(source,nativeLang,'ru')
+        ]);
+        const adaptiveSupport=adaptive.supportNeeded?adaptive.spokenTextSupport:'';
+        const finalTarget=translated||source;
+        const finalNative=adaptiveSupport||nativeHint||source;
+        setTargetText(finalTarget);
+        setNativeText(finalNative);
+        updateConversationTurn({
+          currentSlideId:slideId,
+          currentConversationTurnId:nextIndex,
+          currentQuestion:finalTarget,
+          currentQuestionNative:finalNative,
+          currentTargetObject:String(nextQuestion.correct_id||''),
+          currentDifficultyLevel:nextLvl,
+          lastChildAnswer:transcript,
+          currentIntent:'animal_compare_choice',
+          currentExpectedAnswerType:'action',
+        });
+        const speech=[naturalReaction||turn.reaction_target,finalTarget].filter(Boolean).join(' ');
+        let nativeSpeech=finalNative;
+        if(nativeLang!==targetLang&&(naturalReaction||turn.reaction_target)){
+          try{
+            const natReaction=cleanChildFacingText(await translateSafely(naturalReaction||turn.reaction_target,nativeLang,targetLang));
+            nativeSpeech=[natReaction,finalNative].filter(Boolean).join(' ');
+          }catch{}
+        }
+        await speakTutor(speech,nativeLang!==targetLang?nativeSpeech:'','WAITING_ACTION',String(turn.emotion||'curious'));
         return;
       }
       void persistInteraction({selected_animal:choice,animal_question_index:animalQuestions.length,completed:true}).catch(()=>{});
-      await speakTutor(naturalReaction||adaptive.spokenTextTarget||String(turn.reaction_target||''),adaptive.supportNeeded?adaptive.spokenTextSupport:'','COMPLETE',String(turn.emotion||'happy'));
+      const reactionTarget=naturalReaction||adaptive.spokenTextTarget||String(turn.reaction_target||'Отлично!');
+      let reactionNative=adaptive.supportNeeded?adaptive.spokenTextSupport:'';
+      if(!reactionNative&&nativeLang!==targetLang){
+        try{
+          reactionNative=cleanChildFacingText(await translateSafely(reactionTarget,nativeLang,targetLang));
+        }catch{}
+      }
+      updateConversationTurn({
+        currentSlideId:slideId,
+        currentConversationTurnId:animalQuestions.length,
+        currentQuestion:reactionTarget,
+        currentQuestionNative:reactionNative,
+        currentTargetObject:choice,
+        currentDifficultyLevel:nextLvl,
+        lastChildAnswer:transcript,
+        currentIntent:'animal_compare_complete',
+        currentExpectedAnswerType:'none',
+      });
+      await speakTutor(reactionTarget,nativeLang!==targetLang?reactionNative:'','COMPLETE',String(turn.emotion||'happy'));
       return;
     }
 
@@ -506,26 +666,28 @@ export function LessonPlayer({lessonId}:{lessonId:string}){
         }
       }
       const followSpeech=[naturalReaction,followTarget].filter(Boolean).join(' ');
+      let nativeSpeech=followHint;
+      if(nativeLang!==targetLang&&naturalReaction){
+        try{
+          const natReaction=cleanChildFacingText(await translateSafely(naturalReaction,nativeLang,targetLang));
+          nativeSpeech=[natReaction,followHint].filter(Boolean).join(' ');
+        }catch{}
+      }
       setTargetText(followTarget);
       setTaskGoal(followTarget);
       setNativeText(followHint);
       setFeedback(followHint||naturalReaction||'Отлично! Слушай дальше.');
-      const updatedDialogue:AdaptiveDialogueState={
-        slideId,
-        currentObject:currentObj,
-        currentLevel:nextLvl,
+      updateConversationTurn({
+        currentSlideId:slideId,
+        currentConversationTurnId:nextTurn,
         currentQuestion:followTarget,
         currentQuestionNative:followHint,
+        currentTargetObject:currentObj,
+        currentDifficultyLevel:nextLvl,
         lastChildAnswer:transcript,
-        answerEvaluation:evaluation,
-        nextQuestion:followTarget,
-        currentHint:buildAdaptiveHint(followTarget,currentObj,nextLvl,slide,targetLang,nativeLang),
-        explanationLanguage:nativeLang,
-        targetLanguage:targetLang,
-        awaitingChildAnswer:true,
-      };
-      dialogueStateRef.current=updatedDialogue;
-      setDialogueState(updatedDialogue);
+        currentIntent:'follow_up',
+        currentExpectedAnswerType:'sentence',
+      });
       void persistInteraction({
         conversation_turn:nextTurn,
         conversation_complete:false,
@@ -538,7 +700,7 @@ export function LessonPlayer({lessonId}:{lessonId:string}){
       }).catch(()=>{});
       console.info('VOICE_CONVERSATION_FOLLOW_UP_READY',{slide_id:slide?.slide_id,turn_id:nextTurn,follow_speech:followSpeech,level:nextLvl});
       setStage('FEEDBACK');
-      await speakTutor(followSpeech,followHint,'WAITING_VOICE',String(turn.emotion||'curious'));
+      await speakTutor(followSpeech,nativeLang!==targetLang?nativeSpeech:'','WAITING_VOICE',String(turn.emotion||'curious'));
       return;
     }
 
@@ -549,51 +711,52 @@ export function LessonPlayer({lessonId}:{lessonId:string}){
       const correctiveQuestion=adaptiveQuestionForLevel(currentObj,nextLvl,slide);
       const speech=[naturalReaction||'Попробуем ещё раз!',correctiveQuestion.questionTarget].filter(Boolean).join(' ');
       const hint=correctiveQuestion.questionNative;
+      let nativeSpeech=hint;
+      if(nativeLang!==targetLang&&naturalReaction){
+        try{
+          const natReaction=cleanChildFacingText(await translateSafely(naturalReaction,nativeLang,targetLang));
+          nativeSpeech=[natReaction,hint].filter(Boolean).join(' ');
+        }catch{}
+      }
       setStage('RETRY');
       setTargetText(correctiveQuestion.questionTarget);
       setNativeText(hint);
       setFeedback(String(hint||speech||'Попробуй ещё раз.'));
-      const updatedDialogue:AdaptiveDialogueState={
-        slideId,
-        currentObject:currentObj,
-        currentLevel:nextLvl,
+      updateConversationTurn({
+        currentSlideId:slideId,
+        currentConversationTurnId:responseTurn,
         currentQuestion:correctiveQuestion.questionTarget,
         currentQuestionNative:hint,
+        currentTargetObject:currentObj,
+        currentDifficultyLevel:nextLvl,
         lastChildAnswer:transcript,
-        answerEvaluation:evaluation,
-        nextQuestion:correctiveQuestion.questionTarget,
-        currentHint:buildAdaptiveHint(correctiveQuestion.questionTarget,currentObj,nextLvl,slide,targetLang,nativeLang),
-        explanationLanguage:nativeLang,
-        targetLanguage:targetLang,
-        awaitingChildAnswer:true,
-      };
-      dialogueStateRef.current=updatedDialogue;
-      setDialogueState(updatedDialogue);
+        currentIntent:'retry',
+        currentExpectedAnswerType:'sentence',
+      });
       await persistInteraction({retry_attempt:attempt,current_level:nextLvl,completed:false}).catch(()=>{});
-      await speakTutor(speech,hint,'WAITING_VOICE',String(turn.emotion||'encouraging'));
+      await speakTutor(speech,nativeLang!==targetLang?nativeSpeech:'','WAITING_VOICE',String(turn.emotion||'encouraging'));
       return;
     }
 
     void persistInteraction({conversation_turn:responseTurn,conversation_complete:true,completed:true,current_level:nextLvl}).catch(()=>{});
-    const updatedDialogue:AdaptiveDialogueState={
-      slideId,
-      currentObject:currentObj,
-      currentLevel:nextLvl,
-      currentQuestion:ladderQuestion.questionTarget,
-      currentQuestionNative:ladderQuestion.questionNative,
-      lastChildAnswer:transcript,
-      answerEvaluation:evaluation,
-      nextQuestion:'',
-      currentHint:'',
-      explanationLanguage:nativeLang,
-      targetLanguage:targetLang,
-      awaitingChildAnswer:false,
-    };
-    dialogueStateRef.current=updatedDialogue;
-    setDialogueState(updatedDialogue);
-    setStage('FEEDBACK');
     const reactionSpeech=naturalReaction||cleanChildFacingText(String(response.target_response||turn.reaction_target||response.response_target||'Отлично!'));
-    await speakTutor(reactionSpeech,'','COMPLETE',String(turn.emotion||'happy'));
+    let reactionNative='';
+    if(nativeLang!==targetLang){
+      try{reactionNative=cleanChildFacingText(await translateSafely(reactionSpeech,nativeLang,targetLang))}catch{}
+    }
+    updateConversationTurn({
+      currentSlideId:slideId,
+      currentConversationTurnId:responseTurn,
+      currentQuestion:reactionSpeech,
+      currentQuestionNative:reactionNative,
+      currentTargetObject:currentObj,
+      currentDifficultyLevel:nextLvl,
+      lastChildAnswer:transcript,
+      currentIntent:'slide_complete',
+      currentExpectedAnswerType:'none',
+    });
+    setStage('FEEDBACK');
+    await speakTutor(reactionSpeech,nativeLang!==targetLang?reactionNative:'','COMPLETE',String(turn.emotion||'happy'));
   }catch(error:any){console.error('stopRec error',error);setRecording(false);if(localRecording&&!serverAcknowledged){voiceUploadStateRef.current=voiceUploadTransition(voiceUploadStateRef.current,'FAIL');setPendingVoice(localRecording);const mustUpload=requiredForMovie&&!recordedPhrases.includes(baseVoiceKey);console.error('VOICE_UPLOAD_FAILED',{recording_id:localRecording.recordingId,session_id:localRecording.sessionId,slide_id:localRecording.slideId,phrase_id:localRecording.phraseId,size:localRecording.size,path:localRecording.uri,mime_type:localRecording.mimeType,status:Number(error?.status||0),code:String(error?.code||error?.name||'VOICE_UPLOAD_FAILED'),message:String(error?.message||error)});if(activeSlideIdRef.current===slideId){setFeedback(intent==='retake'?'Новая запись сохранена на телефоне. Предыдущая запись не изменилась — можно отправить снова.':mustUpload?'Запись сохранена на телефоне. Можно отправить снова или записать заново.':'Запись сохранена на телефоне. Можно отправить снова, записать заново или продолжить.');setStage(intent==='retake'?'COMPLETE':voiceUploadFailureStage(mustUpload))}}else if(activeSlideIdRef.current===slideId){console.error('VOICE_LOCAL_FINALIZE_FAILED',{session_id:session,slide_id:slideId,phrase_id:voiceKey,status:Number(error?.status||0),code:String(error?.code||error?.name||'VOICE_LOCAL_FINALIZE_FAILED'),message:String(error?.message||error)});setFeedback('Не удалось сохранить запись на телефоне. Попробуй записать ещё раз.');setStage(intent==='retake'?recordingReturnStageRef.current:recoveryStageAfterFailure(slide,hasSelection))}}finally{try{await activateLessonPlayback('recording_cleanup')}catch{}recordingIntentRef.current='answer';recordingStartedAtRef.current=0;setExperienceAudioSuppressed('lesson-primary-audio',false);stoppingRef.current=false;setBusy(false)}}
 
   const enterSlide=async(nextIndex:number)=>{const nextStepId=String(runtimeOrder[nextIndex]?.slide_id||'');activeSlideIdRef.current=nextStepId;try{if(session)await withLessonTimeout(saveSessionProgress(session,nextStepId,lessonVersion,nextIndex),'save lesson progress');setIdx(nextIndex)}catch(error:any){console.error('lesson progress error',error);if(error?.code==='LESSON_VERSION_CHANGED'){Alert.alert('Урок обновился','Открой урок заново, чтобы продолжить по актуальной последовательности.');store.setScreen('home')}else{setIdx(nextIndex);if(error?.status!==404)setFeedback(childSafeRuntimeMessage('progress'))}}finally{setBusy(false)}};
@@ -618,6 +781,7 @@ export function LessonPlayer({lessonId}:{lessonId:string}){
     setPendingVoice(undefined);setPacked([]);setRemovedItems([]);setChoice('');setTemplateResult(undefined);setConversationTurn(0);setRetryAttempt(0);setRecording(false);setTakePlaying(false);setStage('ENTER');setFeedback('');setTutorVoiceError('');setHintUseCount(0);setHintText('');setHintSpeaking(false);setShowHint(false);setShowSecondary(false);setRiddleRevealed(false);setVideoPlaying(false);setVideoStepCompleted(false);setTargetText('');setTaskGoal('');setNativeText('');
     // Ref resets:
     latestLocalTakesRef.current={};conversationTurnRef.current=0;interactionCommitRef.current=false;completionLockRef.current=false;speechTokenRef.current+=1;
+    spokenSlideTurnRef.current='';currentTurnRef.current={currentSlideId:'',currentConversationTurnId:0,currentQuestion:'',currentQuestionNative:'',currentIntent:'',currentTargetObject:'',currentDifficultyLevel:0,lastChildAnswer:'',currentExpectedAnswerType:'',targetLanguage:'',explanationLanguage:''};
     setIdx(resolveResumeIndex(order,response,String(response.lesson_version||'')))}catch(error:any){Alert.alert('Не удалось начать заново',childSafeRuntimeMessage('lesson'))}finally{setBusy(false)}};
 
   if(completed){const movie=normalizeMovieState(completed,session||undefined);const status=movie.status;const url=movie.movie_url;const progress=movie.progress;const active=MOVIE_ACTIVE_STATES.has(status);const failed=MOVIE_RETRY_STATES.has(status);return <ScrollView contentContainerStyle={{padding:24,paddingBottom:24+insets.bottom}}><H1>Урок завершён 🎉</H1><Card><H2>Прохождение {movie.run_number||runNumber}</H2>{status==='NOT_CONFIGURED'?<Body>Все задания и прогресс сохранены.</Body>:MOVIE_SUCCESS_STATES.has(status)?<Body>🎬 Персональный мультфильм готов.</Body>:active?<><Body>🎬 {movieStageMessage(String(movie.stage||''))}</Body><View style={{height:10,borderRadius:5,backgroundColor:'#E6EAF1',overflow:'hidden',marginVertical:10}}><View style={{height:'100%',width:`${Math.max(3,progress)}%`,backgroundColor:'#246BFD'}}/></View><Body muted>{progress}% · экран можно закрыть, сборка продолжится</Body></>:failed?<><Body>🎬 Мультфильм пока не собрался. Все записи сохранены — можно попробовать ещё раз.</Body><Button title={busy?'Повторяю…':'Повторить сборку'} disabled={busy} onPress={retryMovie}/></>:<Body>🎬 Проверяем состояние мультфильма…</Body>}{url?<><MoviePlayer url={url} identity={movieIdentity(movie)}/><Button secondary title='Поделиться' onPress={()=>Share.share({message:url,url})}/></>:null}</Card><Button title='Вернуться домой' onPress={()=>store.setScreen('home')}/><Button secondary title={busy?'Загружаю…':'Начать заново'} disabled={busy} onPress={restartLesson}/></ScrollView>}
@@ -705,7 +869,7 @@ export function LessonPlayer({lessonId}:{lessonId:string}){
     recordingTools={recordingTools}
     progressLabel={`${idx+1}/${runtimeOrder.length}`}
     mascotState={currentMascotState}
-    replay={pendingPreSlide ? {testID:'lesson-replay',accessibilityLabel:'Смотрим видео',disabled:true,sound:false,onPress:()=>{}} : currentRecordingKey ? {testID:'lesson-replay',accessibilityLabel:'Прослушать свой ответ',disabled:stage==='AI_SPEAKING'||recording||busy||takePlaying||videoPlaying,primary:false,sound:false,onPress:()=>void playCurrentRecording()} : {testID:'lesson-replay',accessibilityLabel:stage==='AI_SPEAKING'?'Слушай ведущую':tutorVoiceError?'Повторить голос':'Слушать ещё',disabled:stage==='AI_SPEAKING'||recording||busy||videoPlaying,primary:false,sound:false,onPress:()=>void speakTutor(targetText,showHint?nativeText:'',tutorVoiceError?afterSpeechRef.current:stage,'warm')}}
+    replay={pendingPreSlide ? {testID:'lesson-replay',accessibilityLabel:'Смотрим видео',disabled:true,sound:false,onPress:()=>{}} : currentRecordingKey ? {testID:'lesson-replay',accessibilityLabel:'Прослушать свой ответ',disabled:stage==='AI_SPEAKING'||recording||busy||takePlaying||videoPlaying,primary:false,sound:false,onPress:()=>void playCurrentRecording()} : {testID:'lesson-replay',accessibilityLabel:stage==='AI_SPEAKING'?'Слушай ведущую':tutorVoiceError?'Повторить голос':'Слушать ещё',disabled:stage==='AI_SPEAKING'||recording||busy||videoPlaying,primary:false,sound:false,onPress:()=>{const turn=currentTurnRef.current;const replayQ=turn.currentQuestion||targetText;const replayNat=nativeLang!==targetLang?(turn.currentQuestionNative||nativeText):'';void speakTutor(replayQ,replayNat,tutorVoiceError?afterSpeechRef.current:stage,'warm')}}}
     answer={!pendingPreSlide&&requiresVoice(slide)?{
       testID:'record-answer',
       accessibilityLabel:recording?'Закончить ответ':uploadStatus==='UPLOAD_FAILED'?'Отправить запись снова':currentRecordingKey?'Ответить ещё':stage==='PROCESSING'?'Ответ обрабатывается':'Ответить',
@@ -740,13 +904,13 @@ export function LessonPlayer({lessonId}:{lessonId:string}){
             <View style={{flex:1}}><Button testID='replace-current-recording' compact={layout.compact} secondary disabled={recording||busy||stage==='AI_SPEAKING'||videoPlaying||Boolean(pendingPreSlide)} title='🎙 Перезаписать' onPress={()=>void startRec('retake')}/></View>
           </View>
           <View style={{flexDirection:'row',gap:6}}>
-            <View style={{flex:1}}><Button compact={layout.compact} secondary disabled={Boolean(pendingPreSlide)||stage==='AI_SPEAKING'||recording||busy||takePlaying} title={pendingPreSlide?'🎬 Видео':stage==='AI_SPEAKING'?'🔊 Слушай…':tutorVoiceError?'🔊 Повторить голос':'🔊 Повторить'} onPress={()=>speakTutor(targetText,showHint?nativeText:'',tutorVoiceError?afterSpeechRef.current:stage,'warm')}/></View>
+            <View style={{flex:1}}><Button compact={layout.compact} secondary disabled={Boolean(pendingPreSlide)||stage==='AI_SPEAKING'||recording||busy||takePlaying} title={pendingPreSlide?'🎬 Видео':stage==='AI_SPEAKING'?'🔊 Слушай…':tutorVoiceError?'🔊 Повторить голос':'🔊 Повторить'} onPress={()=>{const turn=currentTurnRef.current;const replayQ=turn.currentQuestion||targetText;const replayNat=nativeLang!==targetLang?(turn.currentQuestionNative||nativeText):'';void speakTutor(replayQ,replayNat,tutorVoiceError?afterSpeechRef.current:stage,'warm')}}/></View>
             {requiresVoice(slide)&&!pendingPreSlide?<View style={{flex:1.35}}><Button compact={layout.compact} testID='record-answer' disabled={!canRecord&&!recording} title={stage==='AI_SPEAKING'?'🔊 Сначала дослушай':recording?'⏹ Готово':stage==='PROCESSING'?'Слушаю…':'🎙 Ответить ещё'} onPress={recording?()=>void stopRec('MANUAL'):()=>void startRec('answer')}/></View>:null}
           </View>
         </View>
       ):(
         <View style={{flexDirection:'row',gap:6,marginTop:6}}>
-          <View style={{flex:1}}><Button compact={layout.compact} secondary disabled={Boolean(pendingPreSlide)||stage==='AI_SPEAKING'||recording||busy||takePlaying} title={pendingPreSlide?'🎬 Видео':stage==='AI_SPEAKING'?'🔊 Слушай…':tutorVoiceError?'🔊 Повторить голос':'🔊 Повторить'} onPress={()=>speakTutor(targetText,showHint?nativeText:'',tutorVoiceError?afterSpeechRef.current:stage,'warm')}/></View>
+          <View style={{flex:1}}><Button compact={layout.compact} secondary disabled={Boolean(pendingPreSlide)||stage==='AI_SPEAKING'||recording||busy||takePlaying} title={pendingPreSlide?'🎬 Видео':stage==='AI_SPEAKING'?'🔊 Слушай…':tutorVoiceError?'🔊 Повторить голос':'🔊 Повторить'} onPress={()=>{const turn=currentTurnRef.current;const replayQ=turn.currentQuestion||targetText;const replayNat=nativeLang!==targetLang?(turn.currentQuestionNative||nativeText):'';void speakTutor(replayQ,replayNat,tutorVoiceError?afterSpeechRef.current:stage,'warm')}}/></View>
           {requiresVoice(slide)&&!pendingPreSlide?<View style={{flex:1.35}}><Button compact={layout.compact} testID='record-answer' disabled={!canRecord&&!recording} title={stage==='AI_SPEAKING'?'🔊 Сначала дослушай':recording?'⏹ Готово':stage==='PROCESSING'?'Слушаю…':currentRecordingKey?'🎙 Ответить ещё':'🎙 Ответить'} onPress={recording?()=>void stopRec('MANUAL'):()=>void startRec('answer')}/></View>:null}
         </View>
       )}

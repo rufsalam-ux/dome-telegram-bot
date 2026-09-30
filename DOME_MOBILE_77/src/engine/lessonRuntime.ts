@@ -47,18 +47,33 @@ export type AdaptivePromptPlan={
 
 export type AnswerEvaluation = 'CONFIDENT_CORRECT' | 'PARTIAL_CORRECT' | 'INCORRECT' | 'SILENCE' | 'EXCELLENT' | 'CORRECT' | 'PARTIAL' | 'RETRY' | 'NONE';
 
-export interface AdaptiveDialogueState {
+export interface CurrentConversationTurn {
+  currentSlideId: string;
+  currentConversationTurnId: number;
+  currentQuestion: string;
+  currentQuestionNative: string;
+  currentIntent: string;
+  currentTargetObject: string;
+  currentDifficultyLevel: number; // 0..4
+  lastChildAnswer: string;
+  currentExpectedAnswerType: string;
+  targetLanguage: string;
+  explanationLanguage: string;
+}
+
+export interface AdaptiveHintPair {
+  hintTarget: string;
+  hintNative: string;
+}
+
+export interface AdaptiveDialogueState extends CurrentConversationTurn {
   slideId: string;
   currentObject: string;
   currentLevel: number; // 0..4
-  currentQuestion: string;
-  currentQuestionNative: string;
   lastChildAnswer: string;
   answerEvaluation: AnswerEvaluation;
   nextQuestion: string;
   currentHint: string;
-  explanationLanguage: string;
-  targetLanguage: string;
   awaitingChildAnswer: boolean;
 }
 
@@ -290,6 +305,425 @@ export function adaptiveQuestionForLevel(
   }
 }
 
+export function buildAdaptiveHintPair(
+  currentQuestion: string,
+  currentObject: string,
+  currentLevel: number,
+  slide: any,
+  targetLang = 'ru',
+  nativeLang = 'ru'
+): AdaptiveHintPair {
+  const q = cleanChildFacingText(currentQuestion).toLowerCase();
+  const obj = (currentObject || slideTargetObject(slide) || '').toLowerCase();
+  const lvl = Math.max(0, Math.min(4, Math.floor(Number(currentLevel) || 0)));
+
+  // 1. Mood choice
+  if (slide?.type === 'mood_choice' || q.includes('настроени')) {
+    switch (lvl) {
+      case 0:
+        return { hintTarget: 'Можно сказать: У меня отличное настроение!', hintNative: 'You can say: I am in a great mood!' };
+      case 1:
+        return { hintTarget: 'Весёлое или радостное?', hintNative: 'Cheerful or joyful?' };
+      case 2:
+        return { hintTarget: 'Скажи: У меня настроение...', hintNative: 'Say: My mood is...' };
+      case 3:
+      case 4:
+      default:
+        return { hintTarget: 'Подсказка: отличное, весёлое или спокойное', hintNative: 'Clue: great, cheerful, or calm' };
+    }
+  }
+
+  // 2. Card questions (e.g. from slide_09 card question sets)
+  if (q.includes('завтрак') || (q.includes('люблю') && q.includes('утр'))) {
+    switch (lvl) {
+      case 0:
+        return { hintTarget: 'Можно сказать: Я люблю кашу и яблоки.', hintNative: 'You can say: I like porridge and apples.' };
+      case 1:
+        return { hintTarget: 'Кашу или блинчики?', hintNative: 'Porridge or pancakes?' };
+      case 2:
+        return { hintTarget: 'Скажи: На завтрак я люблю...', hintNative: 'Say: For breakfast I like...' };
+      default:
+        return { hintTarget: 'Подсказка: каша, блинчики, хлопья', hintNative: 'Clue: porridge, pancakes, cereal' };
+    }
+  }
+
+  if (q.includes('на улице') || q.includes('не люблю, когда')) {
+    switch (lvl) {
+      case 0:
+        return { hintTarget: 'Можно сказать: Не люблю, когда идёт дождь.', hintNative: "You can say: I don't like when it rains." };
+      case 1:
+        return { hintTarget: 'Дождь или холодный ветер?', hintNative: 'Rain or cold wind?' };
+      case 2:
+        return { hintTarget: 'Скажи: Не люблю, когда...', hintNative: "Say: I don't like when..." };
+      default:
+        return { hintTarget: 'Подсказка: дождь, слякоть или мороз', hintNative: 'Clue: rain, slush, or frost' };
+    }
+  }
+
+  if (q.includes('летать') || q.includes('рыба') || q.includes('плавать')) {
+    switch (lvl) {
+      case 0:
+        return { hintTarget: 'Можно сказать: Я хочу летать, как птица.', hintNative: 'You can say: I want to fly like a bird.' };
+      case 1:
+        return { hintTarget: 'Летать, как птица, или плавать, как рыба?', hintNative: 'Fly like a bird or swim like a fish?' };
+      case 2:
+        return { hintTarget: 'Скажи: Я бы хотел...', hintNative: 'Say: I would like to...' };
+      default:
+        return { hintTarget: 'Подсказка: летать высоко или плавать быстро', hintNative: 'Clue: fly high or swim fast' };
+    }
+  }
+
+  if (q.includes('супергеро') || q.includes('суперспособност')) {
+    switch (lvl) {
+      case 0:
+        return { hintTarget: 'Можно сказать: Моя суперспособность — летать.', hintNative: 'You can say: My superpower is flying.' };
+      case 1:
+        return { hintTarget: 'Летать или быть невидимым?', hintNative: 'Fly or be invisible?' };
+      case 2:
+        return { hintTarget: 'Скажи: Моя суперспособность...', hintNative: 'Say: My superpower is...' };
+      default:
+        return { hintTarget: 'Подсказка: летать, суперсила или невидимость', hintNative: 'Clue: fly, super strength, or invisibility' };
+    }
+  }
+
+  if (q.includes('боюсь') || q.includes('страш')) {
+    switch (lvl) {
+      case 0:
+        return { hintTarget: 'Можно сказать: Иногда я боюсь темноты.', hintNative: 'You can say: Sometimes I am afraid of the dark.' };
+      case 1:
+        return { hintTarget: 'Темноты или пауков?', hintNative: 'The dark or spiders?' };
+      case 2:
+        return { hintTarget: 'Скажи: Иногда я боюсь...', hintNative: 'Say: Sometimes I am afraid of...' };
+      default:
+        return { hintTarget: 'Подсказка: темнота, гроза или пауки', hintNative: 'Clue: dark, thunderstorm, or spiders' };
+    }
+  }
+
+  if (q.includes('животное, которое') || q.includes('нравится животное')) {
+    switch (lvl) {
+      case 0:
+        return { hintTarget: 'Можно сказать: Мне очень нравится собака.', hintNative: 'You can say: I really like dogs.' };
+      case 1:
+        return { hintTarget: 'Собака или кошка?', hintNative: 'A dog or a cat?' };
+      case 2:
+        return { hintTarget: 'Скажи: Мне очень нравится...', hintNative: 'Say: I really like...' };
+      default:
+        return { hintTarget: 'Подсказка: собака, кошка или дельфин', hintNative: 'Clue: dog, cat, or dolphin' };
+    }
+  }
+
+  if (q.includes('игрушк')) {
+    switch (lvl) {
+      case 0:
+        return { hintTarget: 'Можно сказать: Моя любимая игрушка — конструктор.', hintNative: 'You can say: My favorite toy is building blocks.' };
+      case 1:
+        return { hintTarget: 'Конструктор или машинка?', hintNative: 'Building blocks or a car?' };
+      case 2:
+        return { hintTarget: 'Скажи: Моя любимая игрушка...', hintNative: 'Say: My favorite toy is...' };
+      default:
+        return { hintTarget: 'Подсказка: конструктор, мишка или машинка', hintNative: 'Clue: blocks, bear, or car' };
+    }
+  }
+
+  if (q.includes('дождь из еды')) {
+    switch (lvl) {
+      case 0:
+        return { hintTarget: 'Можно сказать: Пусть идёт дождь из мороженого!', hintNative: 'You can say: Let it rain ice cream!' };
+      case 1:
+        return { hintTarget: 'Из мороженого или ягод?', hintNative: 'Ice cream or berries?' };
+      case 2:
+        return { hintTarget: 'Скажи: Я бы хотел дождь из...', hintNative: 'Say: I would like rain of...' };
+      default:
+        return { hintTarget: 'Подсказка: мороженое, ягоды или фрукты', hintNative: 'Clue: ice cream, berries, or fruit' };
+    }
+  }
+
+  if (q.includes('друг')) {
+    switch (lvl) {
+      case 0:
+        return { hintTarget: 'Можно сказать: Настоящий друг добрый и верный.', hintNative: 'You can say: A true friend is kind and loyal.' };
+      case 1:
+        return { hintTarget: 'Добрым или весёлым?', hintNative: 'Kind or funny?' };
+      case 2:
+        return { hintTarget: 'Скажи: Настоящий друг...', hintNative: 'Say: A true friend is...' };
+      default:
+        return { hintTarget: 'Подсказка: добрый, верный, весёлый', hintNative: 'Clue: kind, loyal, funny' };
+    }
+  }
+
+  if (q.includes('грустить')) {
+    switch (lvl) {
+      case 0:
+        return { hintTarget: 'Можно сказать: Дождик может заставить меня грустить.', hintNative: 'You can say: Rain can make me feel sad.' };
+      case 1:
+        return { hintTarget: 'Скука или плохая погода?', hintNative: 'Boredom or bad weather?' };
+      case 2:
+        return { hintTarget: 'Скажи: Меня может огорчить...', hintNative: 'Say: What makes me sad is...' };
+      default:
+        return { hintTarget: 'Подсказка: скука или плохая погода', hintNative: 'Clue: boredom or bad weather' };
+    }
+  }
+
+  if (q.includes('три слова')) {
+    switch (lvl) {
+      case 0:
+        return { hintTarget: 'Можно сказать: Весёлый, добрый и смелый.', hintNative: 'You can say: Cheerful, kind, and brave.' };
+      case 1:
+        return { hintTarget: 'Весёлый или смелый?', hintNative: 'Cheerful or brave?' };
+      case 2:
+        return { hintTarget: 'Скажи: Я весёлый, добрый...', hintNative: 'Say: I am cheerful, kind...' };
+      default:
+        return { hintTarget: 'Подсказка: весёлый, умный, добрый, смелый', hintNative: 'Clue: cheerful, smart, kind, brave' };
+    }
+  }
+
+  if (q.includes('магазин')) {
+    switch (lvl) {
+      case 0:
+        return { hintTarget: 'Можно сказать: В моём магазине продавались бы книги и игрушки.', hintNative: 'You can say: Books and toys would be sold in my store.' };
+      case 1:
+        return { hintTarget: 'Игрушки или сладости?', hintNative: 'Toys or sweets?' };
+      case 2:
+        return { hintTarget: 'Скажи: В моём магазине...', hintNative: 'Say: In my store...' };
+      default:
+        return { hintTarget: 'Подсказка: книги, игрушки или сладости', hintNative: 'Clue: books, toys, or sweets' };
+    }
+  }
+
+  if (q.includes('вкусная еда') || q.includes('вкусная')) {
+    switch (lvl) {
+      case 0:
+        return { hintTarget: 'Можно сказать: Самая вкусная еда — это пицца.', hintNative: 'You can say: The most delicious food is pizza.' };
+      case 1:
+        return { hintTarget: 'Пицца или фрукты?', hintNative: 'Pizza or fruit?' };
+      case 2:
+        return { hintTarget: 'Скажи: Самая вкусная еда...', hintNative: 'Say: The most delicious food is...' };
+      default:
+        return { hintTarget: 'Подсказка: пицца, фрукты, блинчики', hintNative: 'Clue: pizza, fruit, pancakes' };
+    }
+  }
+
+  if (q.includes('питомец') || (q.includes('вопрос') && q.includes('спросил'))) {
+    switch (lvl) {
+      case 0:
+        return { hintTarget: 'Можно сказать: Я бы спросил: как твои дела?', hintNative: 'You can say: I would ask: how are you doing?' };
+      case 1:
+        return { hintTarget: 'Как дела или что ты любишь?', hintNative: 'How are you or what do you like?' };
+      case 2:
+        return { hintTarget: 'Скажи: Я бы спросил...', hintNative: 'Say: I would ask...' };
+      default:
+        return { hintTarget: 'Подсказка: спроси о настроении или любимой еде', hintNative: 'Clue: ask about mood or favorite food' };
+    }
+  }
+
+  if (q.includes('палочка') || q.includes('желани')) {
+    switch (lvl) {
+      case 0:
+        return { hintTarget: 'Можно сказать: Я бы загадал полететь в космос.', hintNative: 'You can say: I would wish to fly into space.' };
+      case 1:
+        return { hintTarget: 'Полететь в космос или уметь летать?', hintNative: 'Fly into space or be able to fly?' };
+      case 2:
+        return { hintTarget: 'Скажи: Моё желание...', hintNative: 'Say: My wish is...' };
+      default:
+        return { hintTarget: 'Подсказка: путешествие, космос, радость', hintNative: 'Clue: travel, space, joy' };
+    }
+  }
+
+  if (q.includes('путешествие') || q.includes('необычном')) {
+    switch (lvl) {
+      case 0:
+        return { hintTarget: 'Можно сказать: Я хочу отправиться на воздушном шаре.', hintNative: 'You can say: I want to travel in a hot air balloon.' };
+      case 1:
+        return { hintTarget: 'На воздушном шаре или на ракете?', hintNative: 'In a balloon or on a rocket?' };
+      case 2:
+        return { hintTarget: 'Скажи: Я хочу отправиться на...', hintNative: 'Say: I want to travel on...' };
+      default:
+        return { hintTarget: 'Подсказка: воздушный шар, ракета, поезд', hintNative: 'Clue: balloon, rocket, train' };
+    }
+  }
+
+  if (q.includes('куда')) {
+    switch (lvl) {
+      case 0:
+        return { hintTarget: 'Можно сказать: Я хочу отправиться в горы.', hintNative: 'You can say: I want to go to the mountains.' };
+      case 1:
+        return { hintTarget: 'В горы или на море?', hintNative: 'To the mountains or to the sea?' };
+      case 2:
+        return { hintTarget: 'Скажи: Я хочу поехать в...', hintNative: 'Say: I want to go to...' };
+      default:
+        return { hintTarget: 'Подсказка: горы, море, далёкие острова', hintNative: 'Clue: mountains, sea, distant islands' };
+    }
+  }
+
+  // 3. Animal specific properties
+  const isGiraffe = obj === 'giraffe' || q.includes('жираф');
+  const isBear = obj === 'polar_bear' || q.includes('медвед');
+  const isParrot = obj === 'parrot' || q.includes('попуга');
+  const isLion = obj === 'lion' || q.includes('лев');
+  const isPenguin = obj === 'penguin' || q.includes('пингвин');
+  const isZebra = obj === 'zebra' || q.includes('зебр');
+
+  if (q.includes('какой') || q.includes('какая') || q.includes('какое') || q.includes('какие')) {
+    if (isGiraffe) {
+      switch (lvl) {
+        case 0: return { hintTarget: 'Можно сказать: Жираф высокий.', hintNative: 'You can say: The giraffe is tall.' };
+        case 1: return { hintTarget: 'Высокий или низкий?', hintNative: 'Tall or short?' };
+        case 2: return { hintTarget: 'Скажи: Жираф высокий.', hintNative: 'Say: The giraffe is tall.' };
+        default: return { hintTarget: 'Подсказка: высокий', hintNative: 'Clue: tall' };
+      }
+    }
+    if (isBear) {
+      switch (lvl) {
+        case 0: return { hintTarget: 'Можно сказать: Белый медведь большой.', hintNative: 'You can say: The polar bear is big.' };
+        case 1: return { hintTarget: 'Большой или маленький?', hintNative: 'Big or small?' };
+        case 2: return { hintTarget: 'Скажи: Белый медведь большой.', hintNative: 'Say: The polar bear is big.' };
+        default: return { hintTarget: 'Подсказка: большой', hintNative: 'Clue: big' };
+      }
+    }
+    if (isParrot) {
+      switch (lvl) {
+        case 0: return { hintTarget: 'Можно сказать: Попугай красивый.', hintNative: 'You can say: The parrot is beautiful.' };
+        case 1: return { hintTarget: 'Красивый или серый?', hintNative: 'Beautiful or gray?' };
+        case 2: return { hintTarget: 'Скажи: Попугай красивый.', hintNative: 'Say: The parrot is beautiful.' };
+        default: return { hintTarget: 'Подсказка: красивый', hintNative: 'Clue: beautiful' };
+      }
+    }
+    if (isLion) {
+      switch (lvl) {
+        case 0: return { hintTarget: 'Можно сказать: Лев сильный.', hintNative: 'You can say: The lion is strong.' };
+        case 1: return { hintTarget: 'Сильный или слабый?', hintNative: 'Strong or weak?' };
+        case 2: return { hintTarget: 'Скажи: Лев сильный.', hintNative: 'Say: The lion is strong.' };
+        default: return { hintTarget: 'Подсказка: сильный', hintNative: 'Clue: strong' };
+      }
+    }
+    if (isPenguin) {
+      switch (lvl) {
+        case 0: return { hintTarget: 'Можно сказать: Пингвин черно-белый.', hintNative: 'You can say: The penguin is black and white.' };
+        case 1: return { hintTarget: 'Черно-белый или зеленый?', hintNative: 'Black and white or green?' };
+        case 2: return { hintTarget: 'Скажи: Пингвин черно-белый.', hintNative: 'Say: The penguin is black and white.' };
+        default: return { hintTarget: 'Подсказка: черно-белый', hintNative: 'Clue: black and white' };
+      }
+    }
+    if (isZebra) {
+      switch (lvl) {
+        case 0: return { hintTarget: 'Можно сказать: Зебра полосатая.', hintNative: 'You can say: The zebra is striped.' };
+        case 1: return { hintTarget: 'Полосатая или пятнистая?', hintNative: 'Striped or spotted?' };
+        case 2: return { hintTarget: 'Скажи: Зебра полосатая.', hintNative: 'Say: The zebra is striped.' };
+        default: return { hintTarget: 'Подсказка: полосатая', hintNative: 'Clue: striped' };
+      }
+    }
+  }
+
+  if (q.includes('что делает') || q.includes('что он делает') || q.includes('что она делает')) {
+    if (isGiraffe) {
+      switch (lvl) {
+        case 0: return { hintTarget: 'Можно сказать: Жираф стоит.', hintNative: 'You can say: The giraffe is standing.' };
+        case 1: return { hintTarget: 'Стоит или бежит?', hintNative: 'Standing or running?' };
+        case 2: return { hintTarget: 'Скажи: Жираф стоит.', hintNative: 'Say: The giraffe is standing.' };
+        default: return { hintTarget: 'Подсказка: стоит', hintNative: 'Clue: standing' };
+      }
+    }
+    if (isBear) {
+      switch (lvl) {
+        case 0: return { hintTarget: 'Можно сказать: Медведь гуляет.', hintNative: 'You can say: The bear is walking.' };
+        case 1: return { hintTarget: 'Гуляет или спит?', hintNative: 'Walking or sleeping?' };
+        case 2: return { hintTarget: 'Скажи: Медведь гуляет.', hintNative: 'Say: The bear is walking.' };
+        default: return { hintTarget: 'Подсказка: гуляет', hintNative: 'Clue: walking' };
+      }
+    }
+    if (isParrot) {
+      switch (lvl) {
+        case 0: return { hintTarget: 'Можно сказать: Попугай летает.', hintNative: 'You can say: The parrot is flying.' };
+        case 1: return { hintTarget: 'Летает или спит?', hintNative: 'Flying or sleeping?' };
+        case 2: return { hintTarget: 'Скажи: Попугай летает.', hintNative: 'Say: The parrot is flying.' };
+        default: return { hintTarget: 'Подсказка: летает', hintNative: 'Clue: flying' };
+      }
+    }
+  }
+
+  if (q.includes('где он') || q.includes('где живёт') || q.includes('где она')) {
+    if (isGiraffe) {
+      switch (lvl) {
+        case 0: return { hintTarget: 'Можно сказать: Жираф живёт в Африке.', hintNative: 'You can say: The giraffe lives in Africa.' };
+        case 1: return { hintTarget: 'В Африке или на севере?', hintNative: 'In Africa or in the north?' };
+        case 2: return { hintTarget: 'Скажи: Жираф живёт в Африке.', hintNative: 'Say: The giraffe lives in Africa.' };
+        default: return { hintTarget: 'Подсказка: Африка', hintNative: 'Clue: Africa' };
+      }
+    }
+    if (isBear) {
+      switch (lvl) {
+        case 0: return { hintTarget: 'Можно сказать: Белый медведь живёт на севере.', hintNative: 'You can say: The polar bear lives in the north.' };
+        case 1: return { hintTarget: 'На севере или в Африке?', hintNative: 'In the north or in Africa?' };
+        case 2: return { hintTarget: 'Скажи: Медведь живёт на севере.', hintNative: 'Say: The bear lives in the north.' };
+        default: return { hintTarget: 'Подсказка: север', hintNative: 'Clue: north' };
+      }
+    }
+    if (isParrot) {
+      switch (lvl) {
+        case 0: return { hintTarget: 'Можно сказать: Попугай живёт в тёплом лесу.', hintNative: 'You can say: The parrot lives in a warm forest.' };
+        case 1: return { hintTarget: 'В тёплом лесу или на снегу?', hintNative: 'In a warm forest or in the snow?' };
+        case 2: return { hintTarget: 'Скажи: Попугай живёт в тёплом лесу.', hintNative: 'Say: The parrot lives in a warm forest.' };
+        default: return { hintTarget: 'Подсказка: тёплый лес', hintNative: 'Clue: warm forest' };
+      }
+    }
+  }
+
+  if (q.includes('кто это') || q.includes('кто я')) {
+    const animalName = isGiraffe ? 'жираф' : isBear ? 'белый медведь' : isParrot ? 'попугай' : isLion ? 'лев' : isPenguin ? 'пингвин' : isZebra ? 'зебра' : (obj || 'животное');
+    const altAnimal = isGiraffe ? 'зебра' : isBear ? 'пингвин' : isParrot ? 'птица' : 'другое животное';
+    switch (lvl) {
+      case 0: return { hintTarget: `Можно сказать: Это ${animalName}.`, hintNative: `You can say: This is a ${animalName}.` };
+      case 1: return { hintTarget: `${animalName} или ${altAnimal}?`, hintNative: `${animalName} or ${altAnimal}?` };
+      case 2: return { hintTarget: 'Скажи: Это...', hintNative: 'Say: This is...' };
+      default: return { hintTarget: `Подсказка: ${animalName}`, hintNative: `Clue: ${animalName}` };
+    }
+  }
+
+  // 4. Initial card selector prompt before a card is chosen
+  if (q.includes('картинка') && (q.includes('нравится') || q.includes('выбери'))) {
+    switch (lvl) {
+      case 0: return { hintTarget: 'Можно сказать: Мне нравится эта картинка.', hintNative: 'You can say: I like this picture.' };
+      case 1: return { hintTarget: 'Картинка А или картинка Б?', hintNative: 'Picture A or picture B?' };
+      case 2: return { hintTarget: 'Скажи: Мне нравится...', hintNative: 'Say: I like...' };
+      default: return { hintTarget: 'Подсказка: выбери любую картинку, которая тебе интересна', hintNative: 'Clue: choose the picture that interests you' };
+    }
+  }
+
+  // 5. Suitcase
+  if (slide?.interactive_task === 'suitcase' || q.includes('чемодан')) {
+    switch (lvl) {
+      case 0: return { hintTarget: 'Можно сказать: Я положу куртку в чемодан.', hintNative: 'You can say: I will pack the jacket into the suitcase.' };
+      case 1: return { hintTarget: 'Куртку или бинокль?', hintNative: 'The jacket or the binoculars?' };
+      case 2: return { hintTarget: 'Скажи: В чемодан я положу...', hintNative: 'Say: Into the suitcase I will pack...' };
+      default: return { hintTarget: 'Подсказка: выбери нужную вещь для путешествия', hintNative: 'Clue: choose an item needed for the trip' };
+    }
+  }
+
+  // 6. Gift
+  if (slide?.interaction_kind === 'gift_selector' || q.includes('подарок') || q.includes('мила')) {
+    switch (lvl) {
+      case 0: return { hintTarget: 'Можно сказать: Мила привезла мне подарок.', hintNative: 'You can say: Mila brought me a gift.' };
+      case 1: return { hintTarget: 'Сувенир или игрушку?', hintNative: 'A souvenir or a toy?' };
+      case 2: return { hintTarget: 'Скажи: Мила привезла мне...', hintNative: 'Say: Mila brought me...' };
+      default: return { hintTarget: 'Подсказка: назови подарок от Милы', hintNative: 'Clue: name the gift from Mila' };
+    }
+  }
+
+  // 7. General ladder fallback
+  const ladder = adaptiveQuestionForLevel(obj, lvl, slide);
+  const baseModel = ladder.expectedAnswerModel || cleanChildFacingText(slide?.simplified_text) || 'Давай попробуем вместе!';
+  switch (lvl) {
+    case 0:
+      return { hintTarget: `Можно сказать: ${baseModel}`, hintNative: `You can say: ${ladder.questionNative || baseModel}` };
+    case 1:
+      return { hintTarget: `${baseModel} или другой вариант?`, hintNative: `${ladder.questionNative || baseModel} or another option?` };
+    case 2:
+      return { hintTarget: `Скажи: ${baseModel}`, hintNative: `Say: ${ladder.questionNative || baseModel}` };
+    default:
+      return { hintTarget: `Подсказка: ${baseModel}`, hintNative: `Clue: ${ladder.questionNative || baseModel}` };
+  }
+}
+
 export function buildAdaptiveHint(
   currentQuestion: string,
   currentObject: string,
@@ -298,52 +732,7 @@ export function buildAdaptiveHint(
   targetLang = 'ru',
   nativeLang = 'ru'
 ): string {
-  const q = cleanChildFacingText(currentQuestion).toLowerCase();
-  const obj = (currentObject || slideTargetObject(slide) || '').toLowerCase();
-  
-  if (slide?.type === 'mood_choice' || q.includes('настроени')) {
-    return 'У меня отличное настроение!';
-  }
-  
-  if (q.includes('какой') || q.includes('какая') || q.includes('какое') || q.includes('какие')) {
-    if (obj === 'giraffe' || q.includes('жираф')) return 'Жираф высокий.';
-    if (obj === 'polar_bear' || q.includes('медвед')) return 'Белый медведь большой.';
-    if (obj === 'parrot' || q.includes('попуга')) return 'Попугай красивый.';
-    if (obj) return `${obj} большой.`;
-    return 'Очень большой и красивый.';
-  }
-  
-  if (q.includes('что делает') || q.includes('что он делает') || q.includes('что она делает')) {
-    if (obj === 'giraffe' || q.includes('жираф')) return 'Жираф стоит.';
-    if (obj === 'polar_bear' || q.includes('медвед')) return 'Медведь гуляет.';
-    if (obj === 'parrot' || q.includes('попуга')) return 'Попугай летает.';
-    return 'Стоит и смотрит.';
-  }
-  
-  if (q.includes('где он') || q.includes('где живёт') || q.includes('где она')) {
-    if (obj === 'giraffe' || q.includes('жираф')) return 'Жираф живёт в Африке.';
-    if (obj === 'polar_bear' || q.includes('медвед')) return 'Белый медведь живёт на севере.';
-    if (obj === 'parrot' || q.includes('попуга')) return 'Попугай живёт в тёплом месте.';
-    return 'Живёт в тёплой стране.';
-  }
-  
-  if (q.includes('кто это') || q.includes('кто я')) {
-    if (obj === 'giraffe' || slide?.correct_choice_id === 'giraffe') return 'Это жираф.';
-    if (obj === 'polar_bear' || slide?.required_phrase_id === 'polar_bear') return 'Это белый медведь.';
-    if (obj === 'parrot' || slide?.required_phrase_id === 'parrot') return 'Это попугай.';
-    if (slide?.simplified_text) return cleanChildFacingText(slide.simplified_text);
-    return 'Это животное.';
-  }
-
-  const ladder = adaptiveQuestionForLevel(obj, currentLevel, slide);
-  if (ladder.expectedAnswerModel) return ladder.expectedAnswerModel;
-  
-  const slideModels = (Array.isArray(slide?.adaptive_models) ? slide.adaptive_models : slide?.target_language_options || slide?.model_examples || [])
-    .map((m: any) => cleanChildFacingText(m?.text || m || '')).filter(Boolean);
-  if (slideModels[0]) return slideModels[0];
-  if (slide?.simplified_text) return cleanChildFacingText(slide.simplified_text);
-  if (slide?.model_answer_target) return cleanChildFacingText(slide.model_answer_target);
-  return 'Давай попробуем вместе!';
+  return buildAdaptiveHintPair(currentQuestion, currentObject, currentLevel, slide, targetLang, nativeLang).hintTarget;
 }
 
 /** Never let a translated target duplicate masquerade as support language. */
@@ -1028,7 +1417,6 @@ export function updatePackedItems(current:string[],itemId:string,outcome:Suitcas
 export function suitcaseTapFallbackAvailable(failedDrags:number,threshold=3):boolean{return failedDrags>=threshold}
 
 export function initialBilingualHint(text:string,languageLevel='PRE_A1',difficulty=0.15,maxLength=120):string{
-  if(String(languageLevel||'').toUpperCase()!=='PRE_A1'&&Number(difficulty)>=.55)return '';
   const compact=String(text||'').replace(/\s+/g,' ').trim();if(!compact)return '';
   const sentences=compact.match(/[^.!?]+[.!?]?/g)?.map(value=>value.trim()).filter(Boolean).slice(0,2)||[compact];const complete=sentences.join(' ');
   if(complete.length<=maxLength)return complete;
