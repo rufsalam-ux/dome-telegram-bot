@@ -64,6 +64,12 @@ import {
   updatePackedItems,
   visualRequiredForSlide,
   voiceUploadFailureStage,
+  adaptiveQuestionForLevel,
+  buildAdaptiveHint,
+  buildNaturalReaction,
+  cleanChildFacingText,
+  sanitizeTutorReaction,
+  slideTargetObject,
   voiceUploadTransition,
   withLessonTimeout,
   formatChoiceReplica,
@@ -1197,3 +1203,71 @@ test('support language is distinct and never a duplicated target utterance',()=>
   assert.equal(distinctSupportSpeech('Слон.','Elephant. Say: «Слон.»','ru','en'),'Elephant. Say: «Слон.»');
   assert.equal(distinctSupportSpeech('Слон.','Слон.','ru','ru'),'');
 });
+
+test('slide 22/27 binds strictly to giraffe and never highlights elephant',()=>{
+  const slide45 = {
+    slide_id: 'slide_45',
+    correct_choice_id: 'giraffe',
+    riddle_options: [
+      { id: 'elephant', label: 'Слон', emoji: '🐘' },
+      { id: 'giraffe', label: 'Жираф', emoji: '🦒' },
+    ],
+  };
+  assert.equal(slideTargetObject(slide45), 'giraffe');
+
+  const items = [
+    { id: 'elephant', labelTarget: 'Слон', labelNative: 'Elephant' },
+    { id: 'giraffe', labelTarget: 'Жираф', labelNative: 'Giraffe' },
+  ];
+  const plan = adaptivePromptPlan(slide45, undefined, items, 'PRE_A1', 0.15, 'initial');
+  assert.deepEqual(plan.objectIds, ['giraffe']);
+  assert.ok(!plan.objectIds.includes('elephant'), 'elephant must NEVER be highlighted on giraffe riddle');
+});
+
+test('adaptive question ladder provides 5 distinct levels (0..4) without resetting to Level 0',()=>{
+  for (const obj of ['giraffe', 'polar_bear', 'parrot']) {
+    const questions = [0, 1, 2, 3, 4].map(lvl => adaptiveQuestionForLevel(obj, lvl));
+    assert.equal(questions.length, 5);
+    // Level 0 has repetition/model prompt
+    assert.match(questions[0].questionTarget, /Повтори/);
+    // Level 2 asks about quality / appearance
+    assert.match(questions[2].questionTarget, /Какой/);
+    // Level 3 asks about action
+    assert.match(questions[3].questionTarget, /Что делает/);
+    // All levels provide expected answer models
+    assert.ok(questions.every(q => q.expectedAnswerModel.length > 0));
+  }
+});
+
+test('natural reaction mirrors the child actual utterance without generic praise',()=>{
+  const bearReaction = buildNaturalReaction('Белый медведь', true, 0.95, 'polar_bear');
+  assert.match(bearReaction, /белый медведь/i);
+  assert.doesNotMatch(bearReaction, /интересный ответ/i);
+
+  const giraffeReaction = buildNaturalReaction('Жираф высокий', true, 0.92, 'giraffe');
+  assert.match(giraffeReaction, /жираф высокий/i);
+
+  const silenceReaction = buildNaturalReaction('', false, 0, 'giraffe');
+  assert.match(silenceReaction, /подскажу|попробуем/i);
+});
+
+test('cleanChildFacingText strips debug artifacts, prompt variables, and localized notes',()=>{
+  const raw = 'Current localized wording shown to the child: Кто это?\n{animal_name} [DEBUG: turn_2] Это жираф.';
+  const cleaned = cleanChildFacingText(raw);
+  assert.doesNotMatch(cleaned, /Current localized wording/);
+  assert.doesNotMatch(cleaned, /\{animal_name\}/);
+  assert.doesNotMatch(cleaned, /\[DEBUG/);
+  assert.match(cleaned, /Это жираф\./);
+});
+
+test('buildAdaptiveHint returns concise model answers in target language based on current question',()=>{
+  const giraffeHint = buildAdaptiveHint('Какой жираф?', 'giraffe', 2, { slide_id: 'slide_45' });
+  assert.equal(giraffeHint, 'Жираф высокий.');
+
+  const bearHint = buildAdaptiveHint('Что делает белый медведь?', 'polar_bear', 3, { slide_id: 'slide_46' });
+  assert.equal(bearHint, 'Медведь гуляет.');
+
+  const moodHint = buildAdaptiveHint('Расскажи, почему у тебя такое настроение?', 'mood', 1, { type: 'mood_choice' });
+  assert.equal(moodHint, 'У меня отличное настроение!');
+});
+

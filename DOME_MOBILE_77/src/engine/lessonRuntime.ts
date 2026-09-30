@@ -45,6 +45,50 @@ export type AdaptivePromptPlan={
   expectedResponseType:'word'|'short_phrase'|'sentence'|'open_answer';
 };
 
+export type AnswerEvaluation = 'CONFIDENT_CORRECT' | 'PARTIAL_CORRECT' | 'INCORRECT' | 'SILENCE' | 'EXCELLENT' | 'CORRECT' | 'PARTIAL' | 'RETRY' | 'NONE';
+
+export interface AdaptiveDialogueState {
+  slideId: string;
+  currentObject: string;
+  currentLevel: number; // 0..4
+  currentQuestion: string;
+  currentQuestionNative: string;
+  lastChildAnswer: string;
+  answerEvaluation: AnswerEvaluation;
+  nextQuestion: string;
+  currentHint: string;
+  explanationLanguage: string;
+  targetLanguage: string;
+  awaitingChildAnswer: boolean;
+}
+
+/**
+ * Remove all internal prompt variables, debug state, and system notes before
+ * rendering text to a child.
+ */
+export function cleanChildFacingText(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  let text = value.replace(/\r\n/g, '\n').trim();
+  text = text.replace(/Current localized wording shown to the child:.*$/gmi, '');
+  text = text.replace(/Current localized wording.*$/gmi, '');
+  text = text.replace(/\[(?:DEBUG|SYSTEM|TUTOR|PROMPT|INTERNAL|SESSION)[^\]]*\]/gi, '');
+  text = text.replace(/\{[a-zA-Z0-9_]+\}/g, '');
+  text = text.replace(/\n\s*\n+/g, '\n').replace(/[ \t]+/g, ' ').trim();
+  return text;
+}
+
+export function slideTargetObject(slide: any): string {
+  if (!slide) return '';
+  const explicit = slide.correct_choice_id || slide.target_object || slide.targetObject || slide.required_phrase_id || slide.animal_id;
+  if (explicit) return String(explicit).trim();
+  if (Array.isArray(slide.riddle_options) && slide.correct_choice_id) {
+    return String(slide.correct_choice_id).trim();
+  }
+  const vmLabel = slide?.visual_metadata?.label || slide?.image_label;
+  if (vmLabel) return String(vmLabel).trim();
+  return '';
+}
+
 /** Validate the server decision against objects rendered in this exact turn. */
 export function normalizeAdaptiveResponse(value:any,visibleIds:string[]):AdaptiveResponse{
   const visible=new Set((visibleIds||[]).map(String));
@@ -59,8 +103,8 @@ export function normalizeAdaptiveResponse(value:any,visibleIds:string[]):Adaptiv
   const difficulty=Math.max(0,Math.min(4,Number.isFinite(rawDifficulty)?Math.trunc(rawDifficulty):0)) as 0|1|2|3|4;
   const supportNeeded=value?.supportNeeded===true&&String(value?.spokenTextSupport||'').trim().length>0;
   return {
-    spokenTextTarget:String(value?.spokenTextTarget||'').trim(),
-    spokenTextSupport:supportNeeded?String(value?.spokenTextSupport||'').trim():'',
+    spokenTextTarget:cleanChildFacingText(value?.spokenTextTarget||''),
+    spokenTextSupport:supportNeeded?cleanChildFacingText(value?.spokenTextSupport||''):'',
     supportNeeded,
     difficultyUsed:difficulty,
     repairStep:Math.max(0,Math.min(5,Math.trunc(Number(value?.repairStep)||0))),
@@ -80,11 +124,14 @@ function adaptiveLevel(profile:AdaptiveSkillSnapshot|undefined,languageLevel='PR
 }
 
 function adaptiveText(value:any):string{
-  return String(value?.text??value??'').replace(/\s+/g,' ').trim();
+  return cleanChildFacingText(value?.text??value??'');
 }
 
 function uniqueAdaptiveModels(slide:any,items:VoiceRuntimeItem[]):string[]{
-  const firstLabel=adaptiveText(items[0]?.labelTarget);
+  const targetId = slideTargetObject(slide);
+  const matchedItem = targetId ? items.find(it => String(it.id).toLowerCase() === targetId.toLowerCase()) : undefined;
+  const primaryItem = matchedItem || items[0];
+  const firstLabel=adaptiveText(primaryItem?.labelTarget);
   const authoredModels=(Array.isArray(slide?.adaptive_models)?slide.adaptive_models:[]).map(adaptiveText);
   const regularModels=(slide?.target_language_options||slide?.model_examples||[]).map(adaptiveText);
   const candidates=[
@@ -124,15 +171,185 @@ export function adaptivePromptPlan(
   const comprehension=Number(profile?.comprehension);
   const supportNeeded=normalizeRuntimeLanguage(targetLanguage)!==normalizeRuntimeLanguage(supportLanguage)
     &&(level===0||(Number.isFinite(comprehension)&&comprehension<30&&Number(difficulty)<.38));
-  const objectIds=((phase==='hint'||level<=2)&&items[0]?.id)?[String(items[0].id)]:[];
+  const targetId = slideTargetObject(slide);
+  const matchedItem = targetId ? items.find(it => String(it.id).toLowerCase() === targetId.toLowerCase()) : undefined;
+  const primaryItem = matchedItem || items[0];
+  const objectIds=((phase==='hint'||level<=2)&&primaryItem?.id)?[String(primaryItem.id)]:[];
   const expectedResponseType=(['word','short_phrase','sentence','open_answer','open_answer'] as const)[level];
   return {text,sourceLanguage:normalizeRuntimeLanguage(sourceLanguage),difficulty:level,supportNeeded,objectIds,expectedResponseType};
+}
+
+export function buildNaturalReaction(
+  transcript: string,
+  accepted: boolean,
+  semanticMatch = 1,
+  currentObject = ''
+): string {
+  const clean = cleanChildFacingText(transcript).replace(/[.,!?;:]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!clean) {
+    return 'Хочешь, я подскажу? Попробуем вместе!';
+  }
+  if (!accepted) {
+    return 'Попробуем ещё раз!';
+  }
+  const lower = clean.toLowerCase();
+  if (lower.startsWith('это ')) {
+    return `Да! ${clean}!`;
+  }
+  if (semanticMatch >= 0.9) {
+    return `Да! Это ${clean}!`;
+  }
+  return `Отлично, ${clean}!`;
+}
+
+export function sanitizeTutorReaction(
+  backendReaction: string | undefined,
+  transcript: string,
+  accepted: boolean,
+  currentObject = ''
+): string {
+  const cleaned = cleanChildFacingText(backendReaction || '');
+  const isGeneric = !cleaned || /^(это интересный ответ|интересный ответ|хорошо|молодец|здорово|отлично)[.!]?$/i.test(cleaned);
+  if (isGeneric && transcript && accepted) {
+    return buildNaturalReaction(transcript, accepted, 1, currentObject);
+  }
+  return cleaned || (accepted ? (transcript ? `Да, ${cleanChildFacingText(transcript)}!` : 'Отлично!') : 'Попробуй ещё раз.');
+}
+
+export function adaptiveQuestionForLevel(
+  objectKey: string,
+  level: number,
+  slide?: any
+): { questionTarget: string; questionNative: string; expectedAnswerModel: string } {
+  const obj = (objectKey || slideTargetObject(slide) || '').toLowerCase();
+  const isGiraffe = obj === 'giraffe' || obj.includes('жираф');
+  const isBear = obj === 'polar_bear' || obj.includes('медвед');
+  const isParrot = obj === 'parrot' || obj.includes('попуга');
+
+  if (isGiraffe) {
+    switch (Math.max(0, Math.min(4, level))) {
+      case 0:
+        return { questionTarget: 'Это жираф. Повтори: жираф.', questionNative: 'This is a giraffe. Repeat: giraffe.', expectedAnswerModel: 'Жираф.' };
+      case 1:
+        return { questionTarget: 'Кто это?', questionNative: 'Who is this?', expectedAnswerModel: 'Это жираф.' };
+      case 2:
+        return { questionTarget: 'Какой жираф?', questionNative: 'What is the giraffe like?', expectedAnswerModel: 'Жираф высокий.' };
+      case 3:
+        return { questionTarget: 'Что делает жираф?', questionNative: 'What is the giraffe doing?', expectedAnswerModel: 'Жираф стоит.' };
+      case 4:
+      default:
+        return { questionTarget: 'Где живёт жираф?', questionNative: 'Where does the giraffe live?', expectedAnswerModel: 'Жираф живёт в Африке.' };
+    }
+  }
+
+  if (isBear) {
+    switch (Math.max(0, Math.min(4, level))) {
+      case 0:
+        return { questionTarget: 'Это белый медведь. Повтори: белый медведь.', questionNative: 'This is a polar bear. Repeat: polar bear.', expectedAnswerModel: 'Белый медведь.' };
+      case 1:
+        return { questionTarget: 'Кто это?', questionNative: 'Who is this?', expectedAnswerModel: 'Это белый медведь.' };
+      case 2:
+        return { questionTarget: 'Какой белый медведь?', questionNative: 'What is the white bear like?', expectedAnswerModel: 'Белый медведь большой.' };
+      case 3:
+        return { questionTarget: 'Что делает белый медведь?', questionNative: 'What is the white bear doing?', expectedAnswerModel: 'Медведь гуляет.' };
+      case 4:
+      default:
+        return { questionTarget: 'Где живёт белый медведь?', questionNative: 'Where does the white bear live?', expectedAnswerModel: 'Белый медведь живёт на севере.' };
+    }
+  }
+
+  if (isParrot) {
+    switch (Math.max(0, Math.min(4, level))) {
+      case 0:
+        return { questionTarget: 'Это попугай. Повтори: попугай.', questionNative: 'This is a parrot. Repeat: parrot.', expectedAnswerModel: 'Попугай.' };
+      case 1:
+        return { questionTarget: 'Кто это?', questionNative: 'Who is this?', expectedAnswerModel: 'Это попугай.' };
+      case 2:
+        return { questionTarget: 'Какой попугай?', questionNative: 'What is the parrot like?', expectedAnswerModel: 'Попугай красивый.' };
+      case 3:
+        return { questionTarget: 'Что делает попугай?', questionNative: 'What is the parrot doing?', expectedAnswerModel: 'Попугай летает.' };
+      case 4:
+      default:
+        return { questionTarget: 'Где живёт попугай?', questionNative: 'Where does the parrot live?', expectedAnswerModel: 'Попугай живёт в тёплом месте.' };
+    }
+  }
+
+  const label = slide?.visual_metadata?.label || slide?.image_label || 'объект';
+  switch (Math.max(0, Math.min(4, level))) {
+    case 0:
+      return { questionTarget: `Это ${label}. Повтори: ${label}.`, questionNative: `This is ${label}. Repeat: ${label}.`, expectedAnswerModel: `${label}.` };
+    case 1:
+      return { questionTarget: 'Кто это или что это?', questionNative: 'What or who is this?', expectedAnswerModel: `Это ${label}.` };
+    case 2:
+      return { questionTarget: `Какой ${label}?`, questionNative: `What is the ${label} like?`, expectedAnswerModel: `${label} красивый.` };
+    case 3:
+      return { questionTarget: `Что делает ${label}?`, questionNative: `What is the ${label} doing?`, expectedAnswerModel: `${label} стоит.` };
+    case 4:
+    default:
+      return { questionTarget: `Расскажи подробнее про ${label}.`, questionNative: `Tell more about the ${label}.`, expectedAnswerModel: `${label} большой и интересный.` };
+  }
+}
+
+export function buildAdaptiveHint(
+  currentQuestion: string,
+  currentObject: string,
+  currentLevel: number,
+  slide: any,
+  targetLang = 'ru',
+  nativeLang = 'ru'
+): string {
+  const q = cleanChildFacingText(currentQuestion).toLowerCase();
+  const obj = (currentObject || slideTargetObject(slide) || '').toLowerCase();
+  
+  if (slide?.type === 'mood_choice' || q.includes('настроени')) {
+    return 'У меня отличное настроение!';
+  }
+  
+  if (q.includes('какой') || q.includes('какая') || q.includes('какое') || q.includes('какие')) {
+    if (obj === 'giraffe' || q.includes('жираф')) return 'Жираф высокий.';
+    if (obj === 'polar_bear' || q.includes('медвед')) return 'Белый медведь большой.';
+    if (obj === 'parrot' || q.includes('попуга')) return 'Попугай красивый.';
+    if (obj) return `${obj} большой.`;
+    return 'Очень большой и красивый.';
+  }
+  
+  if (q.includes('что делает') || q.includes('что он делает') || q.includes('что она делает')) {
+    if (obj === 'giraffe' || q.includes('жираф')) return 'Жираф стоит.';
+    if (obj === 'polar_bear' || q.includes('медвед')) return 'Медведь гуляет.';
+    if (obj === 'parrot' || q.includes('попуга')) return 'Попугай летает.';
+    return 'Стоит и смотрит.';
+  }
+  
+  if (q.includes('где он') || q.includes('где живёт') || q.includes('где она')) {
+    if (obj === 'giraffe' || q.includes('жираф')) return 'Жираф живёт в Африке.';
+    if (obj === 'polar_bear' || q.includes('медвед')) return 'Белый медведь живёт на севере.';
+    if (obj === 'parrot' || q.includes('попуга')) return 'Попугай живёт в тёплом месте.';
+    return 'Живёт в тёплой стране.';
+  }
+  
+  if (q.includes('кто это') || q.includes('кто я')) {
+    if (obj === 'giraffe' || slide?.correct_choice_id === 'giraffe') return 'Это жираф.';
+    if (obj === 'polar_bear' || slide?.required_phrase_id === 'polar_bear') return 'Это белый медведь.';
+    if (obj === 'parrot' || slide?.required_phrase_id === 'parrot') return 'Это попугай.';
+    if (slide?.simplified_text) return cleanChildFacingText(slide.simplified_text);
+    return 'Это животное.';
+  }
+
+  const ladder = adaptiveQuestionForLevel(obj, currentLevel, slide);
+  if (ladder.expectedAnswerModel) return ladder.expectedAnswerModel;
+  
+  const slideModels = (Array.isArray(slide?.adaptive_models) ? slide.adaptive_models : slide?.target_language_options || slide?.model_examples || [])
+    .map((m: any) => cleanChildFacingText(m?.text || m || '')).filter(Boolean);
+  if (slideModels[0]) return slideModels[0];
+  if (slide?.simplified_text) return cleanChildFacingText(slide.simplified_text);
+  if (slide?.model_answer_target) return cleanChildFacingText(slide.model_answer_target);
+  return 'Давай попробуем вместе!';
 }
 
 /** Never let a translated target duplicate masquerade as support language. */
 export function distinctSupportSpeech(target:string,support:string,targetLanguage:string,supportLanguage:string):string{
   if(normalizeRuntimeLanguage(targetLanguage)===normalizeRuntimeLanguage(supportLanguage))return '';
-  const clean=(value:string)=>String(value||'').replace(/\s+/g,' ').trim();
+  const clean=(value:string)=>cleanChildFacingText(value).replace(/\s+/g,' ').trim();
   const targetText=clean(target);const supportText=clean(support);
   if(!supportText||supportText.localeCompare(targetText,undefined,{sensitivity:'base'})===0)return '';
   return supportText;
@@ -452,11 +669,14 @@ export function stageAfterTutorSpeech(slide:any,hasSelection=false):RuntimeStage
 }
 
 export function recordEnabled(stage:RuntimeStage,slide:any,hasSelection=false):boolean{
-  return stage==='WAITING_VOICE'&&requiresVoice(slide)&&(!requiresSelection(slide)||hasSelection);
+  const isRiddle=Array.isArray(slide?.riddle_options);
+  return stage==='WAITING_VOICE'&&requiresVoice(slide)&&(!requiresSelection(slide)||hasSelection||isRiddle);
 }
 
 export function answerEnabled(stage:RuntimeStage,slide:any,hasSelection=false,busy=false,recording=false):boolean{
-  if(busy||recording||!requiresVoice(slide)||requiresSelection(slide)&&!hasSelection)return false;
+  if(busy||recording||!requiresVoice(slide))return false;
+  const isRiddle=Array.isArray(slide?.riddle_options);
+  if(requiresSelection(slide)&&!hasSelection&&!isRiddle)return false;
   // FEEDBACK/RETRY/FOLLOW_UP are accepted as recoverable post-TTS states. This
   // prevents a stale non-playing stage from disabling Answer forever.
   // COMPLETE means the authored requirement is satisfied, not that the child
