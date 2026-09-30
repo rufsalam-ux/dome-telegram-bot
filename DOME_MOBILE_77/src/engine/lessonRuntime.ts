@@ -179,10 +179,11 @@ export function adaptivePromptPlan(
   supportLanguage='ru',
 ):AdaptivePromptPlan{
   const level=adaptiveLevel(profile,languageLevel,difficulty,phase==='hint'?hintDepth:0);
+  const hasAuthoredAdaptiveModels = Array.isArray(slide?.adaptive_models) && slide.adaptive_models.length > 0;
   const models=uniqueAdaptiveModels(slide,items);
   const authored=adaptiveText(slide?.task_goal||slide?.bot_says_target||slide?.question);
   const model=models[Math.min(level,Math.max(0,models.length-1))]||models[0]||authored;
-  const text=phase==='initial'&&level>=4&&authored?authored:model;
+  const text=(phase==='initial'&&!hasAuthoredAdaptiveModels&&authored)?authored:(phase==='initial'&&level>=4&&authored?authored:model);
   const comprehension=Number(profile?.comprehension);
   const supportNeeded=normalizeRuntimeLanguage(targetLanguage)!==normalizeRuntimeLanguage(supportLanguage)
     &&(level===0||(Number.isFinite(comprehension)&&comprehension<30&&Number(difficulty)<.38));
@@ -289,19 +290,54 @@ export function adaptiveQuestionForLevel(
     }
   }
 
-  const label = slide?.visual_metadata?.label || slide?.image_label || 'объект';
+  const rawLabel = slide?.visual_metadata?.label || slide?.image_label || '';
+  const cleanLabel = (rawLabel && !['объект', 'object', 'предмет', 'item', 'thing', 'undefined'].includes(rawLabel.toLowerCase())) ? rawLabel : '';
+  const slideQuestion = cleanChildFacingText(slide?.question || slide?.task_goal || slide?.bot_says_target || '');
+  const modelAnswer = cleanChildFacingText(slide?.simplified_text || (Array.isArray(slide?.model_examples) ? slide.model_examples[0] : '') || '');
+
+  if (cleanLabel) {
+    switch (Math.max(0, Math.min(4, level))) {
+      case 0:
+        return { questionTarget: `Это ${cleanLabel}. Повтори: ${cleanLabel}.`, questionNative: `This is ${cleanLabel}. Repeat: ${cleanLabel}.`, expectedAnswerModel: `${cleanLabel}.` };
+      case 1:
+        return { questionTarget: slideQuestion || 'Кто это или что это?', questionNative: 'What or who is this?', expectedAnswerModel: `Это ${cleanLabel}.` };
+      case 2:
+        return { questionTarget: `Какой ${cleanLabel}?`, questionNative: `What is the ${cleanLabel} like?`, expectedAnswerModel: `${cleanLabel} красивый.` };
+      case 3:
+        return { questionTarget: `Что делает ${cleanLabel}?`, questionNative: `What is the ${cleanLabel} doing?`, expectedAnswerModel: `${cleanLabel} стоит.` };
+      case 4:
+      default:
+        return { questionTarget: slideQuestion || `Расскажи подробнее про ${cleanLabel}.`, questionNative: `Tell more about the ${cleanLabel}.`, expectedAnswerModel: `${cleanLabel} большой и интересный.` };
+    }
+  }
+
   switch (Math.max(0, Math.min(4, level))) {
     case 0:
-      return { questionTarget: `Это ${label}. Повтори: ${label}.`, questionNative: `This is ${label}. Repeat: ${label}.`, expectedAnswerModel: `${label}.` };
+      return {
+        questionTarget: modelAnswer ? (modelAnswer.startsWith('Это ') || modelAnswer.startsWith('Я ') ? `Скажи: ${modelAnswer}` : `Повтори: ${modelAnswer}`) : (slideQuestion || 'Давай повторим вместе!'),
+        questionNative: 'Repeat the answer model.',
+        expectedAnswerModel: modelAnswer || 'Хорошо.'
+      };
     case 1:
-      return { questionTarget: 'Кто это или что это?', questionNative: 'What or who is this?', expectedAnswerModel: `Это ${label}.` };
+      return {
+        questionTarget: slideQuestion || 'Что ты думаешь?',
+        questionNative: 'What do you think?',
+        expectedAnswerModel: modelAnswer || 'Мне это нравится.'
+      };
     case 2:
-      return { questionTarget: `Какой ${label}?`, questionNative: `What is the ${label} like?`, expectedAnswerModel: `${label} красивый.` };
+      return {
+        questionTarget: slideQuestion || 'Расскажи подробнее.',
+        questionNative: 'Tell more details.',
+        expectedAnswerModel: modelAnswer || 'Это очень интересно.'
+      };
     case 3:
-      return { questionTarget: `Что делает ${label}?`, questionNative: `What is the ${label} doing?`, expectedAnswerModel: `${label} стоит.` };
     case 4:
     default:
-      return { questionTarget: `Расскажи подробнее про ${label}.`, questionNative: `Tell more about the ${label}.`, expectedAnswerModel: `${label} большой и интересный.` };
+      return {
+        questionTarget: slideQuestion || 'Расскажи подробнее, что ты думаешь.',
+        questionNative: 'Tell more about what you think.',
+        expectedAnswerModel: modelAnswer || 'Я думаю, это здорово.'
+      };
   }
 }
 
@@ -330,6 +366,46 @@ export function buildAdaptiveHintPair(
       case 4:
       default:
         return { hintTarget: 'Подсказка: отличное, весёлое или спокойное', hintNative: 'Clue: great, cheerful, or calm' };
+    }
+  }
+
+  // 1a. Greetings & feelings (e.g. slide_01)
+  if (q.includes('чувствуешь') || q.includes('поздоровайся') || q.includes('как дела') || q.includes('привет')) {
+    switch (lvl) {
+      case 0: return { hintTarget: 'Можно сказать: Привет! У меня всё хорошо.', hintNative: 'You can say: Hello! I am doing well.' };
+      case 1: return { hintTarget: 'Хорошо или отлично?', hintNative: 'Good or great?' };
+      case 2: return { hintTarget: 'Скажи: У меня всё...', hintNative: 'Say: I am doing...' };
+      default: return { hintTarget: 'Подсказка: отлично, хорошо, весело', hintNative: 'Clue: great, good, cheerful' };
+    }
+  }
+
+  // 1b. Name (e.g. slide_07)
+  if (q.includes('зовут') || q.includes('имя') || q.includes('как твоё имя')) {
+    switch (lvl) {
+      case 0: return { hintTarget: 'Можно сказать: Меня зовут...', hintNative: 'You can say: My name is...' };
+      case 1: return { hintTarget: 'Назови своё имя.', hintNative: 'Say your name.' };
+      case 2: return { hintTarget: 'Скажи: Меня зовут...', hintNative: 'Say: My name is...' };
+      default: return { hintTarget: 'Подсказка: скажи своё имя', hintNative: 'Clue: say your name' };
+    }
+  }
+
+  // 1c. Age and city (e.g. slide_08)
+  if (q.includes('лет') || q.includes('возраст') || q.includes('живёшь') || q.includes('город')) {
+    switch (lvl) {
+      case 0: return { hintTarget: 'Можно сказать: Мне шесть лет.', hintNative: 'You can say: I am six years old.' };
+      case 1: return { hintTarget: 'Сколько тебе лет или в каком городе живёшь?', hintNative: 'How old are you or which city do you live in?' };
+      case 2: return { hintTarget: 'Скажи: Мне...', hintNative: 'Say: I am...' };
+      default: return { hintTarget: 'Подсказка: назови свой возраст или город', hintNative: 'Clue: name your age or city' };
+    }
+  }
+
+  // 1d. Lyosha clothing (e.g. slide_19)
+  if (q.includes('лёш') || q.includes('одежд') || q.includes('жарко') || q.includes('куртк')) {
+    switch (lvl) {
+      case 0: return { hintTarget: 'Можно сказать: Почему ты тепло одет?', hintNative: 'You can say: Why are you dressed warmly?' };
+      case 1: return { hintTarget: 'Тебе не жарко или почему ты в куртке?', hintNative: "Aren't you hot or why are you wearing a jacket?" };
+      case 2: return { hintTarget: 'Скажи: Лёша, почему...', hintNative: 'Say: Lyosha, why...' };
+      default: return { hintTarget: 'Подсказка: спроси, почему Лёше не жарко в куртке', hintNative: 'Clue: ask why Lyosha is wearing a warm jacket' };
     }
   }
 
@@ -701,11 +777,23 @@ export function buildAdaptiveHintPair(
 
   // 6. Gift
   if (slide?.interaction_kind === 'gift_selector' || q.includes('подарок') || q.includes('мила')) {
+    const giftLabel = obj.includes('book') || obj.includes('книг') ? 'книгу' :
+                      obj.includes('flower') || obj.includes('букет') || obj.includes('цвет') ? 'букет' :
+                      obj.includes('backpack') || obj.includes('рюкзак') ? 'рюкзак' :
+                      obj.includes('teddy') || obj.includes('мишк') ? 'мишку' : '';
+    if (giftLabel) {
+      switch (lvl) {
+        case 0: return { hintTarget: `Можно сказать: Мила привезла мне ${giftLabel}.`, hintNative: `You can say: Mila brought me a ${obj}.` };
+        case 1: return { hintTarget: `Мила привезла ${giftLabel}?`, hintNative: `Did Mila bring a ${obj}?` };
+        case 2: return { hintTarget: `Скажи: Мила привезла мне ${giftLabel}.`, hintNative: `Say: Mila brought me a ${obj}.` };
+        default: return { hintTarget: `Подсказка: ${giftLabel}`, hintNative: `Clue: ${giftLabel}` };
+      }
+    }
     switch (lvl) {
       case 0: return { hintTarget: 'Можно сказать: Мила привезла мне подарок.', hintNative: 'You can say: Mila brought me a gift.' };
-      case 1: return { hintTarget: 'Сувенир или игрушку?', hintNative: 'A souvenir or a toy?' };
+      case 1: return { hintTarget: 'Мишку или книгу?', hintNative: 'A teddy bear or a book?' };
       case 2: return { hintTarget: 'Скажи: Мила привезла мне...', hintNative: 'Say: Mila brought me...' };
-      default: return { hintTarget: 'Подсказка: назови подарок от Милы', hintNative: 'Clue: name the gift from Mila' };
+      default: return { hintTarget: 'Подсказка: выбери подарок сверху и назови его', hintNative: 'Clue: choose a gift above and name it' };
     }
   }
 

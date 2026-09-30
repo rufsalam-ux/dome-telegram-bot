@@ -261,18 +261,6 @@ export function LessonPlayer({lessonId}:{lessonId:string}){
       }
     }catch(error:any){console.error('tutor preparation error',error);if(active)failTutorSpeech('TUTOR_PREPARATION_FAILED',error)}})();return()=>{active=false;speechTokenRef.current+=1}},[idx,session,targetLang,nativeLang,authoredLanguage]);
 
-  useEffect(()=>{
-    if(pendingPreSlide||videoPlaying||!slide||!session||standaloneVideo)return;
-    const turnKey=`${slide.slide_id}:${conversationTurn}:${choice||''}`;
-    if(spokenSlideTurnRef.current===turnKey)return;
-    if(targetText&&(stage==='ENTER'||stage==='WAITING_VOICE'||stage==='WAITING_ACTION'||stage==='COMPLETE')){
-      spokenSlideTurnRef.current=turnKey;
-      const turn=currentTurnRef.current;
-      const q=turn.currentQuestion||targetText;
-      const nat=nativeLang!==targetLang?(turn.currentQuestionNative||nativeText):'';
-      void speakTutor(q,nat,stageAfterTutorSpeech(slide,hasSelection),'curious');
-    }
-  },[pendingPreSlide,videoPlaying,slide?.slide_id,conversationTurn,choice,targetText,stage]);
 
   useEffect(()=>{if(!session||!slide?.slide_id||!voiceKey)return;let active=true;setPendingVoice(undefined);void pendingLocalVoiceRecording(session,String(slide.slide_id),voiceKey).then(value=>{if(!active||!value)return;voiceUploadStateRef.current='UPLOAD_FAILED';setPendingVoice(value);setFeedback('Запись сохранена на телефоне. Можно отправить снова или записать заново.');console.info('VOICE_PENDING_RESTORED',{recording_id:value.recordingId,session_id:value.sessionId,slide_id:value.slideId,phrase_id:value.phraseId,size:value.size,path:value.uri})}).catch(error=>console.warn('VOICE_PENDING_RESTORE_FAILED',{session_id:session,slide_id:slide.slide_id,phrase_id:voiceKey,error:String((error as any)?.message||error)}));return()=>{active=false}},[session,slide?.slide_id,voiceKey]);
   useEffect(()=>{if(!recording||stoppingRef.current||Date.now()-recordingStartedAtRef.current<450)return;const duration=recorderDurationForGate(recordingStartedAtRef.current,Date.now(),recorderState.durationMillis);const nextGate=recordingGate(recordingGateRef.current,duration,recorderState.metering,Date.now());recordingGateRef.current=nextGate;if(nextGate.stopReason)void stopRec(nextGate.stopReason)},[recording,recorderState.durationMillis,recorderState.metering,slide?.slide_id]);
@@ -366,7 +354,12 @@ export function LessonPlayer({lessonId}:{lessonId:string}){
 
   async function updateTemplateTask(result:TemplateTaskResult){const previous=templateResult;setTemplateResult(result);try{await persistInteraction({template_result:result,...result});if(result.completed){playExperience('TASK_COMPLETE');setFeedback('Готово! ✓');setRewardNonce(current=>current+1);setStage(requiresVoice(slide)?'WAITING_VOICE':'COMPLETE')}else setStage('WAITING_ACTION')}catch(error){console.error('template task persistence error',error);setTemplateResult(previous);setFeedback(childSafeRuntimeMessage('interaction'));setStage('WAITING_ACTION')}}
 
-  async function chooseArtwork(value:string){if(stage!=='WAITING_ACTION'||busy||interactionCommitRef.current)return;if(isSelector&&!cardSelectionAllowed(stage,choice))return;const slideId=String(slide.slide_id);const previousChoice=choice;interactionCommitRef.current=true;playClick();setFeedback('');try{
+  async function chooseArtwork(value:string){
+    if(busy||interactionCommitRef.current)return;
+    if(stage==='AI_SPEAKING')cancelTutorSpeech('WAITING_ACTION');
+    else if(stage!=='WAITING_ACTION'&&stage!=='WAITING_VOICE'&&stage!=='ENTER')return;
+    if(isSelector&&!cardSelectionAllowed(stage==='AI_SPEAKING'?'WAITING_ACTION':stage,choice))return;
+    const slideId=String(slide.slide_id);const previousChoice=choice;interactionCommitRef.current=true;playClick();setFeedback('');try{
     if(isAnimalPair&&value!==String(activeAnimalQuestion?.correct_id)){setFeedback('Посмотри ещё раз и выбери животное из вопроса.');await speakTutor(targetText,nativeLang!==targetLang?nativeText:'','WAITING_ACTION','encouraging');return}
     setBusy(true);setStage('PROCESSING');
     if(isSelector){const questions=cardQuestions(slide,value);const first=questions[0];if(!first)throw new Error('У выбранной карточки нет вопросов');const source=adaptiveCardQuestionText(first,languageLevel,workingDifficulty);setChoice(value);setCardQuestionIndex(0);await persistInteraction({selected_card_id:value,card_question_index:0,completed:false,question_ids:questions.map(item=>item.id)});if(activeSlideIdRef.current!==slideId)return;const[translated,nativeHint]=await Promise.all([translateSafely(source,targetLang,authoredLanguage),translateSafely(source,nativeLang,authoredLanguage)]);if(activeSlideIdRef.current!==slideId)return;const finalTarget=translated||source;const finalNative=nativeHint||source;setTargetText(finalTarget);setTaskGoal(finalTarget);setNativeText(finalNative);setFeedback(`Карточка ${value} выбрана.`);setRewardNonce(current=>current+1);updateConversationTurn({currentSlideId:slideId,currentConversationTurnId:0,currentQuestion:finalTarget,currentQuestionNative:finalNative,currentTargetObject:value,currentIntent:'card_question',currentExpectedAnswerType:'sentence'});spokenSlideTurnRef.current=`${slideId}:0:${value}`;await speakTutor(finalTarget,nativeLang!==targetLang?finalNative:'','WAITING_VOICE','curious');return}
@@ -759,7 +752,48 @@ export function LessonPlayer({lessonId}:{lessonId:string}){
     await speakTutor(reactionSpeech,nativeLang!==targetLang?reactionNative:'','COMPLETE',String(turn.emotion||'happy'));
   }catch(error:any){console.error('stopRec error',error);setRecording(false);if(localRecording&&!serverAcknowledged){voiceUploadStateRef.current=voiceUploadTransition(voiceUploadStateRef.current,'FAIL');setPendingVoice(localRecording);const mustUpload=requiredForMovie&&!recordedPhrases.includes(baseVoiceKey);console.error('VOICE_UPLOAD_FAILED',{recording_id:localRecording.recordingId,session_id:localRecording.sessionId,slide_id:localRecording.slideId,phrase_id:localRecording.phraseId,size:localRecording.size,path:localRecording.uri,mime_type:localRecording.mimeType,status:Number(error?.status||0),code:String(error?.code||error?.name||'VOICE_UPLOAD_FAILED'),message:String(error?.message||error)});if(activeSlideIdRef.current===slideId){setFeedback(intent==='retake'?'Новая запись сохранена на телефоне. Предыдущая запись не изменилась — можно отправить снова.':mustUpload?'Запись сохранена на телефоне. Можно отправить снова или записать заново.':'Запись сохранена на телефоне. Можно отправить снова, записать заново или продолжить.');setStage(intent==='retake'?'COMPLETE':voiceUploadFailureStage(mustUpload))}}else if(activeSlideIdRef.current===slideId){console.error('VOICE_LOCAL_FINALIZE_FAILED',{session_id:session,slide_id:slideId,phrase_id:voiceKey,status:Number(error?.status||0),code:String(error?.code||error?.name||'VOICE_LOCAL_FINALIZE_FAILED'),message:String(error?.message||error)});setFeedback('Не удалось сохранить запись на телефоне. Попробуй записать ещё раз.');setStage(intent==='retake'?recordingReturnStageRef.current:recoveryStageAfterFailure(slide,hasSelection))}}finally{try{await activateLessonPlayback('recording_cleanup')}catch{}recordingIntentRef.current='answer';recordingStartedAtRef.current=0;setExperienceAudioSuppressed('lesson-primary-audio',false);stoppingRef.current=false;setBusy(false)}}
 
-  const enterSlide=async(nextIndex:number)=>{const nextStepId=String(runtimeOrder[nextIndex]?.slide_id||'');activeSlideIdRef.current=nextStepId;try{if(session)await withLessonTimeout(saveSessionProgress(session,nextStepId,lessonVersion,nextIndex),'save lesson progress');setIdx(nextIndex)}catch(error:any){console.error('lesson progress error',error);if(error?.code==='LESSON_VERSION_CHANGED'){Alert.alert('Урок обновился','Открой урок заново, чтобы продолжить по актуальной последовательности.');store.setScreen('home')}else{setIdx(nextIndex);if(error?.status!==404)setFeedback(childSafeRuntimeMessage('progress'))}}finally{setBusy(false)}};
+  const enterSlide=async(nextIndex:number)=>{
+    const nextStepId=String(runtimeOrder[nextIndex]?.slide_id||'');
+    activeSlideIdRef.current=nextStepId;
+    cancelTutorSpeech('ENTER');
+    speechTokenRef.current+=1;
+    spokenSlideTurnRef.current='';
+    setChoice('');
+    setCardQuestionIndex(0);
+    setAnimalQuestionIndex(0);
+    setConversationTurn(0);
+    setRetryAttempt(0);
+    setPacked([]);
+    setRemovedItems([]);
+    setTemplateResult(undefined);
+    setRiddleRevealed(false);
+    setTargetText('');
+    setTaskGoal('');
+    setNativeText('');
+    setHintText('');
+    setHintUseCount(0);
+    setShowHint(false);
+    setFeedback('');
+    setTutorVoiceError('');
+    setAdaptiveHighlightedIds([]);
+    setPendingVoice(undefined);
+    setStage('ENTER');
+    try{
+      if(session)await withLessonTimeout(saveSessionProgress(session,nextStepId,lessonVersion,nextIndex),'save lesson progress');
+      setIdx(nextIndex);
+    }catch(error:any){
+      console.error('lesson progress error',error);
+      if(error?.code==='LESSON_VERSION_CHANGED'){
+        Alert.alert('Урок обновился','Открой урок заново, чтобы продолжить по актуальной последовательности.');
+        store.setScreen('home');
+      }else{
+        setIdx(nextIndex);
+        if(error?.status!==404)setFeedback(childSafeRuntimeMessage('progress'));
+      }
+    }finally{
+      setBusy(false);
+    }
+  };
   const finishPreSlide=async(outcome:'ended'|'skipped'|'failed')=>{const pending=pendingPreSlide;if(!pending)return;const nextState=markPreSlideVideoShown(preSlideVideoState,pending.key);setPreSlideVideoState(nextState);setBusy(true);try{if(session)await withLessonTimeout(sendInteractive(session,String(runtimeOrder[pending.nextIndex]?.slide_id||''),'pre_slide_video',{video_key:pending.key,outcome,completed:true}),'save pre-slide video')}catch(error){console.warn('pre-slide video state save failed',error)}finally{setPendingPreSlide(null);await enterSlide(pending.nextIndex)}};
   const requestCompletion=async()=>{if(!session||completionLockRef.current||completionPhase==='COMPLETED')return;completionLockRef.current=true;setCompletionPhase('COMPLETING');setBusy(true);try{
     const result=completedMoviePayload(await withLessonTimeout(completeSession(session),'complete lesson'),session);

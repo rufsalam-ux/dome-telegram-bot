@@ -66,6 +66,7 @@ import {
   voiceUploadFailureStage,
   adaptiveQuestionForLevel,
   buildAdaptiveHint,
+  buildAdaptiveHintPair,
   buildNaturalReaction,
   cleanChildFacingText,
   sanitizeTutorReaction,
@@ -1288,4 +1289,48 @@ test('buildAdaptiveHint returns concise model answers in target language based o
   const moodHint = buildAdaptiveHint('Расскажи, почему у тебя такое настроение?', 'mood', 0, { type: 'mood_choice' });
   assert.equal(moodHint, 'Можно сказать: У меня отличное настроение!');
 });
+
+test('regression: no slide ladder or hint outputs technical placeholder «объект»', () => {
+  const genericSlides = [
+    { slide_id: 'slide_04', question: 'Мы уважаем друг друга' },
+    { slide_id: 'slide_06', bot_says_target: 'И главное — мы отдыхаем и веселимся!' },
+    { slide_id: 'slide_07', question: 'Как тебя зовут?' },
+    { slide_id: 'slide_08', question: 'Сколько тебе лет?' },
+    { slide_id: 'slide_19', question: 'Почему ты в куртке?' },
+    { slide_id: 'slide_20', question: 'Что Мила привезла тебе?' },
+    {},
+    null,
+    undefined,
+  ];
+
+  for (const slide of genericSlides) {
+    for (let lvl = 0; lvl <= 4; lvl++) {
+      const q = adaptiveQuestionForLevel('', lvl, slide);
+      assert.doesNotMatch(q.questionTarget, /объект|object|предмет/i);
+      assert.doesNotMatch(q.questionNative, /object/i);
+      assert.doesNotMatch(q.expectedAnswerModel, /объект|object|предмет/i);
+
+      const hint = buildAdaptiveHintPair(q.questionTarget, '', lvl, slide);
+      assert.doesNotMatch(hint.hintTarget, /объект|object|предмет/i);
+      assert.doesNotMatch(hint.hintNative, /object/i);
+    }
+  }
+
+  // Mila gift selector hint never asks "Сувенир или игрушку?"
+  const milaHintL1 = buildAdaptiveHint('Что Мила привезла тебе?', 'book', 1, { interaction_kind: 'gift_selector' });
+  assert.doesNotMatch(milaHintL1, /сувенир/i);
+  assert.match(milaHintL1, /книгу/i);
+
+  // Authored prompt is preserved on slide_20
+  const slide20 = (botLesson.slides as any[]).find((s: any) => s.slide_id === 'slide_20');
+  assert.ok(slide20);
+  const items = [
+    { id: 'teddy', labelTarget: 'Teddy bear', labelNative: 'Мишка' },
+    { id: 'book', labelTarget: 'Book', labelNative: 'Книга' },
+  ];
+  const plan = adaptivePromptPlan(slide20, undefined, items, 'PRE_A1', 0.15, 'initial');
+  assert.match(plan.text, /Мила привезла тебе подарок/);
+  assert.doesNotMatch(plan.text, /Teddy bear/i);
+});
+
 

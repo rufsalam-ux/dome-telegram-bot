@@ -55,7 +55,7 @@ jobs:
         working-directory: DOME_MOBILE_77/android
         env:
           EXPO_PUBLIC_DOME_API_BASE_URL: https://dome-telegram-bot-production-e6f6.up.railway.app
-          EXPO_PUBLIC_BUILD_COMMIT: DOME-APK-30203-adaptive-dialogue-bilingual-speech-20260930
+          EXPO_PUBLIC_BUILD_COMMIT: DOME-APK-30204-state-sync-placeholder-fix-20260930
           EXPO_PUBLIC_BUILD_TIMESTAMP: ${{ github.run_id }}
           GRADLE_OPTS: "-Xmx6g -XX:MaxMetaspaceSize=512m -Dfile.encoding=UTF-8"
         run: |
@@ -68,36 +68,37 @@ jobs:
           APK_SRC=$(find DOME_MOBILE_77/android/app/build/outputs/apk/release -name "*.apk" | head -1)
           echo "Found APK at: $APK_SRC"
           ls -lh "$APK_SRC"
-          cp "$APK_SRC" DOME-v3.2.3-release.apk
-          ls -lh DOME-v3.2.3-release.apk
-          SHA256=$(sha256sum DOME-v3.2.3-release.apk | awk '{print $1}')
+          cp "$APK_SRC" DOME-v3.2.4-release.apk
+          ls -lh DOME-v3.2.4-release.apk
+          SHA256=$(sha256sum DOME-v3.2.4-release.apk | awk '{print $1}')
           echo "sha256=$SHA256" >> $GITHUB_OUTPUT
 
       - name: Create GitHub Release with direct APK download link
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v3.2.3-apk-${{ github.run_number }}
-          name: "DOME v3.2.3 Release APK (Build ${{ github.run_number }})"
+          tag_name: v3.2.4-apk-${{ github.run_number }}
+          name: "DOME v3.2.4 Release APK (Build ${{ github.run_number }})"
           body: |
-            ## DOME Mobile v3.2.3 (versionCode 30203)
+            ## DOME Mobile v3.2.4 (versionCode 30204)
 
             ### Direct APK Download:
-            [Download DOME-v3.2.3-release.apk](https://github.com/rufsalam-ux/dome-telegram-bot/releases/download/v3.2.3-apk-${{ github.run_number }}/DOME-v3.2.3-release.apk)
+            [Download DOME-v3.2.4-release.apk](https://github.com/rufsalam-ux/dome-telegram-bot/releases/download/v3.2.4-apk-${{ github.run_number }}/DOME-v3.2.4-release.apk)
 
             - **SHA-256:** `${{ steps.prep_apk.outputs.sha256 }}`
-            - **Исправления:**
-              - Баг 1 (Молчание при открытии слайдов): единый источник состояния текущего хода (CurrentConversationTurn) и надёжный триггер озвучки при готовности слайда без блокировок
-              - Баг 2 (Потеря языка объяснений): гарантированная двуязычная последовательная озвучка (целевой язык -> язык объяснений) для реплик ведущего, уточняющих вопросов, реакций и кнопки «Слушать ещё»
-              - Баг 3 (Подсказка откатывается на первый вопрос): адаптивная подсказка строго привязана к текущему активному вопросу и текущему уровню сложности (0..4) без возврата к стартовому выбору карточки
-              - Единый контракт хода диалога (currentConversationTurn) синхронизирован по всем типам разговорных заданий
+            - **Исправления синхронизации состояния и диалогов AI:**
+              - **Устранение рассинхронизации слайдов:** ликвидирована гонка (duplicate useEffect), озвучивавшая реплику предыдущего слайда до завершения перевода текущего.
+              - **Атомарный сброс состояния:** переход на новый слайд в enterSlide мгновенно очищает выбор, подсказки, целевой текст и маркеры реплик, предотвращая утечку данных между слайдами.
+              - **Полная ликвидация слова-заглушки «объект»:** ladder-генератор вопросов и подсказок adaptiveQuestionForLevel теперь опирается на реальные вопросы и авторские цели слайда, исключая технические плейсхолдеры («скажи объект», «это объект»).
+              - **Устранение дедлока на слайде 11/27 (подарки Милы):** разблокирован выбор подарка при любых фазах речи AI, подсказка предлагает реальные предметы (мишка, книга, букет, рюкзак) вместо «сувенир или игрушка», кнопка «Дальше» открывается штатно после ответа.
+              - **Сохранение авторских формулировок:** adaptivePromptPlan на слайдах без специализированных многоуровневых моделей строго сохраняет авторский вопрос/задание.
             - **Built on:** Ubuntu Linux (Signed Release)
-          files: DOME-v3.2.3-release.apk
+          files: DOME-v3.2.4-release.apk
           draft: false
           prerelease: false
 
       - name: Upload APK artifact backup
         uses: actions/upload-artifact@v4
         with:
-          name: DOME-v3.2.3-release-apk
-          path: DOME-v3.2.3-release.apk
+          name: DOME-v3.2.4-release-apk
+          path: DOME-v3.2.4-release.apk
           retention-days: 30
