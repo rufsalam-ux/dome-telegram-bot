@@ -55,7 +55,7 @@ jobs:
         working-directory: DOME_MOBILE_77/android
         env:
           EXPO_PUBLIC_DOME_API_BASE_URL: https://dome-telegram-bot-production-e6f6.up.railway.app
-          EXPO_PUBLIC_BUILD_COMMIT: DOME-APK-30204-state-sync-placeholder-fix-20260930
+          EXPO_PUBLIC_BUILD_COMMIT: DOME-APK-30206-ai-loop-playback-movie-fix
           EXPO_PUBLIC_BUILD_TIMESTAMP: ${{ github.run_id }}
           GRADLE_OPTS: "-Xmx6g -XX:MaxMetaspaceSize=512m -Dfile.encoding=UTF-8"
         run: |
@@ -68,31 +68,32 @@ jobs:
           APK_SRC=$(find DOME_MOBILE_77/android/app/build/outputs/apk/release -name "*.apk" | head -1)
           echo "Found APK at: $APK_SRC"
           ls -lh "$APK_SRC"
-          cp "$APK_SRC" DOME-v3.2.4-release.apk
-          ls -lh DOME-v3.2.4-release.apk
-          SHA256=$(sha256sum DOME-v3.2.4-release.apk | awk '{print $1}')
+          cp "$APK_SRC" DOME-v3.2.6-release.apk
+          ls -lh DOME-v3.2.6-release.apk
+          SHA256=$(sha256sum DOME-v3.2.6-release.apk | awk '{print $1}')
           echo "sha256=$SHA256" >> $GITHUB_OUTPUT
 
       - name: Create GitHub Release with direct APK download link
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v3.2.4-apk-${{ github.run_number }}
-          name: "DOME v3.2.4 Release APK (Build ${{ github.run_number }})"
+          tag_name: v3.2.6-apk-${{ github.run_number }}
+          name: "DOME v3.2.6 Release APK (Build ${{ github.run_number }})"
           body: |
-            ## DOME Mobile v3.2.4 (versionCode 30204)
+            ## DOME Mobile v3.2.6 (versionCode 30206)
 
             ### Direct APK Download:
-            [Download DOME-v3.2.4-release.apk](https://github.com/rufsalam-ux/dome-telegram-bot/releases/download/v3.2.4-apk-${{ github.run_number }}/DOME-v3.2.4-release.apk)
+            [Download DOME-v3.2.6-release.apk](https://github.com/rufsalam-ux/dome-telegram-bot/releases/download/v3.2.6-apk-${{ github.run_number }}/DOME-v3.2.6-release.apk)
 
             - **SHA-256:** `${{ steps.prep_apk.outputs.sha256 }}`
-            - **Исправления синхронизации состояния и диалогов AI:**
-              - **Устранение рассинхронизации слайдов:** ликвидирована гонка (duplicate useEffect), озвучивавшая реплику предыдущего слайда до завершения перевода текущего.
-              - **Атомарный сброс состояния:** переход на новый слайд в enterSlide мгновенно очищает выбор, подсказки, целевой текст и маркеры реплик, предотвращая утечку данных между слайдами.
-              - **Полная ликвидация слова-заглушки «объект»:** ladder-генератор вопросов и подсказок adaptiveQuestionForLevel теперь опирается на реальные вопросы и авторские цели слайда, исключая технические плейсхолдеры («скажи объект», «это объект»).
-              - **Устранение дедлока на слайде 11/27 (подарки Милы):** разблокирован выбор подарка при любых фазах речи AI, подсказка предлагает реальные предметы (мишка, книга, букет, рюкзак) вместо «сувенир или игрушка», кнопка «Дальше» открывается штатно после ответа.
-              - **Сохранение авторских формулировок:** adaptivePromptPlan на слайдах без специализированных многоуровневых моделей строго сохраняет авторский вопрос/задание.
+            - **Исправления (v3.2.6):**
+              - **Устранено зацикливание AI (Баг 1):** Исключены слайды сравнения животных из общей ветки FOLLOW_UP; добавлен originalQuestion guard против повтора уже отвеченного вопроса.
+              - **Восстановлено воспроизведение «Прослушать» (Баг 2):** Ссылки на удалённые локальные файлы своевременно очищаются, плеер воспроизводит дубли через актуальный API-эндпоинт с мгновенной обработкой ошибок.
+              - **Исправлено зависание сборки мультфильма на 2% (Баг 3):** Сессии без запущенных задач получают честный статус NOT_STARTED с автоматическим авто-перезапуском сборки.
+              - **Исправлен винительный падеж реплик AI (Баг 2 из v3.2.5):** Добавлен словарь русских именительных падежей («Да, это лев!» вместо «Да, это льва!»).
+              - **Исправлены подсказки на слайдах животных (Баг 1 из v3.2.5):** Задаются конкретные вопросы («Кто из них любит холод?», «Кто из них сильнее?») вместо generic-реплик.
+              - **Корректное поведение загадки с жирафом (слайд 22/27):** Картинка жирафа остаётся скрытой до угадывания, а после разгадки открывается и озвучивается.
             - **Built on:** Ubuntu Linux (Signed Release)
-          files: DOME-v3.2.4-release.apk
+          files: DOME-v3.2.6-release.apk
           draft: false
           prerelease: false
 
