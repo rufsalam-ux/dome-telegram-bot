@@ -2265,7 +2265,15 @@ async def movie_status(request:web.Request)->web.Response:
             except Exception as exc:
                 log.warning('MOVIE_STATUS_AUTO_RECOVER_FAILED session_id=%s error=%s',sid,exc)
         log.info('MOVIE_STATUS_RESPONSE session_id=%s run_id=None attempt_id=None job_id=None movie_url=None status=NOT_CREATED',sid)
-        return web.json_response({'session_id':sid,'run_id':None,'run_number':None,'status':'QUEUED','stage':'VALIDATING_RECORDINGS','progress':2,'url':None,'movie_url':None})
+        # BUG3 FIX: if the session was never completed (no LessonMovie row) and
+        # the auto-recover path above could not help, return NOT_STARTED so the
+        # client does not display a permanently stuck "2% Validating recordings…".
+        # status='QUEUED'/progress=2 was misleading: it looked like an in-flight
+        # job that would make progress, but there was no worker behind it.
+        not_yet_complete=not sess or sess.status!='COMPLETED'
+        return web.json_response({'session_id':sid,'run_id':None,'run_number':None,
+            'status':'NOT_STARTED' if not_yet_complete else 'QUEUED',
+            'stage':'VALIDATING_RECORDINGS','progress':2,'url':None,'movie_url':None})
     url=None;path=Path(movie.output_path) if movie.output_path else None
     if movie.status in MOVIE_SUCCESS_STATES and path and path.exists():
         url=_movie_public_url(c.id,path,_base(request))
