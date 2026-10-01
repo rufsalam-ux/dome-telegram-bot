@@ -212,8 +212,9 @@ export function buildNaturalReaction(
   if (lower.startsWith('это ')) {
     return `Да! ${clean}!`;
   }
+  const nom = russianNominative(clean);
   if (semanticMatch >= 0.9) {
-    return `Да! Это ${clean}!`;
+    return `Да, это ${nom}!`;
   }
   return `Отлично, ${clean}!`;
 }
@@ -229,7 +230,7 @@ export function sanitizeTutorReaction(
   if (isGeneric && transcript && accepted) {
     return buildNaturalReaction(transcript, accepted, 1, currentObject);
   }
-  return cleaned || (accepted ? (transcript ? `Да, ${cleanChildFacingText(transcript)}!` : 'Отлично!') : 'Попробуй ещё раз.');
+  return cleaned || (accepted ? (transcript ? `Да, это ${russianNominative(cleanChildFacingText(transcript))}!` : 'Отлично!') : 'Попробуй ещё раз.');
 }
 
 export function adaptiveQuestionForLevel(
@@ -1012,6 +1013,63 @@ export const KNOWN_ITEM_ACCUSATIVE_BY_ID:Record<string,string>={
   'book':'книгу',
 };
 
+export const KNOWN_RUSSIAN_NOMINATIVES:Record<string,string>={
+  'мишку':'мишка',
+  'куртку':'куртка',
+  'бутылку воды':'бутылка воды',
+  'бутылку':'бутылка',
+  'камеру':'камера',
+  'книгу':'книга',
+  'рыбу':'рыба',
+  'машину':'машина',
+  'шляпу':'шляпа',
+  'шапку':'шапка',
+  'кепку':'кепка',
+  'воду':'вода',
+  'кошку':'кошка',
+  'собаку':'собака',
+  'черепаху':'черепаха',
+  'птицу':'птица',
+  'медведя':'медведь',
+  'белого медведя':'белый медведь',
+  'кота':'кот',
+  'слона':'слон',
+  'жирафа':'жираф',
+  'пингвина':'пингвин',
+  'зебру':'зебра',
+  'попугая':'попугай',
+  'льва':'лев',
+};
+
+for(const [nom,acc] of Object.entries(KNOWN_RUSSIAN_ACCUSATIVES)){
+  if(!KNOWN_RUSSIAN_NOMINATIVES[acc]){
+    KNOWN_RUSSIAN_NOMINATIVES[acc]=nom;
+  }
+}
+
+export function russianNominative(value:string):string{
+  const text=String(value||'').trim();
+  if(!text)return text;
+  const lower=text.toLowerCase();
+  const res=KNOWN_RUSSIAN_NOMINATIVES[lower];
+  if(res){
+    const firstChar=text.charAt(0);
+    return firstChar===firstChar.toUpperCase()?res.charAt(0).toUpperCase()+res.slice(1):res;
+  }
+  const words=text.split(/\s+/);
+  if(words.length>1){
+    const converted=words.map(w=>russianNominative(w));
+    return converted.join(' ');
+  }
+  if(lower.endsWith('у')&&lower.length>2){
+    return text.slice(0,-1)+(text[text.length-1]==='У'?'А':'а');
+  }
+  if(lower.endsWith('ю')&&lower.length>2){
+    return text.slice(0,-1)+(text[text.length-1]==='Ю'?'Я':'я');
+  }
+  return text;
+}
+
 export function russianAccusative(value:string,animate=false):string{
   const text=String(value||'').trim();
   if(!text)return '';
@@ -1134,9 +1192,11 @@ export function formatChoiceReplica(
 
 export function childIdeaPrompt(itemLabel:string,taskType:string,gender='boy'):string{
   const label=String(itemLabel||'').trim();
-  if(String(taskType)==='animal_compare')return label?`Что ты хочешь сказать про ${label}?`:'Что ты хочешь сказать про это животное?';
+  // Use accusative form for "про X" constructions (e.g. "лев" → "льва", "жираф" → "жирафа")
+  const labelAcc=KNOWN_RUSSIAN_ACCUSATIVES[label.toLowerCase()]||label;
+  if(String(taskType)==='animal_compare')return label?`Что ты хочешь сказать про ${labelAcc}?`:'Что ты хочешь сказать про это животное?';
   if(String(taskType)==='suitcase')return label?formatChoiceReplica(label,gender,'ru','chose','.'):'Что ты хочешь сказать про свой выбор?';
-  return label?`Что ты хочешь сказать про ${label}?`:'Что ты хочешь сказать?';
+  return label?`Что ты хочешь сказать про ${labelAcc}?`:'Что ты хочешь сказать?';
 }
 
 export function stageAfterTutorSpeech(slide:any,hasSelection=false):RuntimeStage{

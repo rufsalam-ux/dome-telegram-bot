@@ -2,7 +2,7 @@
   "lesson_id": "demo_001",
   "title": "Путешествие: Мадагаскар и Исландия",
   "target_language": "ru",
-  "max_voice_seconds": 5.0,
+  "max_voice_seconds": 5,
   "revision": 58,
   "default_hero_placement": "right",
   "hero_layout": {
@@ -92,7 +92,7 @@
       "simplified_text": "Привет! У меня всё хорошо.",
       "diagnostic": true,
       "adaptive": true,
-      "max_voice_seconds": 60.0,
+      "max_voice_seconds": 60,
       "allow_help": true,
       "allow_skip": true,
       "expects_answer": true,
@@ -724,7 +724,7 @@
       "suppress_ai_followup": true,
       "simplified_text": "Мила привезла мне книгу.",
       "allow_ai_followup": false,
-      "max_voice_seconds": 5.0,
+      "max_voice_seconds": 5,
       "pre_slide_video": {
         "uri": "video_03_mila.mov",
         "enabled": true,
@@ -987,8 +987,19 @@
       "image": "lesson-images/slide-47-clean.png",
       "bot_says_target": "Скажи короткую фразу про зебру.",
       "bot_explains_native": "Например: У зебры чёрно-белые полоски.",
-      "visible_objects": [{"id": "zebra", "label_ru": "Зебра"}],
-      "adaptive_models": ["Зебра.", "Это зебра.", "Зебра полосатая.", "У зебры чёрно-белые полоски.", "Как ты думаешь, где живёт эта зебра?"],
+      "visible_objects": [
+        {
+          "id": "zebra",
+          "label_ru": "Зебра"
+        }
+      ],
+      "adaptive_models": [
+        "Зебра.",
+        "Это зебра.",
+        "Зебра полосатая.",
+        "У зебры чёрно-белые полоски.",
+        "Как ты думаешь, где живёт эта зебра?"
+      ],
       "adaptive_support_prefix": "Скажи:",
       "question": "Что ты скажешь про зебру?",
       "answer_mode": "required_voice",
@@ -1002,7 +1013,7 @@
       "expects_answer": true,
       "allow_ai_followup": false,
       "suppress_ai_followup": true,
-      "max_voice_seconds": 5.0,
+      "max_voice_seconds": 5,
       "must_wait_for_answer": true,
       "pre_slide_video": {
         "uri": "video_10_zebra.mov",
@@ -1019,8 +1030,19 @@
       "image": "lesson-images/slide-50-clean.png",
       "bot_says_target": "Посмотри на слона. Скажи короткую фразу про слона.",
       "bot_explains_native": "Например: Слон большой. Или: У слона длинный хобот.",
-      "visible_objects": [{"id": "elephant", "label_ru": "Слон"}],
-      "adaptive_models": ["Слон.", "Это слон.", "Это большой слон.", "Большой слон идёт.", "Что ты можешь сказать про слона?"],
+      "visible_objects": [
+        {
+          "id": "elephant",
+          "label_ru": "Слон"
+        }
+      ],
+      "adaptive_models": [
+        "Слон.",
+        "Это слон.",
+        "Это большой слон.",
+        "Большой слон идёт.",
+        "Что ты можешь сказать про слона?"
+      ],
       "adaptive_support_prefix": "Скажи:",
       "question": "Что ты скажешь про слона?",
       "answer_mode": "required_voice",
@@ -1042,9 +1064,9 @@
       "order": 46,
       "type": "animal_compare",
       "image": "lesson-images/animal-pair-penguin-parrot.png",
-      "bot_says_target": "Посмотри на две картинки и выбери животное, которое подходит к вопросу.",
-      "bot_explains_native": "Сначала выбери животное. Потом скажешь одну короткую фразу именно про него.",
-      "question": "",
+      "bot_says_target": "Кто из них любит холод — пингвин или попугай? Посмотри на картинки и выбери пингвина.",
+      "bot_explains_native": "Сначала выбери пингвина — он любит холод. Потом скажи про него одну фразу.",
+      "question": "Кто из них любит холод — пингвин или попугай?",
       "answer_mode": "none",
       "required_phrase_id": "penguin",
       "max_attempts": 3,
@@ -1073,7 +1095,8 @@
           "id": "penguin",
           "correct_id": "penguin",
           "phrase_id": "penguin",
-          "label_ru": "пингвина",
+          "label_ru": "пингвин",
+          "label_ru_accusative": "пингвина",
           "label_en": "penguin",
           "prompt_ru": "Сначала выбери пингвина. Скажи про него одну короткую фразу.",
           "idea_prompt_ru": "Что ты хочешь сказать про пингвина?",
@@ -1083,7 +1106,8 @@
           "id": "parrot",
           "correct_id": "parrot",
           "phrase_id": "parrot",
-          "label_ru": "попугая",
+          "label_ru": "попугай",
+          "label_ru_accusative": "попугая",
           "label_en": "parrot",
           "prompt_ru": "Теперь выбери попугая. Скажи про него одну короткую фразу.",
           "idea_prompt_ru": "Что ты хочешь сказать про попугая?",
@@ -1105,8 +1129,19 @@
       "type": "guided_speaking",
       "image": "lesson-images/lion-clean.png",
       "bot_says_target": "Скажи короткую фразу про льва.",
-      "visible_objects": [{"id": "lion", "label_ru": "Лев"}],
-      "adaptive_models": ["Лев.", "Это лев.", "Это большой лев.", "Большой лев идёт.", "Что ты можешь сказать про льва?"],
+      "visible_objects": [
+        {
+          "id": "lion",
+          "label_ru": "Лев"
+        }
+      ],
+      "adaptive_models": [
+        "Лев.",
+        "Это лев.",
+        "Это большой лев.",
+        "Большой лев идёт.",
+        "Что ты можешь сказать про льва?"
+      ],
       "adaptive_support_prefix": "Скажи:",
       "bot_explains_native": "Например: Лев сильный.",
       "question": "Что ты скажешь про льва?",
@@ -1122,7 +1157,7 @@
       "allow_ai_followup": false,
       "suppress_ai_followup": true,
       "skip_in_runtime": true,
-      "max_voice_seconds": 5.0,
+      "max_voice_seconds": 5,
       "must_wait_for_answer": true,
       "pre_slide_video": {
         "uri": "video_06_lion.mov",
@@ -1137,9 +1172,9 @@
       "order": 51,
       "type": "animal_compare",
       "image": "lesson-images/animal-pair-lion-turtle.png",
-      "bot_says_target": "Посмотри на две картинки и выбери животное, которое подходит к вопросу.",
-      "bot_explains_native": "Сначала выбери животное. Потом скажешь одну короткую фразу именно про него.",
-      "question": "",
+      "bot_says_target": "Кто из них сильнее — лев или черепаха? Посмотри на картинки и выбери льва.",
+      "bot_explains_native": "Кто из них сильнее — лев или черепаха? Выбери льва. Потом скажи короткую фразу про него.",
+      "question": "Кто из них сильнее — лев или черепаха?",
       "answer_mode": "none",
       "required_phrase_id": "lion",
       "max_attempts": 3,
@@ -1169,11 +1204,12 @@
           "id": "lion",
           "correct_id": "lion",
           "phrase_id": "lion",
-          "label_ru": "льва",
+          "label_ru": "лев",
           "label_en": "lion",
-          "prompt_ru": "Выбери льва. Скажи про него одну короткую фразу.",
+          "prompt_ru": "Кто из них сильнее — лев или черепаха? Выбери льва. Скажи про него одну короткую фразу.",
           "idea_prompt_ru": "Что ты хочешь сказать про льва?",
-          "example_ru": "Лев сильный."
+          "example_ru": "Лев сильный.",
+          "label_ru_accusative": "льва"
         }
       ],
       "blocking_interaction": true,
@@ -1223,7 +1259,7 @@
       "simplified_text": "Это жираф.",
       "allow_ai_followup": false,
       "suppress_ai_followup": true,
-      "max_voice_seconds": 5.0,
+      "max_voice_seconds": 5,
       "must_wait_for_answer": true,
       "pre_slide_video": {
         "uri": "video_08_giraffe.mov",
@@ -1253,7 +1289,7 @@
       "simplified_text": "Это белый медведь.",
       "allow_ai_followup": false,
       "suppress_ai_followup": true,
-      "max_voice_seconds": 5.0,
+      "max_voice_seconds": 5,
       "must_wait_for_answer": true,
       "pre_slide_video": {
         "uri": "video_06_bear.mov",
@@ -1289,7 +1325,7 @@
       "expects_answer": true,
       "suppress_ai_followup": false,
       "skip_in_runtime": true,
-      "max_voice_seconds": 5.0,
+      "max_voice_seconds": 5,
       "must_wait_for_answer": true,
       "pre_slide_video": {
         "uri": "video_07_parrot.mov",
@@ -1321,7 +1357,7 @@
       "personal_travel_followups": [],
       "suppress_ai_followup": true,
       "open_answer": true,
-      "max_voice_seconds": 60.0,
+      "max_voice_seconds": 60,
       "must_wait_for_answer": true
     },
     {
