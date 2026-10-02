@@ -230,3 +230,47 @@ def test_movie_pipeline_exposes_every_required_diagnostic_stage():
         "MOVIE_MOBILE_URL_SET","MOVIE_PLAYER_OPENED","MOVIE_PLAYER_ERROR",
     }:
         assert marker in mobile or marker in Path("../DOME_MOBILE_77/src/components/MoviePlayer.tsx").read_text(encoding="utf-8")
+
+
+def test_movie_take_status_accepts_supported_and_retake_outcomes():
+    from app.services.mobile_lesson_movie import movie_take_status
+    assert movie_take_status("ACCEPTED") is True
+    assert movie_take_status("ACCEPTED_EXACT") is True
+    assert movie_take_status("ACCEPTED_RETAKE") is True
+    assert movie_take_status("MOVIE_USABLE_WITH_SUPPORT") is True
+    assert movie_take_status("COMPLETED_WITH_SUPPORT") is True
+    assert movie_take_status("CORRECT") is True
+    assert movie_take_status("NO_SPEECH") is False
+    assert movie_take_status("RETRY_REQUIRED") is False
+
+
+def test_select_movie_voice_takes_falls_back_to_usable_speech_take(tmp_path):
+    from types import SimpleNamespace
+    from app.services.mobile_lesson_movie import select_movie_voice_takes, all_movie_phrase_ids
+
+    lesson = {
+        "slides": [
+            {"slide_id": "slide_01", "required_phrase_id": "parrot", "requiredForMovie": True},
+            {"slide_id": "slide_02", "required_phrase_id": "giraffe"},
+        ],
+        "movie_contract": {
+            "timeline": [
+                {"phrase_id": "parrot"},
+                {"phrase_id": "giraffe"},
+            ]
+        }
+    }
+    audio_parrot = tmp_path / "parrot.wav"
+    audio_parrot.write_bytes(b"x" * 2000)
+    audio_giraffe = tmp_path / "giraffe.wav"
+    audio_giraffe.write_bytes(b"y" * 2000)
+
+    attempts = [
+        SimpleNamespace(id=1, phrase_id="parrot", status="COMPLETED_WITH_SUPPORT", audio_path=str(audio_parrot)),
+        SimpleNamespace(id=2, phrase_id="giraffe", status="RETRY_REQUIRED", audio_path=str(audio_giraffe)),
+    ]
+    selected, missing = select_movie_voice_takes(attempts, lesson)
+    assert "parrot" in selected
+    assert "giraffe" in selected
+    assert missing == []
+

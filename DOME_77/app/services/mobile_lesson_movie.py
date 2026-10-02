@@ -185,10 +185,12 @@ async def recover_interrupted_mobile_movie_jobs() -> int:
 
 def all_movie_phrase_ids(lesson: dict) -> list[str]:
     """Return every authored movie phrase in timeline order."""
-
+    timeline = lesson.get("timeline")
+    if timeline is None and isinstance(lesson.get("movie_contract"), dict):
+        timeline = lesson["movie_contract"].get("timeline")
     return [
         str(item["phrase_id"])
-        for item in lesson.get("timeline", [])
+        for item in (timeline or [])
         if str(item.get("phrase_id") or "").strip()
     ]
 
@@ -216,30 +218,75 @@ def required_movie_phrase_ids(lesson: dict) -> list[str]:
     return [phrase_id for phrase_id in all_movie_phrase_ids(lesson) if phrase_id not in optional]
 
 
+def movie_take_status(status: object) -> bool:
+    value = str(status or "").upper()
+    return value.startswith("ACCEPTED") or value in (
+        "MOVIE_USABLE_WITH_SUPPORT",
+        "COMPLETED_WITH_SUPPORT",
+        "ACCEPTED_RETAKE",
+        "CORRECT",
+        "PARTIALLY_CORRECT",
+    )
+
+
+def is_usable_speech_take(status: object, path: Path) -> bool:
+    """Check if the attempt contains real recorded speech from the child."""
+    value = str(status or "").upper()
+    if value in ("NO_SPEECH", "NO_AUDIO", "TOO_SHORT", "NO_SPEECH_CONTINUE"):
+        return False
+    return path.exists() and path.stat().st_size >= 1000
+
+
 def select_movie_voice_takes(voice_attempts: Iterable[object], lesson: dict) -> tuple[dict[str, Path], list[str]]:
     """Select the latest accepted real child recording for every movie phrase.
 
-    Warm-up answers and other accepted speech never enter the movie. A retry
-    replaces an older accepted take for the same authored phrase.
+    If an authored phrase does not have a strict accepted take, any usable
+    recording with speech from this session is accepted as a resilient fallback
+    so the child's movie is never blocked when they recorded answers.
     """
+    from app.services.lesson_progress import phrase_step_map
 
     required = required_movie_phrase_ids(lesson)
     wanted = set(all_movie_phrase_ids(lesson))
-    selected_rows: dict[str, tuple[int, Path]] = {}
+    step_map = phrase_step_map(lesson)
+    slide_to_phrases: dict[str, list[str]] = {}
+    for p_id, s_id in step_map.items():
+        slide_to_phrases.setdefault(s_id, []).append(p_id)
+
+    accepted_rows: dict[str, tuple[int, Path]] = {}
+    fallback_rows: dict[str, tuple[int, Path]] = {}
+
     for attempt in voice_attempts:
-        phrase_id = str(getattr(attempt, "phrase_id", "") or "")
+        raw_phrase_id = str(getattr(attempt, "phrase_id", "") or "").strip()
         status = str(getattr(attempt, "status", "") or "")
         path = Path(str(getattr(attempt, "audio_path", "") or ""))
-        if phrase_id in wanted and movie_take_status(status) and path.exists() and path.stat().st_size > 0:
-            attempt_id=int(getattr(attempt,"id",0) or 0)
-            if attempt_id>=selected_rows.get(phrase_id,(-1,path))[0]:selected_rows[phrase_id]=(attempt_id,path)
-    selected={phrase_id:value[1] for phrase_id,value in selected_rows.items()}
+        if not path.exists() or path.stat().st_size <= 0:
+            continue
+        attempt_id = int(getattr(attempt, "id", 0) or 0)
+
+        candidate_phrases = []
+        if raw_phrase_id in wanted:
+            candidate_phrases.append(raw_phrase_id)
+        elif raw_phrase_id in slide_to_phrases:
+            candidate_phrases.extend([p for p in slide_to_phrases[raw_phrase_id] if p in wanted])
+
+        for phrase_id in candidate_phrases:
+            if movie_take_status(status):
+                if attempt_id >= accepted_rows.get(phrase_id, (-1, path))[0]:
+                    accepted_rows[phrase_id] = (attempt_id, path)
+            elif is_usable_speech_take(status, path):
+                if attempt_id >= fallback_rows.get(phrase_id, (-1, path))[0]:
+                    fallback_rows[phrase_id] = (attempt_id, path)
+
+    all_phrases = all_movie_phrase_ids(lesson)
+    selected: dict[str, Path] = {}
+    for phrase_id in all_phrases:
+        if phrase_id in accepted_rows:
+            selected[phrase_id] = accepted_rows[phrase_id][1]
+        elif phrase_id in fallback_rows:
+            selected[phrase_id] = fallback_rows[phrase_id][1]
+
     return selected, [phrase_id for phrase_id in required if phrase_id not in selected]
-
-
-def movie_take_status(status: object) -> bool:
-    value = str(status or "").upper()
-    return value.startswith("ACCEPTED") or value in ("MOVIE_USABLE_WITH_SUPPORT", "ACCEPTED_RETAKE")
 
 
 async def ensure_movie_voice_slots(db, session_id: int, lesson: dict) -> list[MovieVoiceSlot]:
@@ -282,37 +329,94 @@ async def record_movie_voice_slot(db, session_id: int, phrase_id: str, attempt: 
 
 
 async def resolve_movie_voice_slots(db, session_id: int, voice_attempts: Iterable[object], lesson: dict, target_language: str, cache_root: Path) -> tuple[dict[str, Path], list[dict]]:
-    """Resolve only explicitly whitelisted child takes for movie phrase IDs.
-
-    target_language/cache_root remain in the signature for backward-compatible
-    callers; neither tutor TTS nor unrelated conversation audio is permitted.
-    """
+    """Resolve child takes for movie phrase IDs with resilient speech fallback."""
 
     del target_language, cache_root
-    attempts=list(voice_attempts);required=set(required_movie_phrase_ids(lesson));wanted=set(all_movie_phrase_ids(lesson));optional=optional_movie_phrase_ids(lesson)
-    slots=await ensure_movie_voice_slots(db,session_id,lesson);audio_by_phrase:dict[str,Path]={}
-    exact:dict[str,object]={}
+    from app.services.lesson_progress import phrase_step_map
+
+    attempts = list(voice_attempts)
+    required = set(required_movie_phrase_ids(lesson))
+    wanted = set(all_movie_phrase_ids(lesson))
+    optional = optional_movie_phrase_ids(lesson)
+    step_map = phrase_step_map(lesson)
+    slide_to_phrases: dict[str, list[str]] = {}
+    for p_id, s_id in step_map.items():
+        slide_to_phrases.setdefault(s_id, []).append(p_id)
+
+    slots = await ensure_movie_voice_slots(db, session_id, lesson)
+    audio_by_phrase: dict[str, Path] = {}
+
+    accepted_attempts: dict[str, object] = {}
+    fallback_attempts: dict[str, object] = {}
+
     for attempt in attempts:
-        phrase_id=str(getattr(attempt,"phrase_id","") or "");path=Path(str(getattr(attempt,"audio_path","") or ""))
-        if phrase_id in wanted and movie_take_status(getattr(attempt,"status","")) and path.exists() and path.stat().st_size>0:
-            current=exact.get(phrase_id)
-            if current is None or int(getattr(attempt,"id",0) or 0)>=int(getattr(current,"id",0) or 0):exact[phrase_id]=attempt
-    for slot in slots:
-        phrase_id=slot.required_voice_id;attempt=exact.get(phrase_id)
-        if attempt:
-            path=Path(str(getattr(attempt,"audio_path")));attempt_id=int(getattr(attempt,"id",0) or 0);audio_by_phrase[phrase_id]=path
-            slot.status="RECORDED";slot.source_attempt_id=attempt_id or None;slot.audio_path=str(path);slot.diagnostics_json=json.dumps({"expected":True,"recorded":True,"strategy":"exact_child_recording","track_role":"child_recording"})
+        raw_phrase_id = str(getattr(attempt, "phrase_id", "") or "").strip()
+        status = str(getattr(attempt, "status", "") or "")
+        path = Path(str(getattr(attempt, "audio_path", "") or ""))
+        if not path.exists() or path.stat().st_size <= 0:
             continue
-        is_optional=phrase_id in optional
-        slot.status="OPTIONAL_SKIPPED" if is_optional else "MISSING_REQUIRED";slot.audio_path=None;slot.source_attempt_id=None
-        slot.diagnostics_json=json.dumps({"expected":True,"optional":is_optional,"recorded":False,"strategy":"optional_child_choice_skipped" if is_optional else "missing_required_child_recording","track_role":None})
-    await db.flush()
-    diagnostics=[]
+        attempt_id = int(getattr(attempt, "id", 0) or 0)
+
+        candidate_phrases = []
+        if raw_phrase_id in wanted:
+            candidate_phrases.append(raw_phrase_id)
+        elif raw_phrase_id in slide_to_phrases:
+            candidate_phrases.extend([p for p in slide_to_phrases[raw_phrase_id] if p in wanted])
+
+        for phrase_id in candidate_phrases:
+            if movie_take_status(status):
+                current = accepted_attempts.get(phrase_id)
+                if current is None or attempt_id >= int(getattr(current, "id", 0) or 0):
+                    accepted_attempts[phrase_id] = attempt
+            elif is_usable_speech_take(status, path):
+                current = fallback_attempts.get(phrase_id)
+                if current is None or attempt_id >= int(getattr(current, "id", 0) or 0):
+                    fallback_attempts[phrase_id] = attempt
+
     for slot in slots:
-        try:detail=json.loads(slot.diagnostics_json or '{}')
-        except (TypeError,ValueError,json.JSONDecodeError):detail={}
-        diagnostics.append({"required_voice_id":slot.required_voice_id,"status":slot.status,**detail})
-    return audio_by_phrase,diagnostics
+        phrase_id = slot.required_voice_id
+        attempt = accepted_attempts.get(phrase_id)
+        strategy = "exact_child_recording"
+        if not attempt and phrase_id in fallback_attempts:
+            attempt = fallback_attempts[phrase_id]
+            strategy = "fallback_child_recording"
+
+        if attempt:
+            path = Path(str(getattr(attempt, "audio_path")))
+            attempt_id = int(getattr(attempt, "id", 0) or 0)
+            audio_by_phrase[phrase_id] = path
+            slot.status = "RECORDED"
+            slot.source_attempt_id = attempt_id or None
+            slot.audio_path = str(path)
+            slot.diagnostics_json = json.dumps({
+                "expected": True,
+                "recorded": True,
+                "strategy": strategy,
+                "track_role": "child_recording",
+            })
+            continue
+
+        is_optional = phrase_id in optional
+        slot.status = "OPTIONAL_SKIPPED" if is_optional else "MISSING_REQUIRED"
+        slot.audio_path = None
+        slot.source_attempt_id = None
+        slot.diagnostics_json = json.dumps({
+            "expected": True,
+            "optional": is_optional,
+            "recorded": False,
+            "strategy": "optional_child_choice_skipped" if is_optional else "missing_required_child_recording",
+            "track_role": None,
+        })
+
+    await db.flush()
+    diagnostics = []
+    for slot in slots:
+        try:
+            detail = json.loads(slot.diagnostics_json or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            detail = {}
+        diagnostics.append({"required_voice_id": slot.required_voice_id, "status": slot.status, **detail})
+    return audio_by_phrase, diagnostics
 
 
 def build_mobile_lesson_movie(inputs: MovieRenderInputs) -> Path:

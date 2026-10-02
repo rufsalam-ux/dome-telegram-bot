@@ -26,7 +26,7 @@ from app.services.conversational_tutor import TutorTurn,conversation_policy_for_
 from app.services.language_realization import format_choice_replica, russian_accusative
 from app.services.lesson_voice_context import authoritative_voice_context,contextual_assessment_goal,selected_item_turn
 from app.services.cartoon_builder import CartoonBuildError
-from app.services.mobile_lesson_movie import MOBILE_MOVIE_VERSION,MOVIE_STALL_TIMEOUT_SECONDS,MovieContractError,MovieRenderInputs,build_mobile_lesson_movie,ensure_movie_voice_slots,load_movie_contract,movie_take_status,record_movie_voice_slot,required_movie_phrase_ids,resolve_movie_voice_slots,select_movie_voice_takes
+from app.services.mobile_lesson_movie import MOBILE_MOVIE_VERSION,MOVIE_STALL_TIMEOUT_SECONDS,MovieContractError,MovieRenderInputs,all_movie_phrase_ids,build_mobile_lesson_movie,ensure_movie_voice_slots,load_movie_contract,movie_take_status,record_movie_voice_slot,required_movie_phrase_ids,resolve_movie_voice_slots,select_movie_voice_takes
 from app.services.email_reports import send_homework_email,_send_with_attachment_sync,send_verification_email,send_password_reset_email
 from app.services.ai_speech import AISpeechError, synthesize_bilingual_speech, translate_text
 from app.services.password_auth import hash_password, hash_verification_code, verify_password, verify_verification_code
@@ -1678,7 +1678,12 @@ async def _voice_impl(request:web.Request)->web.Response:
     if runtime_context.get('hero_id') and session_hero and str(runtime_context.get('hero_id'))!=session_hero:
         return _voice_error(409,'STALE_HERO_IDENTITY','Герой урока изменился. Откройте урок заново.',request_id=runtime_context.get('request_id'))
     log.info('MOBILE_VOICE_TRACE trace=%s stage=T6_VALIDATION_COMPLETED step=%s turn=%s hero=%s',trace_id,slide_id,conversation_turn,session_hero or '-')
-    required_movie_slide=bool(sl.get('requiredForMovie') is True or sl.get('required_for_movie') is True)
+    authored_movie_phrase_ids = set(all_movie_phrase_ids(lesson_data))
+    required_movie_slide = bool(
+        sl.get('requiredForMovie') is True
+        or sl.get('required_for_movie') is True
+        or str(sl.get('required_phrase_id') or '') in authored_movie_phrase_ids
+    )
     audio_received=raw.stat().st_size>=1000
     if not audio_received:
         activity=VoiceActivity(0.0,0.0,0.0,None,None,False,'TOO_SHORT')
@@ -1715,7 +1720,13 @@ async def _voice_impl(request:web.Request)->web.Response:
             'the child freely chose one or more visible selected items',
         ]))
     log.info('MOBILE_VOICE_CONTEXT session=%s slide=%s task=%s visible=%s selected=%s removed=%s policy=%s',sid,slide_id,runtime_context.get('task_type'),[item.get('id') for item in runtime_context.get('visible_items') or []],[item.get('id') for item in runtime_context.get('selected_items') or []],[item.get('id') for item in runtime_context.get('removed_items') or []],runtime_context.get('selection_policy'))
-    required_movie_phrase=required_movie_slide and storage_phrase_id==str(sl.get('required_phrase_id') or storage_phrase_id)
+    required_movie_phrase = (
+        required_movie_slide
+        and (
+            storage_phrase_id in authored_movie_phrase_ids
+            or storage_phrase_id == str(sl.get('required_phrase_id') or storage_phrase_id)
+        )
+    )
     conversation_policy=conversation_policy_for_task(sl)
     if activity.has_speech:
         try:current_runtime=json.loads(sess.runtime_state_json or '{}')
@@ -2181,7 +2192,13 @@ async def complete(request:web.Request,movie_build_trigger:str='complete')->web.
                 db_session.runtime_state_json=json.dumps(runtime,ensure_ascii=False);db_session.completion_state='RECOVERY_REQUIRED'
                 if target and target['step_id'] in step_ids:
                     db_session.current_step_id=target['step_id'];db_session.current_step=step_ids.index(target['step_id'])
-                await db.commit()
+            movie_row=await db.scalar(select(LessonMovie).where(LessonMovie.lesson_session_id==sid))
+            if movie_row is None:
+                movie_row=LessonMovie(lesson_session_id=sid,child_id=c.id,lesson_id=sess.lesson_id,run_number=1,status='FAILED',stage='MISSING_RECORDINGS',progress=0,error_code='REQUIRED_MOVIE_RECORDINGS_MISSING',error_message='Нужно записать обязательную реплику для мультфильма.',error=f'Missing required movie recordings: {missing_exact}')
+                db.add(movie_row)
+            else:
+                movie_row.status='FAILED';movie_row.stage='MISSING_RECORDINGS';movie_row.progress=0;movie_row.error_code='REQUIRED_MOVIE_RECORDINGS_MISSING';movie_row.error_message='Нужно записать обязательную реплику для мультфильма.';movie_row.error=f'Missing required movie recordings: {missing_exact}'
+            await db.commit()
         log.warning('MOBILE_COMPLETION_RECOVERY_REQUIRED session=%s missing=%s target=%s',sid,missing_exact,target)
         raise web.HTTPConflict(text=json.dumps({'error':'Нужно записать обязательную реплику для мультфильма.','code':'REQUIRED_MOVIE_RECORDINGS_MISSING','missing_phrase_ids':missing_exact,'missing_steps':missing_steps,'lesson_version':version,'return_to':'COMPLETE'},ensure_ascii=False),content_type='application/json')
     recovery_allowed=str(sess.completion_state or '')=='RECOVERY_REQUIRED'
@@ -2193,7 +2210,19 @@ async def complete(request:web.Request,movie_build_trigger:str='complete')->web.
             if db_session:db_session.completion_state='COMPLETING';await db.commit()
     ent,new=await complete_session_once(session_id=sid,child_id=c.id,lesson_id=sess.lesson_id,course_id=course,final_step=len(lesson_data.get('slides',[])))
     run_no=int(ent.completed_runs or 0)
-    hero_path=Path(char.processed_path or char.original_path) if char else preset_character_path('dome_cat')
+    hero_id = str(session_hero.get('hero_id') or getattr(char, 'catalog_id', None) or '').strip()
+    if char and (char.processed_path or char.original_path):
+        hero_path = Path(char.processed_path or char.original_path)
+    elif hero_id:
+        try:hero_path = preset_character_path(hero_id)
+        except Exception:hero_path = preset_character_path('dome_cat')
+    else:
+        hero_path = preset_character_path('dome_cat')
+
+    char_metadata = geometry_from_json(char.visual_metadata_json) if char and char.visual_metadata_json else None
+    if not char_metadata and hero_id:
+        try:char_metadata = preset_character_geometry(hero_id)
+        except Exception:char_metadata = None
     voice_diagnostics=[]
     for slot in slots:
         try:detail=json.loads(slot.diagnostics_json or '{}')
@@ -2229,7 +2258,7 @@ async def complete(request:web.Request,movie_build_trigger:str='complete')->web.
                 job_id=job_id or movie.job_id;attempt_id=attempt_id or movie.attempt_id;movie_status=movie.status;movie_stage=movie.stage or 'IDLE';movie_progress=int(movie.progress or 0);movie_error_code=movie.error_code
         if should_render:
             lesson_dir=movie_contract.lesson_dir
-            inputs=MovieRenderInputs(base_video=movie_contract.base_video,character=hero_path,audio_by_phrase=audio_by_phrase,timeline=movie_contract.timeline,output=out,lesson_dir=lesson_dir,target_language=c.target_language or 'ru',approved_phrase_ids=movie_contract.approved_phrase_ids,required_phrase_ids=tuple(required_ids),expected_base_sha256=movie_contract.expected_base_sha256,require_all_phrase_audio=bool(movie_contract.audio_policy.get('require_exact_child_recording',True)),character_metadata=geometry_from_json(char.visual_metadata_json) if char else None)
+            inputs=MovieRenderInputs(base_video=movie_contract.base_video,character=hero_path,audio_by_phrase=audio_by_phrase,timeline=movie_contract.timeline,output=out,lesson_dir=lesson_dir,target_language=c.target_language or 'ru',approved_phrase_ids=movie_contract.approved_phrase_ids,required_phrase_ids=tuple(required_ids),expected_base_sha256=movie_contract.expected_base_sha256,require_all_phrase_audio=bool(movie_contract.audio_policy.get('require_exact_child_recording',True)),character_metadata=char_metadata)
             log.info('MOVIE_BUILD_STARTED session=%s job=%s attempt=%s movie_version=%s',sid,job_id,attempt_id,MOBILE_MOVIE_VERSION)
             _spawn_movie_task(_render_mobile_movie_job(movie_id,job_id,attempt_id,inputs,c.id,sess.lesson_id,course,par.email if par else None,bool(par and par.email_reports_enabled),run_no,str(lesson_data.get('title') or sess.lesson_id)))
             movie_status='QUEUED';movie_stage='VALIDATING_RECORDINGS';movie_progress=max(2,movie_progress)
@@ -2286,10 +2315,15 @@ async def movie_status(request:web.Request)->web.Response:
         # client does not display a permanently stuck "2% Validating recordings…".
         # status='QUEUED'/progress=2 was misleading: it looked like an in-flight
         # job that would make progress, but there was no worker behind it.
+        if sess and sess.completion_state=='RECOVERY_REQUIRED':
+            return web.json_response({'session_id':sid,'run_id':None,'run_number':None,
+                'status':'FAILED','stage':'MISSING_RECORDINGS','error_code':'REQUIRED_MOVIE_RECORDINGS_MISSING',
+                'error_message':'Нужно записать обязательную реплику для мультфильма.',
+                'progress':0,'url':None,'movie_url':None,'can_retry':True})
         not_yet_complete=not sess or sess.status!='COMPLETED'
         return web.json_response({'session_id':sid,'run_id':None,'run_number':None,
             'status':'NOT_STARTED' if not_yet_complete else 'QUEUED',
-            'stage':'VALIDATING_RECORDINGS','progress':2,'url':None,'movie_url':None})
+            'stage':'IDLE' if not_yet_complete else 'VALIDATING_RECORDINGS','progress':0 if not_yet_complete else 2,'url':None,'movie_url':None})
     url=None;path=Path(movie.output_path) if movie.output_path else None
     if movie.status in MOVIE_SUCCESS_STATES and path and path.exists():
         url=_movie_public_url(c.id,path,_base(request))

@@ -361,4 +361,9 @@ async def start_webapp_server():
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", settings.effective_webapp_port)
     await site.start()
+    try:
+        from app.services.mobile_lesson_movie import recover_interrupted_mobile_movie_jobs
+        await recover_interrupted_mobile_movie_jobs()
+    except Exception:
+        pass
     return runner
