@@ -55,7 +55,7 @@ jobs:
         working-directory: DOME_MOBILE_77/android
         env:
           EXPO_PUBLIC_DOME_API_BASE_URL: https://dome-telegram-bot-production-e6f6.up.railway.app
-          EXPO_PUBLIC_BUILD_COMMIT: DOME-APK-30206-ai-loop-playback-movie-fix
+          EXPO_PUBLIC_BUILD_COMMIT: DOME-APK-30207-hint-gift-filler-fix
           EXPO_PUBLIC_BUILD_TIMESTAMP: ${{ github.run_id }}
           GRADLE_OPTS: "-Xmx6g -XX:MaxMetaspaceSize=512m -Dfile.encoding=UTF-8"
         run: |
@@ -68,38 +68,36 @@ jobs:
           APK_SRC=$(find DOME_MOBILE_77/android/app/build/outputs/apk/release -name "*.apk" | head -1)
           echo "Found APK at: $APK_SRC"
           ls -lh "$APK_SRC"
-          cp "$APK_SRC" DOME-v3.2.6-release.apk
-          ls -lh DOME-v3.2.6-release.apk
-          SHA256=$(sha256sum DOME-v3.2.6-release.apk | awk '{print $1}')
+          cp "$APK_SRC" DOME-v3.2.7-release.apk
+          ls -lh DOME-v3.2.7-release.apk
+          SHA256=$(sha256sum DOME-v3.2.7-release.apk | awk '{print $1}')
           echo "sha256=$SHA256" >> $GITHUB_OUTPUT
 
       - name: Create GitHub Release with direct APK download link
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v3.2.6-apk-${{ github.run_number }}
-          name: "DOME v3.2.6 Release APK (Build ${{ github.run_number }})"
+          tag_name: v3.2.7-apk-${{ github.run_number }}
+          name: "DOME v3.2.7 Release APK (Build ${{ github.run_number }})"
           body: |
-            ## DOME Mobile v3.2.6 (versionCode 30206)
+            ## DOME Mobile v3.2.7 (versionCode 30207)
 
             ### Direct APK Download:
-            [Download DOME-v3.2.6-release.apk](https://github.com/rufsalam-ux/dome-telegram-bot/releases/download/v3.2.6-apk-${{ github.run_number }}/DOME-v3.2.6-release.apk)
+            [Download DOME-v3.2.7-release.apk](https://github.com/rufsalam-ux/dome-telegram-bot/releases/download/v3.2.7-apk-${{ github.run_number }}/DOME-v3.2.7-release.apk)
 
             - **SHA-256:** `${{ steps.prep_apk.outputs.sha256 }}`
-            - **Исправления (v3.2.6):**
-              - **Устранено зацикливание AI (Баг 1):** Исключены слайды сравнения животных из общей ветки FOLLOW_UP; добавлен originalQuestion guard против повтора уже отвеченного вопроса.
-              - **Восстановлено воспроизведение «Прослушать» (Баг 2):** Ссылки на удалённые локальные файлы своевременно очищаются, плеер воспроизводит дубли через актуальный API-эндпоинт с мгновенной обработкой ошибок.
-              - **Исправлено зависание сборки мультфильма на 2% (Баг 3):** Сессии без запущенных задач получают честный статус NOT_STARTED с автоматическим авто-перезапуском сборки.
-              - **Исправлен винительный падеж реплик AI (Баг 2 из v3.2.5):** Добавлен словарь русских именительных падежей («Да, это лев!» вместо «Да, это льва!»).
-              - **Исправлены подсказки на слайдах животных (Баг 1 из v3.2.5):** Задаются конкретные вопросы («Кто из них любит холод?», «Кто из них сильнее?») вместо generic-реплик.
-              - **Корректное поведение загадки с жирафом (слайд 22/27):** Картинка жирафа остаётся скрытой до угадывания, а после разгадки открывается и озвучивается.
+            - **Исправления (v3.2.7):**
+              - **Подсказка теперь соответствует текущему вопросу (Баги 5/6):** buildAdaptiveHintPair теперь использует `slide.adaptive_models` как приоритетный источник — слайды с зеброй, открытыми вопросами и т.д. получают конкретный пример из авторского контента вместо generic «Мне это нравится».
+              - **Исправлен модельный ответ для подарка (Баг 4):** AI теперь использует «Мила привезла мне книгу.» вместо «Я возьму книгу.» как шаблон; частичный ответ «Книга» принимается.
+              - **Убран «да, да» филлер (Баг 7):** Паттерны «да, да», «ок», «хм», «угу» теперь распознаются как generic и заменяются на естественную реакцию из transcript ребёнка.
+              - **Устранён «Repeat the answer model.» (Баг 3):** questionNative в generic fallback теперь использует фразу из `modelAnswer` слайда вместо захардкоженного English placeholder.
             - **Built on:** Ubuntu Linux (Signed Release)
-          files: DOME-v3.2.6-release.apk
+          files: DOME-v3.2.7-release.apk
           draft: false
           prerelease: false
 
       - name: Upload APK artifact backup
         uses: actions/upload-artifact@v4
         with:
-          name: DOME-v3.2.4-release-apk
-          path: DOME-v3.2.4-release.apk
+          name: DOME-v3.2.7-release-apk
+          path: DOME-v3.2.7-release.apk
           retention-days: 30
