@@ -164,8 +164,17 @@ def contextual_assessment_goal(default_goal: str, context: dict[str, Any]) -> st
     if not selected:
         return default_goal
     labels = ", ".join(str(item.get("label_target") or item.get("id")) for item in selected)
+    labels_native = ", ".join(str(item.get("label_native") or item.get("label_target") or item.get("id")) for item in selected)
     policy = str(context.get("selection_policy") or "")
     task_type = str(context.get("task_type") or "")
+    if task_type == "gift_selector":
+        # Child chose a gift that Mila brought — accept partial answers naming the item
+        return (
+            f"{default_goal}\nThe child selected the gift: {labels} ({labels_native}). "
+            "Accept any answer that correctly names the selected item, even a single word. "
+            "The expected full sentence is 'Мила привезла мне [item].' but naming just the item is also correct. "
+            "Do not ask the child to choose again."
+        )
     if policy == "child_choice":
         return (
             f"{default_goal}\nThe child freely selected: {labels}. Accept any short relevant target-language "
@@ -178,6 +187,7 @@ def contextual_assessment_goal(default_goal: str, context: dict[str, Any]) -> st
             "about that selected animal; a sample sentence is not an exact-string requirement."
         )
     return default_goal
+
 
 
 def referenced_items_are_visible(result: dict, context: dict[str, Any]) -> bool:

@@ -226,7 +226,9 @@ export function sanitizeTutorReaction(
   currentObject = ''
 ): string {
   const cleaned = cleanChildFacingText(backendReaction || '');
-  const isGeneric = !cleaned || /^(это интересный ответ|интересный ответ|хорошо|молодец|здорово|отлично)[.!]?$/i.test(cleaned);
+  // Treat generic, filler, or repetition-only reactions as empty so we fall
+  // through to buildNaturalReaction which generates a more contextual response.
+  const isGeneric = !cleaned || /^(это интересный ответ|интересный ответ|хорошо|молодец|здорово|отлично|да[,. ]+да[,. !]*|ок|хм[,. !]*|угу[,. !]*)[.!]?$/i.test(cleaned);
   if (isGeneric && transcript && accepted) {
     return buildNaturalReaction(transcript, accepted, 1, currentObject);
   }
@@ -316,19 +318,20 @@ export function adaptiveQuestionForLevel(
     case 0:
       return {
         questionTarget: modelAnswer ? (modelAnswer.startsWith('Это ') || modelAnswer.startsWith('Я ') ? `Скажи: ${modelAnswer}` : `Повтори: ${modelAnswer}`) : (slideQuestion || 'Давай повторим вместе!'),
-        questionNative: 'Repeat the answer model.',
+        // Use the actual model answer as the support hint (never a hardcoded English placeholder)
+        questionNative: modelAnswer ? `Можно сказать: ${modelAnswer}` : (slideQuestion || 'Давай попробуем вместе!'),
         expectedAnswerModel: modelAnswer || 'Хорошо.'
       };
     case 1:
       return {
         questionTarget: slideQuestion || 'Что ты думаешь?',
-        questionNative: 'What do you think?',
+        questionNative: modelAnswer ? `Например: ${modelAnswer}` : 'Расскажи своими словами.',
         expectedAnswerModel: modelAnswer || 'Мне это нравится.'
       };
     case 2:
       return {
         questionTarget: slideQuestion || 'Расскажи подробнее.',
-        questionNative: 'Tell more details.',
+        questionNative: modelAnswer ? `Скажи: ${modelAnswer}` : 'Расскажи подробнее.',
         expectedAnswerModel: modelAnswer || 'Это очень интересно.'
       };
     case 3:
@@ -336,7 +339,7 @@ export function adaptiveQuestionForLevel(
     default:
       return {
         questionTarget: slideQuestion || 'Расскажи подробнее, что ты думаешь.',
-        questionNative: 'Tell more about what you think.',
+        questionNative: modelAnswer ? `Подсказка: ${modelAnswer}` : 'Расскажи подробнее.',
         expectedAnswerModel: modelAnswer || 'Я думаю, это здорово.'
       };
   }
@@ -799,17 +802,26 @@ export function buildAdaptiveHintPair(
   }
 
   // 7. General ladder fallback
+  // Priority: use authored adaptive_models from the slide first (works for any slide type),
+  // then fall back to adaptiveQuestionForLevel generic ladder.
+  const slidePhraseModels = (Array.isArray(slide?.adaptive_models) ? slide.adaptive_models : [])
+    .map((item: any) => cleanChildFacingText(String(item?.text ?? item ?? '')))
+    .filter(Boolean);
+  const authoredModel = slidePhraseModels[Math.min(lvl, Math.max(0, slidePhraseModels.length - 1))]
+    || slidePhraseModels[0]
+    || cleanChildFacingText(slide?.simplified_text || '');
+
   const ladder = adaptiveQuestionForLevel(obj, lvl, slide);
-  const baseModel = ladder.expectedAnswerModel || cleanChildFacingText(slide?.simplified_text) || 'Давай попробуем вместе!';
+  const baseModel = authoredModel || ladder.expectedAnswerModel || 'Давай попробуем вместе!';
   switch (lvl) {
     case 0:
-      return { hintTarget: `Можно сказать: ${baseModel}`, hintNative: `You can say: ${ladder.questionNative || baseModel}` };
+      return { hintTarget: `Можно сказать: ${baseModel}`, hintNative: `Можно сказать: ${baseModel}` };
     case 1:
-      return { hintTarget: `${baseModel} или другой вариант?`, hintNative: `${ladder.questionNative || baseModel} or another option?` };
+      return { hintTarget: `${baseModel} или другой вариант?`, hintNative: `${baseModel} или другой вариант?` };
     case 2:
-      return { hintTarget: `Скажи: ${baseModel}`, hintNative: `Say: ${ladder.questionNative || baseModel}` };
+      return { hintTarget: `Скажи: ${baseModel}`, hintNative: `Скажи: ${baseModel}` };
     default:
-      return { hintTarget: `Подсказка: ${baseModel}`, hintNative: `Clue: ${ladder.questionNative || baseModel}` };
+      return { hintTarget: `Подсказка: ${baseModel}`, hintNative: `Подсказка: ${baseModel}` };
   }
 }
 

@@ -242,11 +242,27 @@ async def _selected_context_model_answer(context:dict,target_language:str)->str:
     if not selected:return ''
     item=selected[-1];marker='__DOME_SELECTED_ITEM__';task_type=str(context.get('task_type') or '')
     if target_language=='ru':
-        source=f'{marker} — это интересно.' if task_type=='animal_compare' else f'Я возьму {marker}.'
+        # Use task-appropriate model sentence
+        if task_type=='animal_compare':
+            source=f'{marker} — очень интересное животное!'
+        elif task_type=='gift_selector':
+            source=f'Мила привезла мне {marker}.'
+        else:
+            source=f'Я возьму {marker}.'
     elif target_language=='en':
-        source=f'{marker} is interesting.' if task_type=='animal_compare' else f'I will take {marker}.'
+        if task_type=='animal_compare':
+            source=f'{marker} is a very interesting animal!'
+        elif task_type=='gift_selector':
+            source=f'Mila brought me {marker}.'
+        else:
+            source=f'I will take {marker}.'
     else:
-        base=f'{marker} is interesting.' if task_type=='animal_compare' else f'I will take {marker}.'
+        if task_type=='animal_compare':
+            base=f'{marker} is a very interesting animal!'
+        elif task_type=='gift_selector':
+            base=f'Mila brought me {marker}.'
+        else:
+            base=f'I will take {marker}.'
         translated=await _optional_translation(base,'en',target_language,'selected_model_answer')
         source=translated or base
     return source.replace(marker,str(item.get('label_target_accusative') or item.get('label_target') or item.get('id') or 'item'))
