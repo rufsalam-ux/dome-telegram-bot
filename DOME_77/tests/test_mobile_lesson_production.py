@@ -404,6 +404,12 @@ async def test_scripted_mobile_demo_traverses_real_endpoints_and_reaches_ready_m
         started=await client.post("/api/mobile/session/start",headers=headers,json={"child_id":child_id,"lesson_id":"demo_001"});assert started.status==200;started_payload=await started.json();session_id=started_payload["session_id"]
         runtime=started_payload["runtime_step_ids"];lesson_version=started_payload["lesson_version"]
         assert runtime==runtime_step_ids(mobile_api._load_mobile_lesson("demo_001")) and len(runtime)==len(set(runtime))==27
+        premature=await client.post(f"/api/mobile/session/{session_id}/complete",headers=headers,json={})
+        assert premature.status==409 and (await premature.json())["code"]=="LESSON_SEQUENCE_INCOMPLETE"
+        async with sessions() as db:
+            assert await db.scalar(select(func.count(LessonMovie.id)))==0
+            active_session=await db.get(LessonSession,session_id)
+            assert active_session.completion_state=="ACTIVE" and active_session.status=="IN_PROGRESS"
         await post_interactive(session_id,"slide_09","card_selector",{"selected_card_id":"A","card_question_index":0,"completed":False})
         for index,question in enumerate(by_id["slide_09"]["card_question_sets"]["A"]):
             await post_voice(session_id,"slide_09",f"slide_09:A:{question['id']}",question.get("pre_a1_text") or question["text"])
@@ -427,7 +433,24 @@ async def test_scripted_mobile_demo_traverses_real_endpoints_and_reaches_ready_m
         await post_voice(session_id,"slide_42","polar_bear","Tell me about the polar bear.");await post_voice(session_id,"slide_44","parrot","Tell me about the red parrot.")
         follow_up=await post_voice(session_id,"slide_44","parrot:followup:1","Where does this parrot live?",1);assert follow_up["movie_take_accepted"] is False and follow_up["task_goal_source"]=="active_follow_up"
         await post_interactive(session_id,"slide_49","mood_choice",{"selected_mood":"happy","completed":True})
-        for step_id in runtime:
+        for step_id in runtime[:22]:
+            progress=await client.post(f"/api/mobile/session/{session_id}/progress",headers=headers,json={"current_step_id":step_id,"lesson_version":lesson_version});assert progress.status==200
+        async with sessions() as db:
+            active_session=await db.get(LessonSession,session_id)
+            old_runtime=json.loads(active_session.runtime_state_json or "{}")
+            old_runtime["completion_recovery"]={"phrase_ids":["giraffe"],"return_to":"COMPLETE","step_id":"slide_45"}
+            active_session.runtime_state_json=json.dumps(old_runtime,ensure_ascii=False)
+            active_session.completion_state="RECOVERY_REQUIRED"
+            await db.commit()
+        recovery_resume=await client.post("/api/mobile/session/start",headers=headers,json={"child_id":child_id,"lesson_id":"demo_001"})
+        assert recovery_resume.status==200
+        resumed_payload=await recovery_resume.json()
+        assert resumed_payload["session_id"]==session_id and resumed_payload["current_step_id"]==runtime[21]
+        assert resumed_payload["completion_state"]=="ACTIVE" and resumed_payload["completion_recovery"] is None
+        assert resumed_payload["normal_sequence_completed"] is False and len(resumed_payload["reached_step_ids"])==22
+        early_complete=await client.post(f"/api/mobile/session/{session_id}/complete",headers=headers,json={})
+        assert early_complete.status==409 and (await early_complete.json())["code"]=="LESSON_SEQUENCE_INCOMPLETE"
+        for step_id in runtime[22:]:
             progress=await client.post(f"/api/mobile/session/{session_id}/progress",headers=headers,json={"current_step_id":step_id,"lesson_version":lesson_version});assert progress.status==200
         blocked=await client.post(f"/api/mobile/session/{session_id}/complete",headers=headers,json={});assert blocked.status==409;blocked_payload=await blocked.json();assert blocked_payload["code"]=="REQUIRED_MOVIE_RECORDINGS_MISSING" and blocked_payload["missing_phrase_ids"]==["invite"]
         assert blocked_payload["missing_steps"]==[{"phrase_id":"invite","step_id":"slide_16"}] and blocked_payload["return_to"]=="COMPLETE"

@@ -75,6 +75,62 @@ def runtime_step_ids(lesson: dict[str, Any]) -> list[str]:
     return [step_id(item) for item in runtime_sequence(lesson)]
 
 
+def reached_step_ids(
+    lesson: dict[str, Any],
+    runtime_state: dict[str, Any] | None,
+    *,
+    current_step_id: str | None = None,
+    current_step: int | None = None,
+) -> list[str]:
+    """Return the durable route high-water mark plus the current route prefix.
+
+    Recovery may move the current cursor backwards. The recorded prefix must
+    therefore be merged with the cursor, never replaced by it.
+    """
+
+    route = runtime_step_ids(lesson)
+    if not route:
+        return []
+    state = runtime_state if isinstance(runtime_state, dict) else {}
+    valid = set(route)
+    prior_values = state.get("reached_step_ids", [])
+    reached = {
+        str(value).strip()
+        for value in prior_values
+        if str(value).strip() in valid
+    } if isinstance(prior_values, list) else set()
+
+    cursor = str(current_step_id or "").strip()
+    cursor_index = route.index(cursor) if cursor in valid else -1
+    if cursor_index < 0 and current_step is not None:
+        try:
+            candidate = int(current_step)
+            if 0 <= candidate < len(route):
+                cursor_index = candidate
+        except (TypeError, ValueError):
+            pass
+    if cursor_index >= 0:
+        reached.update(route[: cursor_index + 1])
+    elif not reached:
+        reached.add(route[0])
+    return [item for item in route if item in reached]
+
+
+def record_reached_step(
+    lesson: dict[str, Any], runtime_state: dict[str, Any] | None, current_step_id: str
+) -> dict[str, Any]:
+    state = dict(runtime_state) if isinstance(runtime_state, dict) else {}
+    state["reached_step_ids"] = reached_step_ids(
+        lesson, state, current_step_id=current_step_id
+    )
+    return state
+
+
+def normal_sequence_completed(runtime_state: dict[str, Any] | None) -> bool:
+    state = runtime_state if isinstance(runtime_state, dict) else {}
+    return state.get("normal_sequence_completed") is True
+
+
 def phrase_step_map(lesson: dict[str, Any]) -> dict[str, str]:
     """Map every authored voice slot to the stable interaction that records it."""
 

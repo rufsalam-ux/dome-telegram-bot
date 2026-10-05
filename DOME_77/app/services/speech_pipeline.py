@@ -7,6 +7,7 @@ import math
 import re
 import time
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
@@ -102,7 +103,11 @@ class SpeechAssessment:
         self.pronunciation_errors = self.pronunciation_errors or []
 
 
-async def _transcribe_with_model(wav_path: Path, model: str, language: str = "", prompt: str = "") -> tuple[str, str, float]:
+async def _transcribe_with_model(wav_path: Path, model: str, language: str = "", prompt: str = "", trace_id: str = "") -> tuple[str, str, float]:
+    request_started=time.perf_counter()
+    try:audio_bytes=wav_path.stat().st_size
+    except OSError:audio_bytes=0
+    log.info("VOICE_TURN_TRACE trace_id=%s event=stt_request_started timestamp_utc=%s model=%s language_hint=%s audio_bytes=%d",trace_id or '-',datetime.now(UTC).isoformat(),model,language or 'auto',audio_bytes)
     headers = {"Authorization": f"Bearer {settings.openai_api_key}"}
     data = {"model": model, "response_format": "json"}
     if model.startswith("gpt-4o"):
@@ -113,25 +118,32 @@ async def _transcribe_with_model(wav_path: Path, model: str, language: str = "",
         data["language"] = language
     if prompt:
         data["prompt"] = prompt[:800]
-    async with httpx.AsyncClient(timeout=120) as client:
-        with wav_path.open("rb") as fh:
-            mime = "audio/m4a" if wav_path.suffix.lower() in {".m4a", ".mp4"} else "audio/wav"
-            response = await client.post(
-                "https://api.openai.com/v1/audio/transcriptions",
-                headers=headers,
-                data=data,
-                files={"file": (wav_path.name, fh, mime)},
-            )
+    try:
+        async with httpx.AsyncClient(timeout=120) as client:
+            with wav_path.open("rb") as fh:
+                mime = "audio/m4a" if wav_path.suffix.lower() in {".m4a", ".mp4"} else "audio/wav"
+                response = await client.post(
+                    "https://api.openai.com/v1/audio/transcriptions",
+                    headers=headers,
+                    data=data,
+                    files={"file": (wav_path.name, fh, mime)},
+                )
+    except Exception as exc:
+        log.error("VOICE_TURN_TRACE trace_id=%s event=stt_request_failed timestamp_utc=%s model=%s language_hint=%s elapsed_ms=%d error_type=%s",trace_id or '-',datetime.now(UTC).isoformat(),model,language or 'auto',round((time.perf_counter()-request_started)*1000),type(exc).__name__)
+        raise
+    log.info("MOBILE_VOICE_TRACE trace=%s stage=T5_STT_HTTP_RESPONSE model=%s http=%s elapsed_ms=%d audio_bytes=%d",trace_id or '-',model,response.status_code,round((time.perf_counter()-request_started)*1000),audio_bytes)
     if response.status_code >= 400:
-        log.warning("Transcription failed model=%s status=%s body=%s", model, response.status_code, response.text[:500])
+        log.warning("VOICE_TURN_TRACE trace_id=%s event=stt_http_failed timestamp_utc=%s model=%s http=%s elapsed_ms=%d error_body=%s",trace_id or '-',datetime.now(UTC).isoformat(),model,response.status_code,round((time.perf_counter()-request_started)*1000),response.text[:300])
         return "", "", 0.0
     payload = response.json()
     text = str(payload.get("text", "")).strip()
     language = str(payload.get("language", "")).strip().lower()
-    return text, language, (_transcription_confidence(payload) if text else 0.0)
+    confidence=_transcription_confidence(payload) if text else 0.0
+    log.info("VOICE_TURN_TRACE trace_id=%s event=stt_response_parsed timestamp_utc=%s model=%s http=%s elapsed_ms=%d transcript_chars=%d confidence=%.3f detected_language=%s",trace_id or '-',datetime.now(UTC).isoformat(),model,response.status_code,round((time.perf_counter()-request_started)*1000),len(text),confidence,language or '-')
+    return text, language, confidence
 
 
-async def transcribe_audio(wav_path: Path, target_language: str = "", native_language: str = "", goal: str = "") -> tuple[str, str, float]:
+async def transcribe_audio(wav_path: Path, target_language: str = "", native_language: str = "", goal: str = "", trace_id: str = "") -> tuple[str, str, float]:
     """Transcribe child speech without over-biasing the recognizer.
 
     First try automatic language detection. Forced-language attempts are only
@@ -147,11 +159,11 @@ async def transcribe_audio(wav_path: Path, target_language: str = "", native_lan
         # Automatic detection is the only normal request. Forced-language
         # requests are concurrent fallbacks, so one voice take is not sent to
         # the transcription provider three times in sequence.
-        text, detected, confidence = await _transcribe_with_model(wav_path, model, "", prompt)
+        text, detected, confidence = await _transcribe_with_model(wav_path, model, "", prompt, trace_id)
         if text:
             return text.strip(), detected.strip().lower(), confidence
         languages=list(dict.fromkeys(lang for lang in (target_language,native_language) if lang))
-        fallbacks=await asyncio.gather(*[_transcribe_with_model(wav_path,model,lang,prompt) for lang in languages])
+        fallbacks=await asyncio.gather(*[_transcribe_with_model(wav_path,model,lang,prompt,trace_id) for lang in languages])
         candidates=[(value,lang) for value,lang in zip(fallbacks,languages) if value[0]]
         if candidates:
             (text,detected,confidence),hint=max(candidates,key=lambda item:min(len(item[0][0]),120))
@@ -265,7 +277,7 @@ async def _evaluate_with_chat(prompt: dict, trace_id: str = "") -> dict | None:
             log.info("MOBILE_VOICE_TRACE trace=%s stage=T7_AI_REQUEST model=%s",trace_id or '-',model)
             response = await client.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
             received=time.perf_counter()
-            log.info("MOBILE_VOICE_TRACE trace=%s stage=T8_AI_RESPONSE model=%s http=%s elapsed_ms=%d",trace_id or '-',model,response.status_code,round((received-requested)*1000))
+            log.info("MOBILE_VOICE_TRACE trace=%s stage=T8_AI_RESPONSE model=%s http=%s elapsed_ms=%d llm_ttft_ms=null streaming=false",trace_id or '-',model,response.status_code,round((received-requested)*1000))
             if response.status_code >= 400:
                 log.warning("Assessment failed model=%s status=%s body=%s", model, response.status_code, response.text[:500])
                 continue
@@ -310,11 +322,11 @@ async def assess_speech(
     log.info("MOBILE_VOICE_TRACE trace=%s stage=T4_STT_START",trace_id or '-')
     log.info("VOICE_TURN_TRACE turn_id=%s event=ASR_started", trace_id or "-")
     stt_started=time.perf_counter()
-    transcript, detected, confidence = await transcribe_audio(wav_path, target_language, native_language, goal)
+    transcript, detected, confidence = await transcribe_audio(wav_path, target_language, native_language, goal, trace_id)
     log.info("MOBILE_VOICE_TRACE trace=%s stage=T5_STT_DONE elapsed_ms=%d transcript_chars=%d confidence=%.3f",trace_id or '-',round((time.perf_counter()-stt_started)*1000),len(transcript),confidence)
     log.info(
-        "VOICE_TURN_TRACE turn_id=%s event=ASR_completed elapsed_ms=%d transcript=%r confidence=%.3f",
-        trace_id or "-", round((time.perf_counter()-stt_started)*1000), transcript, confidence,
+        "VOICE_TURN_TRACE trace_id=%s event=stt_completed timestamp_utc=%s elapsed_ms=%d transcript_chars=%d confidence=%.3f detected_language=%s",
+        trace_id or "-", datetime.now(UTC).isoformat(), round((time.perf_counter()-stt_started)*1000), len(transcript), confidence, detected or "-",
     )
     if is_non_speech_transcript(transcript) or confidence < 0.35:
         return SpeechAssessment(
@@ -399,12 +411,12 @@ async def assess_speech(
         len(transcript), len(str(goal or "")),
     )
     log.info("VOICE_TURN_TRACE turn_id=%s event=dialogue_request_started", trace_id or "-")
-    log.info("VOICE_TURN_TRACE turn_id=%s event=AI_request_started", trace_id or "-")
+    log.info("VOICE_TURN_TRACE trace_id=%s event=llm_request_started timestamp_utc=%s", trace_id or "-", datetime.now(UTC).isoformat())
     ai_started=time.perf_counter()
     result = await _evaluate_with_chat(prompt)
     log.info(
-        "VOICE_TURN_TRACE turn_id=%s event=AI_response_received elapsed_ms=%d has_response=%s",
-        trace_id or "-", round((time.perf_counter()-ai_started)*1000), bool(result),
+        "VOICE_TURN_TRACE trace_id=%s event=llm_response_received timestamp_utc=%s elapsed_ms=%d has_response=%s llm_ttft_ms=null streaming=false",
+        trace_id or "-", datetime.now(UTC).isoformat(), round((time.perf_counter()-ai_started)*1000), bool(result),
     )
     if not result:
         return SpeechAssessment(transcript=transcript, detected_language=detected, confidence=confidence)
@@ -459,8 +471,8 @@ async def assess_speech(
         trace_id or "-", accepted, len(turn.reaction_target), len(turn.follow_up_target), turn.complete, turn.reason,
     )
     log.info(
-        "VOICE_TURN_TRACE turn_id=%s event=AI_text text=%r follow_up=%r",
-        trace_id or "-", turn.reaction_target, turn.follow_up_target,
+        "VOICE_TURN_TRACE trace_id=%s event=llm_answer_validated timestamp_utc=%s accepted=%s reaction_chars=%d followup_chars=%d complete=%s",
+        trace_id or "-", datetime.now(UTC).isoformat(), accepted, len(turn.reaction_target), len(turn.follow_up_target), turn.complete,
     )
     return SpeechAssessment(
         transcript=transcript,

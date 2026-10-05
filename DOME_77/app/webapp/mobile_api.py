@@ -1,5 +1,5 @@
 from __future__ import annotations
-import asyncio, base64, binascii, hashlib, json, logging, mimetypes, os, secrets, shutil, tempfile, time
+import asyncio, base64, binascii, hashlib, json, logging, mimetypes, os, re, secrets, shutil, tempfile, time
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -34,7 +34,7 @@ from app.services.standalone_demo_access import ensure_free_demo_entitlement
 from app.services.visual_localization import VisualLocalizationError, localize_embedded_text_image
 from app.services.course_catalog import list_courses
 from app.services.authored_content import lesson_dir as authored_lesson_dir
-from app.services.lesson_progress import lesson_content_version, missing_step_payload, runtime_sequence, runtime_step_ids
+from app.services.lesson_progress import lesson_content_version, missing_step_payload, normal_sequence_completed, reached_step_ids, record_reached_step, runtime_sequence, runtime_step_ids
 from app.services.subscription_plan_changes import (
     PlanChangeError,
     cancel_plan_change,
@@ -389,11 +389,13 @@ def _session_payload(sess:LessonSession,ent,child:Child,lesson_data:dict,*,resum
     current_index=step_ids.index(current_id) if current_id in step_ids else min(max(int(sess.current_step or 0),0),max(len(step_ids)-1,0))
     try:runtime=json.loads(sess.runtime_state_json or '{}')
     except (TypeError,ValueError,json.JSONDecodeError):runtime={}
+    reached=reached_step_ids(lesson_data,runtime,current_step_id=current_id,current_step=current_index)
     return {
         'session_id':sess.id,'run_number':int(ent.completed_runs or 0)+1,'lesson_id':sess.lesson_id,
         'current_step':current_index,'current_step_id':step_ids[current_index] if step_ids else None,
         'lesson_version':lesson_content_version(lesson_data),'runtime_step_ids':step_ids,
         'completion_state':str(sess.completion_state or 'ACTIVE'),'resumed':resumed,'session_reset_reason':reset_reason,
+        'reached_step_ids':reached,'normal_sequence_completed':normal_sequence_completed(runtime),
         'completion_recovery':runtime.get('completion_recovery'),
         'hero_identity':runtime.get('hero_identity'),
         'interactive_state':interactive_state,
@@ -1499,10 +1501,20 @@ async def session_start(request:web.Request)->web.Response:
         if existing:
             try:existing_runtime=json.loads(existing.runtime_state_json or '{}')
             except (TypeError,ValueError,json.JSONDecodeError):existing_runtime={}
+            reached=reached_step_ids(lesson_data,existing_runtime,current_step_id=existing.current_step_id,current_step=existing.current_step)
+            if step_ids and step_ids[-1] in reached and not normal_sequence_completed(existing_runtime):
+                # Compatibility for sessions saved by older releases that did
+                # not persist the explicit route marker.
+                existing_runtime['normal_sequence_completed']=True
+            if existing_runtime.get('completion_recovery') and not normal_sequence_completed(existing_runtime):
+                stale_recovery=existing_runtime.pop('completion_recovery',None)
+                existing.completion_state='ACTIVE'
+                log.warning('MOBILE_STALE_RECOVERY_CLEARED session=%s lesson=%s cursor=%s reached=%s recovery_step=%s normal_sequence_completed=false',existing.id,lid,existing.current_step_id,reached,(stale_recovery or {}).get('step_id'))
+            existing_runtime['reached_step_ids']=reached
             if existing_runtime.get('hero_identity')!=hero_identity:
                 log.info('MOBILE_SESSION_HERO_REFRESH session=%s old=%s new=%s',existing.id,existing_runtime.get('hero_identity'),hero_identity)
                 existing_runtime['hero_identity']=hero_identity
-                existing.runtime_state_json=json.dumps(existing_runtime,ensure_ascii=False)
+            existing.runtime_state_json=json.dumps(existing_runtime,ensure_ascii=False)
             if not existing.current_step_id or existing.current_step_id not in step_ids:
                 existing.current_step=max(0,min(int(existing.current_step or 0),max(len(step_ids)-1,0)))
                 existing.current_step_id=step_ids[existing.current_step] if step_ids else None
@@ -1513,7 +1525,7 @@ async def session_start(request:web.Request)->web.Response:
             video_state=await _mobile_pre_slide_video_state(db,cid,lid,existing.id)
             log.info('MOBILE_SESSION_RESUMED session=%s lesson=%s version=%s step_id=%s step_index=%s',existing.id,lid,version,existing.current_step_id,existing.current_step)
             return web.json_response(_session_payload(existing,ent,c,lesson_data,resumed=True,interactive_state=interactive_state,recorded_phrases=recorded_phrases,pre_slide_video_state=video_state))
-        sess=LessonSession(child_id=cid,lesson_id=lid,current_step=0,current_step_id=step_ids[0] if step_ids else None,lesson_version=version,completion_state='ACTIVE',status='IN_PROGRESS',level_at_start=c.language_level or 'PRE_A1',lesson_revision=int(lesson_data.get('revision') or 1),runtime_state_json=json.dumps({'source':'mobile','lesson_version':version,'hero_identity':hero_identity},ensure_ascii=False));db.add(sess);await db.flush();await ensure_movie_voice_slots(db,sess.id,lesson_data);await db.commit();await db.refresh(sess)
+        sess=LessonSession(child_id=cid,lesson_id=lid,current_step=0,current_step_id=step_ids[0] if step_ids else None,lesson_version=version,completion_state='ACTIVE',status='IN_PROGRESS',level_at_start=c.language_level or 'PRE_A1',lesson_revision=int(lesson_data.get('revision') or 1),runtime_state_json=json.dumps({'source':'mobile','lesson_version':version,'hero_identity':hero_identity,'reached_step_ids':step_ids[:1]},ensure_ascii=False));db.add(sess);await db.flush();await ensure_movie_voice_slots(db,sess.id,lesson_data);await db.commit();await db.refresh(sess)
         video_state=await _mobile_pre_slide_video_state(db,cid,lid,sess.id)
     log.info('MOBILE_SESSION_STARTED session=%s lesson=%s version=%s reset_reason=%s',sess.id,lid,version,reset_reason)
     return web.json_response(_session_payload(sess,ent,c,lesson_data,resumed=False,interactive_state={},recorded_phrases=[],pre_slide_video_state=video_state,reset_reason=reset_reason))
@@ -1541,9 +1553,20 @@ async def session_progress(request:web.Request)->web.Response:
             try:runtime=json.loads(sess.runtime_state_json or '{}')
             except (TypeError,ValueError,json.JSONDecodeError):runtime={}
             recovery_id=str((runtime.get('completion_recovery') or {}).get('step_id') or '')
-            if requested_id!=recovery_id:
+            if requested_id!=recovery_id or not normal_sequence_completed(runtime):
                 raise web.HTTPConflict(text=json.dumps({'error':'Прогресс урока не может неожиданно вернуться назад.','code':'LESSON_BACKWARD_PROGRESS_BLOCKED'},ensure_ascii=False),content_type='application/json')
-        sess.current_step=current_step;sess.current_step_id=requested_id;sess.lesson_version=version;await db.commit()
+        try:runtime=json.loads(sess.runtime_state_json or '{}')
+        except (TypeError,ValueError,json.JSONDecodeError):runtime={}
+        previous_step=int(sess.current_step or 0)
+        recovery_id=str((runtime.get('completion_recovery') or {}).get('step_id') or '')
+        if current_step>previous_step+1 and not (requested_id==recovery_id and normal_sequence_completed(runtime)):
+            next_id=step_ids[min(previous_step+1,len(step_ids)-1)] if step_ids else None
+            log.warning('LESSON_FORWARD_JUMP_BLOCKED session=%s lesson=%s previous_step=%s requested_step=%s requested_id=%s next_id=%s',sid,sess.lesson_id,previous_step,current_step,requested_id,next_id)
+            raise web.HTTPConflict(text=json.dumps({'error':'Сначала завершите следующий шаг урока.','code':'LESSON_FORWARD_JUMP_BLOCKED','next_step_id':next_id},ensure_ascii=False),content_type='application/json')
+        runtime=record_reached_step(lesson_data,runtime,requested_id)
+        if step_ids and requested_id==step_ids[-1] and (previous_step==len(step_ids)-2 or normal_sequence_completed(runtime)):
+            runtime['normal_sequence_completed']=True
+        sess.current_step=current_step;sess.current_step_id=requested_id;sess.lesson_version=version;sess.runtime_state_json=json.dumps(runtime,ensure_ascii=False);await db.commit()
     log.info('MOBILE_PROGRESS_SAVED session=%s lesson_version=%s step_id=%s step_index=%s',sid,version,requested_id,current_step)
     return web.json_response({'ok':True,'session_id':sid,'current_step':current_step,'current_step_id':requested_id,'lesson_version':version})
 
@@ -1588,8 +1611,8 @@ async def _voice_impl(request:web.Request)->web.Response:
         c=await db.get(Child,sess.child_id)
         if not c or c.parent_id!=p.id:raise web.HTTPForbidden()
     fields={};raw=None;audio_mime_type='audio/mp4';recording_id=_voice_recording_id(request);trace_id=recording_id or f'voice-{sid}-{secrets.token_hex(5)}'
-    log.info('MOBILE_VOICE_TRACE trace=%s stage=T3_HTTP_RECEIVED session=%s',trace_id,sid)
-    log.info('VOICE_TURN_TRACE turn_id=%s event=upload_completed session=%s recording_id=%s',trace_id,sid,recording_id or '-')
+    log.info('VOICE_TURN_TRACE trace_id=%s event=upload_handler_started timestamp_utc=%s session=%s recording_id=%s',trace_id,datetime.now(UTC).isoformat(),sid,recording_id or '-')
+    log.info('MOBILE_VOICE_TRACE trace=%s stage=T2_HTTP_RECEIVED session=%s',trace_id,sid)
     root=settings.storage_root/'children'/str(c.id)/'mobile-voice'/str(sid)
     incoming_root=_voice_temp_root(sid)
     request['_voice_temp_paths']=[]
@@ -1632,17 +1655,19 @@ async def _voice_impl(request:web.Request)->web.Response:
     if not bool(storage_report.get('ready')):
         log.error('MOBILE_VOICE_STORAGE_FULL session=%s recording_id=%s bytes=%s before=%s after=%s minimum=%s',sid,recording_id or '-',upload_size,storage_report.get('before'),storage_report.get('after'),storage_report.get('minimum'))
         return _voice_error(507,'VOICE_STORAGE_FULL','Запись сохранена на телефоне. Сейчас её не удалось отправить — попробуйте ещё раз.',retryable=True,recording_id=recording_id)
-    log.info('MOBILE_VOICE_UPLOAD_RECEIVED session=%s child=%s recording_id=%s bytes=%s mime=%s temp_path=%s storage_free=%s',sid,c.id,recording_id or '-',upload_size,audio_mime_type,raw,storage_report.get('after'))
     uploaded=time.perf_counter()
+    log.info('MOBILE_VOICE_UPLOAD_RECEIVED session=%s child=%s recording_id=%s bytes=%s mime=%s storage_free=%s',sid,c.id,recording_id or '-',upload_size,audio_mime_type,storage_report.get('after'))
+    log.info('VOICE_TURN_TRACE trace_id=%s event=upload_body_saved timestamp_utc=%s elapsed_ms=%d bytes=%d content_type=%s',trace_id,datetime.now(UTC).isoformat(),round((uploaded-started)*1000),upload_size,audio_mime_type)
     slide_id=fields.get('slide_id','');prompt=fields.get('prompt','');pid=fields.get('phrase_id') or None;retake_mode=fields.get('retake') is True or str(fields.get('retake') or '').lower() in {'1','true','yes'}
     try:conversation_turn=max(0,int(fields.get('conversation_turn') or 0))
     except (TypeError,ValueError):conversation_turn=0
+    log.info('VOICE_TURN_TRACE trace_id=%s event=voice_processing_started timestamp_utc=%s session=%s slide=%s turn=%s',trace_id,datetime.now(UTC).isoformat(),sid,slide_id or '-',conversation_turn)
     lesson_data=_load_mobile_lesson(sess.lesson_id);sl=_slide(lesson_data,slide_id);ph=_phrase(lesson_data,pid or sl.get('required_phrase_id'))
     client_context=fields.get('runtime_context') or {}
     if isinstance(client_context,str):
         try:client_context=json.loads(client_context)
         except (TypeError,ValueError,json.JSONDecodeError):client_context={}
-    log.info('MOBILE_VOICE_TRACE trace=%s stage=T6_VALIDATION_STARTED',trace_id)
+    log.info('MOBILE_VOICE_TRACE trace=%s stage=T6_SESSION_CONTEXT_VALIDATION_STARTED',trace_id)
     runtime_context=authoritative_voice_context(sl,client_context,c.target_language or 'ru',c.native_language or 'ru')
     expected_step=str(runtime_context.get('step_id') or '')
     expected_session=runtime_context.get('session_id')
@@ -1660,7 +1685,7 @@ async def _voice_impl(request:web.Request)->web.Response:
         if not turn_matches:return _voice_error(409,'STALE_VOICE_REQUEST','Ответ относится к другой реплике. Запись сохранена — повторите отправку.',request_id=runtime_context.get('request_id'))
     if runtime_context.get('hero_id') and session_hero and str(runtime_context.get('hero_id'))!=session_hero:
         return _voice_error(409,'STALE_HERO_IDENTITY','Герой урока изменился. Откройте урок заново.',request_id=runtime_context.get('request_id'))
-    log.info('MOBILE_VOICE_TRACE trace=%s stage=T6_VALIDATION_COMPLETED step=%s turn=%s hero=%s',trace_id,slide_id,conversation_turn,session_hero or '-')
+    log.info('MOBILE_VOICE_TRACE trace=%s stage=T6_SESSION_CONTEXT_VALIDATION_COMPLETED step=%s turn=%s hero=%s',trace_id,slide_id,conversation_turn,session_hero or '-')
     required_movie_slide=bool(sl.get('requiredForMovie') is True or sl.get('required_for_movie') is True)
     audio_received=raw.stat().st_size>=1000
     if not audio_received:
@@ -1737,6 +1762,7 @@ async def _voice_impl(request:web.Request)->web.Response:
     else:
         assessment=SpeechAssessment(status='NO_SPEECH')
     assessed=time.perf_counter()
+    log.info('VOICE_TURN_TRACE trace_id=%s event=answer_semantic_validation_completed timestamp_utc=%s elapsed_ms=%d status=%s accepted=%s confidence=%.3f',trace_id,datetime.now(UTC).isoformat(),round((assessed-prepared)*1000),assessment.status,bool(assessment.status.startswith('ACCEPTED')),float(assessment.confidence or 0))
     feedback_state=classify_voice_feedback(audio_received=audio_received,has_speech=activity.has_speech,transcript=assessment.transcript,confidence=assessment.confidence,status=assessment.status,semantic_match=assessment.semantic_match)
     outcome=voice_attempt_outcome(str(assessment.status or 'TECHNICAL_UNCERTAINTY'),attempt_number,max_attempts)
     movie_take_accepted=False
@@ -1891,7 +1917,7 @@ async def _voice_impl(request:web.Request)->web.Response:
     saved=time.perf_counter()
     log.info('MOBILE_VOICE_DURABLE_SAVED trace=%s elapsed_ms=%d',trace_id,round((saved-assessed)*1000))
     log.info('MOBILE_VOICE_SAVE_SUCCESS session=%s child=%s slide=%s phrase=%s recording_id=%s path=%s bytes=%s mime=%s db_attempt=%s movie_take=%s',sid,c.id,slide_id,storage_phrase_id,recording_id or '-',durable_path,upload_size,audio_mime_type,attempt_number,movie_take_accepted)
-    log.info('VOICE_TURN_TRACE turn_id=%s event=recording_durable_saved recording_id=%s',trace_id,recording_id or '-')
+    log.info('VOICE_TURN_TRACE trace_id=%s event=recording_durable_saved timestamp_utc=%s recording_id=%s',trace_id,datetime.now(UTC).isoformat(),recording_id or '-')
     log.info('MOBILE_VOICE_LATENCY session=%s slide=%s phrase=%s upload_ms=%d prepare_ms=%d assess_ms=%d save_ms=%d total_ms=%d attempt=%d status=%s activity=%s speech_ms=%d retake=%s',sid,slide_id,storage_phrase_id,round((uploaded-started)*1000),round((prepared-uploaded)*1000),round((assessed-prepared)*1000),round((saved-assessed)*1000),round((saved-started)*1000),attempt_number,status,activity.reason,round(activity.speech_seconds*1000),retake_mode)
     if target_response or helper_translation:
         try:
@@ -1945,12 +1971,23 @@ async def update_child_language(request:web.Request)->web.Response:
 
 async def tts(request:web.Request)->web.StreamResponse:
     started=time.perf_counter();await _parent(request)
+    trace_recording_id=re.sub(r'[^A-Za-z0-9._:-]','',str(request.query.get('trace_recording_id') or ''))[:100]
+    trace={
+        'recording_id':trace_recording_id or '-',
+        'session':re.sub(r'[^0-9]','',str(request.query.get('trace_session_id') or ''))[:20] or '-',
+        'slide':re.sub(r'[^A-Za-z0-9._:-]','',str(request.query.get('trace_slide_id') or ''))[:80] or '-',
+        'turn':re.sub(r'[^0-9]','',str(request.query.get('trace_turn_id') or ''))[:8] or '-',
+    }
+    trace_id=trace_recording_id or f"tts-{trace['session']}-{secrets.token_hex(5)}"
+    log.info('VOICE_TURN_TRACE trace_id=%s event=tts_request_started timestamp_utc=%s session=%s slide=%s turn=%s',trace_id,datetime.now(UTC).isoformat(),trace['session'],trace['slide'],trace['turn'])
     text=str(request.query.get('text',''))[:1000];native_text=str(request.query.get('native_text',''))[:1000];source=str(request.query.get('source_language','ru'));native_source=str(request.query.get('native_source_language',source));target=str(request.query.get('target_language','ru'));native=str(request.query.get('native_language','ru'));style=str(request.query.get('style','warm'))[:32]
     if not text and not native_text:raise web.HTTPBadRequest()
     try:
         spoken_target=await translate_text(text,source,target) if text else ''
         spoken_native=await translate_text(native_text,native_source,native) if native_text else ''
-    except Exception as exc:raise web.HTTPServiceUnavailable(text=f'Translation unavailable: {exc}')
+    except Exception as exc:
+        log.exception('VOICE_TURN_TRACE trace_id=%s event=tts_translation_failed timestamp_utc=%s session=%s slide=%s turn=%s elapsed_ms=%d error_type=%s',trace_id,datetime.now(UTC).isoformat(),trace['session'],trace['slide'],trace['turn'],round((time.perf_counter()-started)*1000),type(exc).__name__)
+        raise web.HTTPServiceUnavailable(text=f'Translation unavailable: {exc}')
     translated=time.perf_counter()
     if native==target and spoken_native==spoken_target:spoken_native=''
     try:
@@ -1958,13 +1995,13 @@ async def tts(request:web.Request)->web.StreamResponse:
     except (AISpeechError,OSError) as exc:
         detail=str(exc)
         code='TTS_STORAGE_UNAVAILABLE' if 'No space left on device' in detail or getattr(exc,'errno',None)==28 else 'TTS_GENERATION_UNAVAILABLE'
-        log.exception('MOBILE_TTS_FAILED code=%s target=%s native=%s',code,target,native)
+        log.exception('MOBILE_TTS_FAILED trace_id=%s session=%s slide=%s turn=%s code=%s elapsed_ms=%d target=%s native=%s',trace_id,trace['session'],trace['slide'],trace['turn'],code,round((time.perf_counter()-started)*1000),target,native)
         raise web.HTTPServiceUnavailable(
             text=json.dumps({'error':'Голос ведущей временно недоступен. Можно продолжить без него.','code':code},ensure_ascii=False),
             content_type='application/json',
         )
     if not path:raise web.HTTPServiceUnavailable(text='TTS unavailable')
-    ready=time.perf_counter();content_type={'.ogg':'audio/ogg','.opus':'audio/ogg','.mp3':'audio/mpeg','.wav':'audio/wav','.m4a':'audio/mp4','.aac':'audio/aac'}.get(path.suffix.lower()) or mimetypes.guess_type(path.name)[0] or 'application/octet-stream';log.info('MOBILE_TTS_LATENCY source=%s target=%s translate_ms=%d synth_or_cache_ms=%d total_ms=%d',source,target,round((translated-started)*1000),round((ready-translated)*1000),round((ready-started)*1000));log.info('MOBILE_TTS_RESPONSE target=%s native=%s content_type=%s bytes=%s path_suffix=%s',target,native,content_type,path.stat().st_size,path.suffix.lower())
+    ready=time.perf_counter();content_type={'.ogg':'audio/ogg','.opus':'audio/ogg','.mp3':'audio/mpeg','.wav':'audio/wav','.m4a':'audio/mp4','.aac':'audio/aac'}.get(path.suffix.lower()) or mimetypes.guess_type(path.name)[0] or 'application/octet-stream';log.info('MOBILE_TTS_LATENCY trace_id=%s session=%s slide=%s turn=%s recording_id=%s source=%s target=%s translate_ms=%d synth_or_cache_ms=%d total_ms=%d',trace_id,trace['session'],trace['slide'],trace['turn'],trace['recording_id'],source,target,round((translated-started)*1000),round((ready-translated)*1000),round((ready-started)*1000));log.info('MOBILE_TTS_RESPONSE trace_id=%s session=%s slide=%s turn=%s recording_id=%s target=%s native=%s content_type=%s bytes=%s path_suffix=%s',trace_id,trace['session'],trace['slide'],trace['turn'],trace['recording_id'],target,native,content_type,path.stat().st_size,path.suffix.lower());log.info('VOICE_TURN_TRACE trace_id=%s event=tts_audio_ready timestamp_utc=%s elapsed_ms=%d bytes=%d content_type=%s',trace_id,datetime.now(UTC).isoformat(),round((ready-started)*1000),path.stat().st_size,content_type)
     response=web.FileResponse(path);response.content_type=content_type;response.headers['Content-Disposition']=f'inline; filename="dome-tutor{path.suffix.lower()}"';response.headers['Cache-Control']='private, max-age=604800';return response
 
 
@@ -2080,6 +2117,17 @@ async def complete(request:web.Request,movie_build_trigger:str='complete')->web.
     movie_lesson_data={**lesson_data,'timeline':movie_contract.timeline} if movie_contract else lesson_data
     try:session_runtime=json.loads(sess.runtime_state_json or '{}')
     except (TypeError,ValueError,json.JSONDecodeError):session_runtime={}
+    reached=reached_step_ids(lesson_data,session_runtime,current_step_id=sess.current_step_id,current_step=sess.current_step)
+    if sess.status!='COMPLETED' and step_ids:
+        if step_ids[-1] in reached and not normal_sequence_completed(session_runtime):
+            # Older sessions persisted only the positional cursor. A cursor at
+            # the final stable route step is the compatibility proof for those
+            # sessions; earlier cursors, including recovery cursors, are not.
+            session_runtime['normal_sequence_completed']=True
+            log.info('LESSON_SEQUENCE_LEGACY_FINAL_CURSOR_ACCEPTED session=%s lesson=%s final_step_id=%s',sid,sess.lesson_id,step_ids[-1])
+        if not normal_sequence_completed(session_runtime) or step_ids[-1] not in reached:
+            log.warning('LESSON_COMPLETION_BLOCKED_BEFORE_END session=%s lesson=%s status=%s current_step_id=%s normal_sequence_completed=%s reached=%s final_step_id=%s',sid,sess.lesson_id,sess.status,sess.current_step_id,normal_sequence_completed(session_runtime),reached,step_ids[-1])
+            raise web.HTTPConflict(text=json.dumps({'error':'Сначала завершите обычные шаги урока.','code':'LESSON_SEQUENCE_INCOMPLETE','current_step_id':sess.current_step_id,'final_step_id':step_ids[-1],'normal_sequence_completed':False,'reached_step_ids':reached},ensure_ascii=False),content_type='application/json')
     session_hero=session_runtime.get('hero_identity') if isinstance(session_runtime.get('hero_identity'),dict) else {}
     async with SessionLocal() as db:
         voices=(await db.scalars(select(VoiceAttempt).where(VoiceAttempt.lesson_session_id==sid).order_by(VoiceAttempt.id))).all();char=await db.get(Character,int(session_hero.get('character_id'))) if session_hero.get('character_id') else None
@@ -2115,13 +2163,17 @@ async def complete(request:web.Request,movie_build_trigger:str='complete')->web.
                 await db.commit()
         log.warning('MOBILE_COMPLETION_RECOVERY_REQUIRED session=%s missing=%s target=%s',sid,missing_exact,target)
         raise web.HTTPConflict(text=json.dumps({'error':'Нужно записать обязательную реплику для мультфильма.','code':'REQUIRED_MOVIE_RECORDINGS_MISSING','missing_phrase_ids':missing_exact,'missing_steps':missing_steps,'lesson_version':version,'return_to':'COMPLETE'},ensure_ascii=False),content_type='application/json')
-    recovery_allowed=str(sess.completion_state or '')=='RECOVERY_REQUIRED'
-    if sess.status!='COMPLETED' and not recovery_allowed and step_ids and str(sess.current_step_id or '')!=step_ids[-1]:
-        raise web.HTTPConflict(text=json.dumps({'error':'Сначала завершите текущий шаг урока.','code':'LESSON_SEQUENCE_INCOMPLETE','current_step_id':sess.current_step_id,'final_step_id':step_ids[-1]},ensure_ascii=False),content_type='application/json')
     if sess.status!='COMPLETED':
         async with SessionLocal() as db:
             db_session=await db.get(LessonSession,sid)
-            if db_session:db_session.completion_state='COMPLETING';await db.commit()
+            if db_session:
+                try:runtime=json.loads(db_session.runtime_state_json or '{}')
+                except (TypeError,ValueError,json.JSONDecodeError):runtime={}
+                runtime['normal_sequence_completed']=True
+                runtime['required_story_inputs_completed']=True
+                runtime['reached_step_ids']=reached
+                db_session.runtime_state_json=json.dumps(runtime,ensure_ascii=False)
+                db_session.completion_state='COMPLETING';await db.commit()
     ent,new=await complete_session_once(session_id=sid,child_id=c.id,lesson_id=sess.lesson_id,course_id=course,final_step=len(lesson_data.get('slides',[])))
     run_no=int(ent.completed_runs or 0)
     hero_path=Path(char.processed_path or char.original_path) if char else preset_character_path('dome_cat')
@@ -2670,6 +2722,7 @@ async def mobile_courses(request: web.Request) -> web.Response:
         pass
     courses = list_courses(for_client=not is_owner)
     return web.json_response({'ok': True, 'courses': [c.model_dump() for c in courses]})
+
 
 async def content_manifest(request: web.Request) -> web.Response:
     """Return a lightweight content-version manifest for mobile sync.
