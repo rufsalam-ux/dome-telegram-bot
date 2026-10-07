@@ -102,6 +102,26 @@ DOCUMENT_METADATA = {
 
 MANDATORY_DOCUMENTS = [k for k, v in DOCUMENT_METADATA.items() if v["required"]]
 
+# Registration uses the single required checkbox in the mobile app. Billing
+# documents remain required at the purchase flow, but are not part of account
+# registration consent.
+REGISTRATION_REQUIRED_DOCUMENTS = [
+    "TERMS_OF_SERVICE",
+    "PRIVACY_POLICY",
+    "PARENT_LEGAL_REP",
+    "CHILD_DATA_PROCESSING",
+    "VOICE_DATA_PROCESSING",
+]
+
+
+def missing_registration_consents(consents: list[dict[str, Any]]) -> list[str]:
+    accepted_types = {
+        str(item.get("document_type") or "").strip().upper()
+        for item in consents
+        if isinstance(item, dict) and item.get("accepted") is True
+    }
+    return [doc for doc in REGISTRATION_REQUIRED_DOCUMENTS if doc not in accepted_types]
+
 
 def get_legal_documents(locale: str = "ru") -> list[dict[str, Any]]:
     is_ru = str(locale or "ru").lower().startswith("ru")

@@ -17,6 +17,7 @@ from app.services.password_auth import (
     verify_password,
     verify_verification_code,
 )
+from app.services.consents import missing_registration_consents
 from app.webapp import mobile_api
 
 
@@ -81,6 +82,28 @@ def test_smtp_message_uses_configured_sender_name(monkeypatch):
 
     assert message["From"] == "DOME <sender@example.test>"
     assert message["To"] == "parent@example.com"
+
+
+def test_single_registration_checkbox_does_not_require_purchase_consents():
+    accepted = [
+        {"document_type": doc_type, "accepted": True}
+        for doc_type in (
+            "TERMS_OF_SERVICE",
+            "PRIVACY_POLICY",
+            "PARENT_LEGAL_REP",
+            "CHILD_DATA_PROCESSING",
+            "VOICE_DATA_PROCESSING",
+        )
+    ]
+
+    assert missing_registration_consents(accepted) == []
+    assert missing_registration_consents(accepted[:-1]) == ["VOICE_DATA_PROCESSING"]
+    assert missing_registration_consents([
+        *accepted,
+        {"document_type": "SUBSCRIPTION_TERMS", "accepted": False},
+        {"document_type": "CANCELLATION_POLICY", "accepted": False},
+        {"document_type": "REFUND_POLICY", "accepted": False},
+    ]) == []
 
 
 def test_settings_reads_exact_railway_resend_variable_names(monkeypatch):

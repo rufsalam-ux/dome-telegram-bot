@@ -1217,10 +1217,11 @@ async def register_full(request: web.Request) -> web.Response:
     if not child_name:
         raise web.HTTPBadRequest(text=json.dumps({"error": "Введите имя ребёнка"}), content_type="application/json")
 
-    # Validate mandatory legal consents
-    from app.services.consents import MANDATORY_DOCUMENTS, record_user_consents
-    accepted_types = {str(c.get("document_type")).upper() for c in consents if c.get("accepted")}
-    missing_docs = [doc for doc in MANDATORY_DOCUMENTS if doc not in accepted_types]
+    # Registration accepts only the documents represented by the single
+    # required checkbox. Subscription/cancellation/refund consents are handled
+    # by the purchase flow and must not block account creation.
+    from app.services.consents import missing_registration_consents, record_user_consents
+    missing_docs = missing_registration_consents(consents)
     if missing_docs:
         raise web.HTTPBadRequest(text=json.dumps({
             "error": "Необходимо принять все обязательные документы для продолжения.",
