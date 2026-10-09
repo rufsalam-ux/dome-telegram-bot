@@ -173,7 +173,10 @@ async def test_authenticated_mobile_plan_change_api_uses_same_domain(monkeypatch
         assert response.status==200
         preview=await response.json()
         assert preview['new_plan']['price']==69
-        assert preview['effective_at'].startswith(effective.isoformat())
+        expected_effective=effective
+        while expected_effective<=datetime.utcnow():
+            expected_effective+=relativedelta(months=1)
+        assert preview['effective_at'].startswith(expected_effective.isoformat())
 
         response=await client.post(f'/api/mobile/child/{child_id}/subscription/plan-change',headers=headers,json={'course_id':'conversation','plan_id':'weekly2'})
         assert response.status==200

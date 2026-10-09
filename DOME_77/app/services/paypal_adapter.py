@@ -58,7 +58,8 @@ async def ensure_paypal_plan(*,plan_id:str,plan_version_id:str='',lessons_per_we
     if period == 'YEAR' and special_first_year and standard_renewal_price > 0:
         key=f'{version_id}:YEAR:{currency.upper()}:{monthly_price:.2f}:{standard_renewal_price:.2f}:special:{intro_week_price:.2f}'
     elif intro_week_price > 0:
-        key=f'{_plan_cache_key(version_id,monthly_price,currency,period)}:intro:{intro_week_price:.2f}'
+        schedule_version = ':paid-week-year-v2' if period == 'YEAR' else ''
+        key=f'{_plan_cache_key(version_id,monthly_price,currency,period)}{schedule_version}:intro:{intro_week_price:.2f}'
     else:
         key=_plan_cache_key(version_id,monthly_price,currency,period)
     entry=cache.get(key)
@@ -92,7 +93,7 @@ async def ensure_paypal_plan(*,plan_id:str,plan_version_id:str='',lessons_per_we
             'pricing_scheme': {'fixed_price': {'value': f'{standard_renewal_price:.2f}', 'currency_code': currency.upper()}}
         })
     elif intro_week_price > 0:
-        # MONTH plan with intro week: 1-week TRIAL at intro_week_price, then regular monthly billing
+        # A single paid week precedes the selected MONTH or YEAR renewal.
         billing_cycles.append({
             'frequency': {'interval_unit': 'WEEK', 'interval_count': 1},
             'tenure_type': 'TRIAL',
@@ -101,7 +102,7 @@ async def ensure_paypal_plan(*,plan_id:str,plan_version_id:str='',lessons_per_we
             'pricing_scheme': {'fixed_price': {'value': f'{intro_week_price:.2f}', 'currency_code': currency.upper()}}
         })
         billing_cycles.append({
-            'frequency': {'interval_unit': 'MONTH', 'interval_count': 1},
+            'frequency': {'interval_unit': period, 'interval_count': 1},
             'tenure_type': 'REGULAR',
             'sequence': 2,
             'total_cycles': 0,
@@ -119,7 +120,7 @@ async def ensure_paypal_plan(*,plan_id:str,plan_version_id:str='',lessons_per_we
     data=await _request('POST','/v1/billing/plans',body=body,request_id='dome-plan-'+key.replace(':','-'))
     pp=str(data.get('id') or '')
     if not pp: raise PayPalError('PayPal не вернул plan_id')
-    cache[key]={'paypal_plan_id':pp,'plan_version_id':version_id,'plan_id':plan_id,'billing_period':period,'lessons_per_week':int(lessons_per_week),'price':round(float(monthly_price),2),'standard_renewal_price':round(float(standard_renewal_price),2) if standard_renewal_price > 0 else None,'special_first_year':bool(special_first_year),'currency':currency.upper()}
+    cache[key]={'paypal_plan_id':pp,'plan_version_id':version_id,'plan_id':plan_id,'billing_period':period,'lessons_per_week':int(lessons_per_week),'price':round(float(monthly_price),2),'standard_renewal_price':round(float(standard_renewal_price),2) if standard_renewal_price > 0 else None,'special_first_year':bool(special_first_year),'currency':currency.upper(),'intro_week_price':round(float(intro_week_price),2)}
     cfg['paypal_plan_versions']=cache; save_settings('payments',cfg); return pp
 
 def _custom_id(child_id:int,course_id:str,plan_id:str,plan_version_id:str,freq:int,price:float,billing_period:str,special_first_year:bool=False,standard_renewal:float=0.0)->str:
@@ -147,9 +148,12 @@ def _meta_from_provider_plan(provider_plan_id:str)->dict:
     if not provider_plan_id:return {}
     payments=load_settings('payments')
     versioned=dict(payments.get('paypal_plan_versions') or {})
-    for entry in versioned.values():
+    for key, entry in versioned.items():
         if isinstance(entry,dict) and str(entry.get('paypal_plan_id') or '')==str(provider_plan_id):
-            return {'plan_id':str(entry.get('plan_id') or ''),'plan_version_id':str(entry.get('plan_version_id') or ''),'lessons_per_week':int(entry.get('lessons_per_week') or 1),'monthly_price':float(entry.get('price') or 0.0),'currency':str(entry.get('currency') or 'EUR'),'billing_period':str(entry.get('billing_period') or 'MONTH'),'provider_plan_id':str(provider_plan_id),'special_first_year':bool(entry.get('special_first_year',False)),'standard_renewal_price':float(entry.get('standard_renewal_price') or 0.0)}
+            intro_price = float(entry.get('intro_week_price') or 0.0)
+            if not intro_price and (':intro:' in key or ':special:' in key):
+                intro_price = float(key.rsplit(':', 1)[-1])
+            return {'plan_id':str(entry.get('plan_id') or ''),'plan_version_id':str(entry.get('plan_version_id') or ''),'lessons_per_week':int(entry.get('lessons_per_week') or 1),'monthly_price':float(entry.get('price') or 0.0),'currency':str(entry.get('currency') or 'EUR'),'billing_period':str(entry.get('billing_period') or 'MONTH'),'provider_plan_id':str(provider_plan_id),'special_first_year':bool(entry.get('special_first_year',False)),'standard_renewal_price':float(entry.get('standard_renewal_price') or 0.0),'intro_week_price':intro_price}
     cache=dict(payments.get('paypal_plan_cache') or {})
     for key,value in cache.items():
         if str(value)==str(provider_plan_id):
@@ -184,7 +188,9 @@ async def create_paypal_subscription_checkout(*,child_id:int,course_id:str,plan_
     return str(detail['approval_url'])
 
 async def change_paypal_subscription_plan(*,subscription_id:str,child_id:int,course_id:str,plan_id:str,plan_version_id:str='',provider_plan_id:str='',lessons_per_week:int,monthly_price:float,currency:str,billing_period:str='MONTH',success_url:str,cancel_url:str,idempotency_key:str='')->dict:
-    pp=str(provider_plan_id or '') or await ensure_paypal_plan(plan_id=plan_id,plan_version_id=plan_version_id,lessons_per_week=lessons_per_week,monthly_price=monthly_price,currency=currency,billing_period=billing_period)
+    # Revising an existing agreement changes the next cycle, not acquisition:
+    # do not create another paid introductory week or first-year trial cycle.
+    pp=str(provider_plan_id or '') or await ensure_paypal_plan(plan_id=plan_id,plan_version_id=plan_version_id,lessons_per_week=lessons_per_week,monthly_price=monthly_price,currency=currency,billing_period=billing_period,intro_week_price=0.0,special_first_year=False)
     body={'plan_id':pp,'application_context':{'brand_name':'DOME / BilingvaDom','return_url':success_url,'cancel_url':cancel_url}}
     data=await _request('POST',f'/v1/billing/subscriptions/{subscription_id}/revise',body=body,request_id=idempotency_key)
     # PayPal requires buyer re-consent for PayPal-funded subscription plan changes.
@@ -240,4 +246,26 @@ def normalize_paypal_event(data:dict,subscription:dict|None=None)->NormalizedPay
     except (TypeError,ValueError):charged=0.0
     billing=(sub.get('billing_info') if isinstance(sub.get('billing_info'),dict) else {}) or (resource.get('billing_info') if isinstance(resource.get('billing_info'),dict) else {})
     last=billing.get('last_payment') if isinstance(billing.get('last_payment'),dict) else {}
-    return NormalizedPaymentEvent(provider='paypal',event_id=str(data.get('id') or ''),event_type=event_type,status=status,child_id=int(meta.get('child_id') or 0),course_id=str(meta.get('course_id') or ''),plan_id=str(meta.get('plan_id') or ''),plan_version_id=str(meta.get('plan_version_id') or ''),billing_period=str(meta.get('billing_period') or 'MONTH'),provider_plan_id=str(meta.get('provider_plan_id') or resource.get('plan_id') or sub.get('plan_id') or ''),lessons_per_week=int(meta.get('lessons_per_week') or 1),monthly_price=float(meta.get('monthly_price') or 0),currency=str(meta.get('currency') or amount.get('currency') or amount.get('currency_code') or 'EUR'),provider_subscription_id=provider_sub_id,occurred_at=_paypal_datetime(data.get('create_time')),period_start=_paypal_datetime(last.get('time')) or _paypal_datetime(data.get('create_time')),period_end=_paypal_datetime(billing.get('next_billing_time')),charged_amount=charged,special_first_year=bool(meta.get('special_first_year',False)),standard_renewal_price=float(meta.get('standard_renewal_price') or 0.0),raw=data)
+    last_time = _paypal_datetime(last.get('time'))
+    event_time = _paypal_datetime(resource.get('create_time')) or _paypal_datetime(data.get('create_time'))
+    paid_at = (event_time or last_time) if event_type == 'PAYMENT_SUCCEEDED' else (last_time or event_time)
+    next_charge = _paypal_datetime(billing.get('next_billing_time'))
+    if event_type == 'PAYMENT_SUCCEEDED' and last_time and paid_at:
+        if abs((last_time - paid_at).total_seconds()) > 60:
+            next_charge = None  # The fetched snapshot describes a different payment.
+        else:
+            # Verification and sale webhooks must use the same payment anchor.
+            # PayPal's sale/create timestamp can differ by a few seconds; using
+            # it as a new period would reset already consumed lesson quota.
+            paid_at = last_time
+    if event_type == 'SUBSCRIPTION_ACTIVE':
+        charged = float((last.get('amount') or {}).get('value') or 0)
+    intro_price = float(meta.get('intro_week_price') or 0)
+    special = bool(meta.get('special_first_year', False))
+    recurring_price = float(meta.get('monthly_price') or 0)
+    renewal_price = float(meta.get('standard_renewal_price') or 0)
+    if event_type in {'PAYMENT_SUCCEEDED', 'SUBSCRIPTION_ACTIVE'} and str(meta.get('billing_period')).upper() == 'YEAR' and charged > 0 and abs(charged - intro_price) >= 0.01:
+        recurring_price = charged
+        if renewal_price > 0 and abs(charged - renewal_price) < 0.01:
+            special = False
+    return NormalizedPaymentEvent(provider='paypal',event_id=str(data.get('id') or ''),event_type=event_type,status=status,child_id=int(meta.get('child_id') or 0),course_id=str(meta.get('course_id') or ''),plan_id=str(meta.get('plan_id') or ''),plan_version_id=str(meta.get('plan_version_id') or ''),billing_period=str(meta.get('billing_period') or 'MONTH'),provider_plan_id=str(meta.get('provider_plan_id') or resource.get('plan_id') or sub.get('plan_id') or ''),lessons_per_week=int(meta.get('lessons_per_week') or 1),monthly_price=recurring_price,currency=str(amount.get('currency') or amount.get('currency_code') or meta.get('currency') or 'EUR'),provider_subscription_id=provider_sub_id,occurred_at=_paypal_datetime(data.get('create_time')),period_start=paid_at,period_end=next_charge,charged_amount=charged,special_first_year=special,standard_renewal_price=renewal_price,intro_week_price=intro_price,plan_from_subscription_snapshot=bool(event_type == 'PAYMENT_SUCCEEDED' and not resource.get('plan_id') and sub.get('plan_id')),raw=data)

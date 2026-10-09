@@ -204,6 +204,7 @@ class TestF_DBLifecycle_SpecialFirstYear:
                 provider="paypal",
                 event_id="f_active",
                 event_type="SUBSCRIPTION_ACTIVE",
+                charged_amount=599.0,
                 status="ACTIVE",
                 child_id=10,
                 course_id="conversation",
@@ -338,6 +339,7 @@ class TestI_EntitlementPersistsAfterExpiry:
                 provider="paypal",
                 event_id="i_active",
                 event_type="SUBSCRIPTION_ACTIVE",
+                charged_amount=349.0,
                 status="ACTIVE",
                 child_id=30,
                 course_id="conversation",
@@ -770,4 +772,3 @@ class TestQ_RecordPaymentConsent:
         assert ctx["special_first_year"] is True
         assert ctx["standard_renewal_price"] == 1535.0
         assert ctx["intro_week_price"] == 12.0
-

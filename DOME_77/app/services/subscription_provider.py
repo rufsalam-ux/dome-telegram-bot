@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+import asyncio
 
 from app.db.models import Subscription
 from app.services.subscription_plan_changes import PlanSnapshot
@@ -17,6 +18,32 @@ class ProviderPlanChangeResult:
     reference: str = ""
     approval_url: str = ""
     provider_plan_id: str = ""
+
+
+async def cancel_provider_renewal(sub: Subscription) -> dict:
+    """Stop the real agreement first; callers preserve already-paid access."""
+    if sub.test_mode or not sub.provider_subscription_id:
+        raise SubscriptionProviderError("У подписки нет подтверждённого платёжного соглашения")
+    provider = str(sub.payment_provider or "").lower()
+    if provider == "paypal":
+        from app.services.paypal_adapter import _request, get_paypal_subscription
+        snapshot = await get_paypal_subscription(sub.provider_subscription_id)
+        if str(snapshot.get("status") or "").upper() not in {"CANCELLED", "EXPIRED"}:
+            await _request("POST", f"/v1/billing/subscriptions/{sub.provider_subscription_id}/cancel",
+                body={"reason": "Customer requested cancellation of future DOME renewals"})
+            snapshot = await get_paypal_subscription(sub.provider_subscription_id)
+        if str(snapshot.get("status") or "").upper() not in {"CANCELLED", "EXPIRED"}:
+            raise SubscriptionProviderError("PayPal ещё не подтвердил отмену автопродления. Повторите проверку.")
+        return snapshot
+    if provider == "stripe":
+        from app.core.config import settings
+        import stripe
+        stripe.api_key = settings.stripe_secret_key
+        result = await asyncio.to_thread(stripe.Subscription.modify, sub.provider_subscription_id, cancel_at_period_end=True)
+        if not result.get("cancel_at_period_end"):
+            raise SubscriptionProviderError("Stripe не подтвердил отмену автопродления")
+        return dict(result)
+    raise SubscriptionProviderError("Этот провайдер не поддерживает подтверждённую отмену в приложении")
 
 
 async def schedule_provider_plan_change(

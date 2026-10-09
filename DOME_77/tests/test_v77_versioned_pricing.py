@@ -193,7 +193,7 @@ async def test_existing_plan_change_locks_latest_version_and_activates_next_peri
             current_period_start=now, current_period_end=effective, next_charge_at=effective,
         )
         db.add(sub); await db.flush()
-        preview = await preview_plan_change(db, sub, parent_id=parent.id, requested_plan_id="weekly2", requested_billing_period=MONTH)
+        preview = await preview_plan_change(db, sub, parent_id=parent.id, requested_plan_id="weekly2", requested_billing_period=MONTH, now=now)
         assert preview.requested.version_id == latest["version_id"] and preview.requested.price == 75
         schedule_plan_change(db, sub, parent_id=parent.id, preview=preview, provider_status="SCHEDULED", provider_plan_id="price-new", now=now)
         due = renewal_charge_for(sub, now=effective)

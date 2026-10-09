@@ -30,7 +30,6 @@ from app.services.mobile_lesson_movie import MOBILE_MOVIE_VERSION,MOVIE_STALL_TI
 from app.services.email_reports import send_homework_email,_send_with_attachment_sync,send_verification_email,send_password_reset_email
 from app.services.ai_speech import AISpeechError, synthesize_bilingual_speech, translate_text
 from app.services.password_auth import hash_password, hash_verification_code, verify_password, verify_verification_code
-from app.services.standalone_demo_access import ensure_free_demo_entitlement
 from app.services.visual_localization import VisualLocalizationError, localize_embedded_text_image
 from app.services.course_catalog import list_courses
 from app.services.authored_content import lesson_dir as authored_lesson_dir
@@ -447,7 +446,11 @@ async def lesson_catalog(request:web.Request)->web.Response:
     ]
 
     items=[]
+    from app.services.subscription_release import release_due_lessons
     for course in active_courses:
+        # Synchronize paid weekly slots before calculating catalog availability.
+        # This also promotes legacy FREE_DEMO progress in-place after payment.
+        await release_due_lessons(cid, str(course.course_id))
         for lesson_id in course.lesson_ids:
             try:data=_load_mobile_lesson(str(lesson_id))
             except web.HTTPException:continue
@@ -511,7 +514,6 @@ async def create_child(request:web.Request)->web.Response:
         if int(count or 0)>=5:raise web.HTTPConflict(text=json.dumps({'error':'Можно добавить не более 5 детей'}),content_type='application/json')
         child=Child(parent_id=p.id,display_name=name,age_years=age,target_language=target,native_language=native,gender=str(data.get('gender') or 'boy').lower()[:16])
         db.add(child);await db.flush()
-        await ensure_free_demo_entitlement(db,parent_id=p.id,child_id=child.id)
         await db.commit();await db.refresh(child)
     return web.json_response(_child_json(request,child),status=201)
 
@@ -520,11 +522,19 @@ def _date_json(value:datetime|None)->str|None:
     return value.isoformat() if value else None
 
 
-def _plan_json(plan, is_eligible_special: bool = False)->dict:
+def _plan_json(plan, is_eligible_special: bool = False, *, acquisition_offer: bool = True, intro_eligible: bool = True)->dict:
     data = {
         'plan_id':plan.plan_id,'version_id':plan.version_id,'title':plan.title,'lessons_per_week':plan.lessons_per_week,
         'price':plan.price,'currency':plan.currency,'billing_period':plan.billing_period,
     }
+    if not acquisition_offer:
+        # Existing and scheduled agreements use their locked snapshot, never
+        # today's introductory offer or another customer's annual discount.
+        return data
+    if not intro_eligible:
+        data.update(intro_eligible=False, intro_week_price=0, intro_week_days=0)
+        return data
+    data['intro_eligible'] = True
     if str(plan.billing_period).upper() == 'YEAR':
         from app.services.special_annual_pricing import get_plan_annual_offer_detail
         offer = get_plan_annual_offer_detail(plan.plan_id, plan.lessons_per_week, is_eligible_special)
@@ -535,8 +545,15 @@ def _plan_json(plan, is_eligible_special: bool = False)->dict:
         data['standard_renewal_price'] = offer['standard_renewal_price']
         data['annual_savings'] = offer['annual_savings']
         data['intro_week_price'] = offer['intro_week_price']
+        data['intro_week_days'] = 7
         data['renewal_disclosure'] = offer['renewal_disclosure']
         data['title_badge'] = offer['title_badge']
+    elif str(plan.currency or 'EUR').upper() == 'EUR':
+        # First billing cycle is one week at €3 per lesson in the selected
+        # weekly plan; the regular monthly amount remains the configured price.
+        data['intro_week_price'] = round(max(1, int(plan.lessons_per_week)) * 3.0, 2)
+        data['intro_week_days'] = 7
+        data['renewal_disclosure'] = 'After the first paid week, the selected monthly plan renews automatically unless cancelled.'
     return data
 
 
@@ -560,12 +577,19 @@ def _subscription_json(sub:Subscription|None)->dict|None:
             'provider_status':sub.pending_provider_status,
         }
     return {
-        'id':sub.id,'course_id':sub.course_id,'status':sub.status,'current_plan':_plan_json(current),
+        'id':sub.id,'course_id':sub.course_id,'status':('CANCELLED' if sub.cancel_at_period_end and sub.current_period_end and sub.current_period_end <= datetime.utcnow() else sub.status),'current_plan':_plan_json(current, acquisition_offer=False),
         'current_period_start':_date_json(sub.current_period_start or sub.started_at),
         'current_period_end':_date_json(sub.current_period_end),
-        'next_charge_at':_date_json(sub.next_charge_at or sub.current_period_end or next_billing_period_start(sub)),
+        'next_charge_at':None if sub.cancel_at_period_end else _date_json(sub.next_charge_at or sub.current_period_end or next_billing_period_start(sub)),
+        'cancel_at_period_end':bool(sub.cancel_at_period_end),
+        'access_until':_date_json(sub.current_period_end),
         'lessons_allocated':int(sub.lessons_allocated or 0),'lessons_used':int(sub.lessons_used or 0),
         'pending_plan':pending,'payment_provider':sub.payment_provider,
+        'checkout_offer':dict(_plan_json(current, acquisition_offer=False), intro_eligible=float(sub.intro_week_price or 0)>0,
+            intro_week_price=float(sub.intro_week_price or 0), intro_week_days=7 if float(sub.intro_week_price or 0)>0 else 0,
+            special_first_year=bool(sub.special_first_year), standard_renewal_price=sub.standard_renewal_price)
+            if sub.status == 'PENDING' and sub.checkout_token else None,
+        'checkout_retry_available':bool(sub.status == 'PENDING' and sub.checkout_token and not sub.checkout_url),
         'special_first_year':bool(getattr(sub, 'special_first_year', False)),
         'standard_renewal_price':getattr(sub, 'standard_renewal_price', None),
     }
@@ -578,11 +602,20 @@ async def subscription_overview(request:web.Request)->web.Response:
         sub=await _subscription_for_child(db,cid,course_id)
         plans=await plan_catalog_for_child(db,parent_id=p.id,child_id=cid,course_id=course_id)
         from app.services.special_annual_pricing import is_eligible_for_special_annual
+        from app.services.consents import CURRENT_DOCUMENT_VERSIONS
         is_eligible = await is_eligible_for_special_annual(db, parent_id=p.id, child_id=cid)
+        from app.services.intro_offer import eligibility
+        intro_eligible, intro_reason = await eligibility(db, p, request.headers)
+        changing_plan = sub is not None and str(_subscription_json(sub)['status']).upper() in {'ACTIVE', 'TRIALING'}
         return web.json_response({
             'subscription':_subscription_json(sub),
-            'plans':[_plan_json(x, is_eligible_special=is_eligible) for x in plans],
+            'billing_policy_version':'2026-10-08',
+            'plans':[_plan_json(x, is_eligible_special=is_eligible, acquisition_offer=not changing_plan, intro_eligible=intro_eligible) for x in plans],
+            'intro_eligible':intro_eligible and not changing_plan,
+            'intro_ineligibility_reason':intro_reason,
+            'intro_week_days':7 if intro_eligible and not changing_plan else 0,
             'special_annual_eligible': is_eligible,
+            'subscription_terms_version': CURRENT_DOCUMENT_VERSIONS.get('SUBSCRIPTION_TERMS', '2026.1'),
         })
 
 
@@ -595,10 +628,10 @@ async def subscription_plan_change_preview(request:web.Request)->web.Response:
         try:preview=await preview_plan_change(db,sub,parent_id=p.id,requested_plan_id=plan_id,requested_billing_period=billing_period,expected_version_id=version_id)
         except PlanChangeError as exc:raise web.HTTPConflict(text=json.dumps({'error':str(exc)}),content_type='application/json')
         return web.json_response({
-            'subscription_id':preview.subscription_id,'current_plan':_plan_json(preview.current),
-            'new_plan':_plan_json(preview.requested),'effective_at':_date_json(preview.effective_at),
+            'subscription_id':preview.subscription_id,'current_plan':_plan_json(preview.current, acquisition_offer=False),
+            'new_plan':_plan_json(preview.requested, acquisition_offer=False),'effective_at':_date_json(preview.effective_at),
             'replaces_pending_plan_id':preview.replaces_pending_plan_id,
-            'notice':'Новый тариф начнёт действовать со следующего оплачиваемого периода.\nДо этой даты действует ваш текущий тариф.',
+            'notice':'Новый тариф начнёт действовать после окончания текущего оплаченного периода и подтверждения оплаты нового. До этой даты цена и доступ текущего тарифа сохраняются. Повторной недели по €3 за занятие и немедленного списания за смену нет.',
         })
 
 
@@ -624,7 +657,8 @@ async def subscription_plan_change_confirm(request:web.Request)->web.Response:
             await db.rollback();raise web.HTTPConflict(text=json.dumps({'error':str(exc)}),content_type='application/json')
         date=preview.effective_at.strftime('%d.%m.%Y')
         amount=f'{preview.requested.price:.2f} {preview.requested.currency}'
-        message=f'Готово. До {date} действует текущий тариф.\nС {date} начнёт действовать {preview.requested.title}, и автоматически будет списываться {amount} за каждый следующий период, пока тариф не будет изменён или подписка отменена.'
+        period_label='год' if preview.requested.billing_period=='YEAR' else 'месяц'
+        message=f'Изменение запланировано. До {date} действует текущий тариф.\nС {date}, после подтверждённой оплаты, начнёт действовать {preview.requested.title}: {amount} за {period_label}. Сейчас за смену тарифа списания нет.'
         return web.json_response({'event':event,'subscription':_subscription_json(sub),'approval_url':provider.approval_url or None,'message':message})
 
 
@@ -867,31 +901,55 @@ async def mobile_validate_promo(request: web.Request) -> web.Response:
         return web.json_response(res.to_dict())
 
 
+def _validate_checkout_quote(data, *, plan_id, version_id, period, currency, price, intro_price, renewal_price):
+    """Reject stale displayed amounts instead of silently changing consent."""
+    if 'expected_intro_week_price' in data:
+        import math
+        try: quoted_intro = float(data['expected_intro_week_price'])
+        except (ValueError, TypeError): quoted_intro = float('nan')
+        if not math.isfinite(quoted_intro) or abs(quoted_intro - intro_price) > 0.001:
+            raise web.HTTPConflict(text=json.dumps({'error':'Первая сумма оплаты изменилась. Обновите тарифы.', 'code':'CHECKOUT_OFFER_CHANGED'}),content_type='application/json')
+    terms = next((x for x in (data.get('payment_consents') or []) if isinstance(x, dict) and x.get('document_type') == 'SUBSCRIPTION_TERMS'), {})
+    meta = terms.get('metadata')
+    if not isinstance(meta, dict):
+        return  # Older clients still require the current, versioned terms.
+    expected = {'plan_id':plan_id, 'version_id':version_id, 'billing_period':period, 'currency':currency,
+        'first_week_amount':intro_price, 'intro_week_days':7 if intro_price > 0 else 0,
+        ('annual_amount' if period == 'YEAR' else 'monthly_amount'):price}
+    if period == 'YEAR': expected['renewal_amount'] = renewal_price or price
+    mismatch = False
+    for key, value in expected.items():
+        if isinstance(value, (int, float)):
+            try:
+                actual = float(meta.get(key, ''))
+                import math
+                mismatch |= not math.isfinite(actual) or abs(actual - value) > 0.001
+            except (ValueError, TypeError): mismatch = True
+        else: mismatch |= str(meta.get(key, '')) != str(value)
+    if mismatch:
+        raise web.HTTPConflict(text=json.dumps({'error':'Цена или условия оплаты изменились. Обновите тарифы и подтвердите новую сумму.', 'code':'CHECKOUT_OFFER_CHANGED'}),content_type='application/json')
+
+
 async def subscription_checkout(request: web.Request) -> web.Response:
     p = await _parent(request)
     cid = int(request.match_info['child_id'])
     child = await _owned_child(p.id, cid)
     data = await request.json()
-    plan_id = str(data.get('plan_id') or 'weekly1')
+    plan_id = str(data.get('plan_id') or 'weekly1').strip().lower()
     billing_period = str(data.get('billing_period') or 'MONTH').upper()
+    expected_version_id = str(data.get('version_id') or '').strip()
     course_id = str(data.get('course_id') or getattr(child, 'course_id', None) or 'conversation')
     promo_code = str(data.get('promo_code') or '').strip()
     provider_name = str(data.get('provider') or 'paypal').lower()
-
-    plan_freq_map = {'weekly1': 1, 'weekly2': 2, 'weekly3': 3, 'weekly4': 4,
-                      'start': 1, 'smart': 2, 'plus': 3, 'max': 4}
-    freq = plan_freq_map.get(plan_id, 1)
-    _MONTHLY_PRICES = {'weekly1': 39.0, 'weekly2': 69.0, 'weekly3': 99.0, 'weekly4': 139.0,
-                        'start': 39.0, 'smart': 69.0, 'plus': 99.0, 'max': 139.0}
-    _ANNUAL_PRICES  = {'weekly1': 439.0, 'weekly2': 759.0, 'weekly3': 1089.0, 'weekly4': 1535.0,
-                       'start': 439.0, 'smart': 759.0, 'plus': 1089.0, 'max': 1535.0}
-    monthly_reference_price = _MONTHLY_PRICES.get(plan_id, 39.0)
-    base_price = _ANNUAL_PRICES.get(plan_id, 439.0) if billing_period == 'YEAR' else monthly_reference_price
-    effective_price = base_price
+    if provider_name not in {'paypal', 'google_play'}:
+        raise web.HTTPBadRequest(text=json.dumps({'error':'Платёжный провайдер не поддерживается', 'code':'PAYMENT_PROVIDER_UNSUPPORTED'}),content_type='application/json')
+    plan_id = {'start': 'weekly1', 'smart': 'weekly2', 'plus': 'weekly3', 'max': 'weekly4'}.get(plan_id, plan_id)
     special_first_year = False
-    standard_renewal_price = _ANNUAL_PRICES.get(plan_id, 439.0)
-    intro_week_price = float(freq * 3)
+    standard_renewal_price = 0.0
+    intro_week_price = 0.0
     promo_result = None
+    import uuid
+    checkout_token = uuid.uuid4().hex
 
     async with SessionLocal() as db:
         # OWNER account bypass: unlimited access without fake payment records (Stage 10)
@@ -905,9 +963,97 @@ async def subscription_checkout(request: web.Request) -> web.Response:
                 'status': 'ACTIVE',
             })
 
+        from app.services.subscription_plan_changes import PlanChangeError, plan_snapshot_for_child
+        try:
+            selected_snapshot = await plan_snapshot_for_child(
+                db,
+                parent_id=p.id,
+                child_id=cid,
+                course_id=course_id,
+                plan_id=plan_id,
+                billing_period=billing_period,
+                expected_version_id=expected_version_id,
+            )
+            month_snapshot = (
+                selected_snapshot
+                if billing_period == 'MONTH'
+                else await plan_snapshot_for_child(
+                    db, parent_id=p.id, child_id=cid, course_id=course_id,
+                    plan_id=plan_id, billing_period='MONTH'
+                )
+            )
+        except PlanChangeError as exc:
+            raise web.HTTPConflict(text=json.dumps({'error': str(exc), 'code': 'PLAN_NOT_AVAILABLE'}), content_type='application/json')
+
+        freq = selected_snapshot.lessons_per_week
+        base_price = selected_snapshot.price
+        monthly_reference_price = month_snapshot.price
+        currency = selected_snapshot.currency
+        effective_price = base_price
+        standard_renewal_price = base_price if billing_period == 'YEAR' else 0.0
+        if currency != 'EUR':
+            raise web.HTTPConflict(text=json.dumps({'error': 'Первый недельный платёж €3 за занятие пока поддерживается только для тарифов в EUR.', 'code': 'INTRO_CURRENCY_UNSUPPORTED'}), content_type='application/json')
+        from app.services.intro_offer import eligibility, reserve, bind, release, IntroOfferUnavailable
+        intro_eligible, intro_reason = await eligibility(db, p, request.headers)
+        intro_week_price = float(freq * 3) if intro_eligible else 0.0
+
+        sub = await _subscription_for_child(db, cid, course_id)
+        retry_reservation = False
+        if sub and sub.status == 'PENDING' and sub.checkout_token and not sub.checkout_url and str(sub.current_plan_version_id or '') == selected_snapshot.version_id:
+            from app.db.models import IntroOfferClaim
+            claim = await db.scalar(select(IntroOfferClaim).where(IntroOfferClaim.checkout_token == sub.checkout_token, IntroOfferClaim.parent_id == p.id, IntroOfferClaim.status == 'RESERVED'))
+            if claim is not None or float(sub.intro_week_price or 0) == 0:
+                # An ambiguous network result is retried with the SAME provider
+                # idempotency key, not a second discounted agreement.
+                checkout_token = sub.checkout_token
+                intro_week_price = float(sub.intro_week_price or 0)
+                intro_eligible = intro_week_price > 0
+                retry_reservation = True
+                if sub.payment_provider != provider_name:
+                    raise web.HTTPConflict(text=json.dumps({'error':'Сначала завершите проверку прежней оплаты.', 'code':'SUBSCRIPTION_CHECKOUT_PENDING'}),content_type='application/json')
+        if sub and str(sub.status or '').upper() == 'ACTIVE' and (not sub.cancel_at_period_end or not sub.current_period_end or sub.current_period_end > datetime.utcnow()):
+            raise web.HTTPConflict(text=json.dumps({'error': 'Подписка уже активна. Измените тариф в разделе «Мой тариф».', 'code': 'SUBSCRIPTION_ALREADY_ACTIVE'}), content_type='application/json')
+        if sub and str(sub.status or '').upper() == 'PENDING' and str(sub.current_plan_version_id or '') != selected_snapshot.version_id:
+            raise web.HTTPConflict(text=json.dumps({'error': 'Есть незавершённое подтверждение оплаты по другому тарифу. Сначала завершите его или отмените в PayPal.', 'code': 'SUBSCRIPTION_CHECKOUT_PENDING'}), content_type='application/json')
+        if sub and str(sub.status or '').upper() == 'PENDING' and sub.checkout_url and sub.provider_subscription_id:
+            _validate_checkout_quote(data, plan_id=sub.current_plan_id, version_id=sub.current_plan_version_id,
+                period=sub.billing_period, currency=sub.currency, price=float(sub.current_plan_price or 0),
+                intro_price=float(sub.intro_week_price or 0), renewal_price=float(sub.standard_renewal_price or sub.current_plan_price or 0))
+            return web.json_response({'ok':True, 'checkout_url':sub.checkout_url, 'subscription_id':sub.provider_subscription_id,
+                'provider':sub.payment_provider, 'intro_week_price':float(sub.intro_week_price or 0), 'reused_checkout':True})
+        if sub and sub.provider_subscription_id and str(sub.status or '').upper() not in {'CANCELLED', 'EXPIRED'} and not retry_reservation:
+            # PAST_DUE/TRIALING/legacy pending agreements can still collect a
+            # payment remotely. Never replace their identity or create a second
+            # subscription until cancellation/expiry has been confirmed.
+            raise web.HTTPConflict(text=json.dumps({'error':'Есть незавершённое платёжное соглашение. Сначала проверьте его состояние или отключите автопродление.', 'code':'SUBSCRIPTION_AGREEMENT_UNRESOLVED'}),content_type='application/json')
+        if sub and int(sub.lessons_allocated or 0) > 0 and sub.current_period_end and sub.current_period_end > datetime.utcnow():
+            raise web.HTTPConflict(text=json.dumps({'error':'Текущий оплаченный период ещё действует. Новый тариф можно оформить после его окончания.', 'code':'PAID_PERIOD_STILL_ACTIVE'}),content_type='application/json')
+        if 'expected_intro_week_price' in data:
+            try: expected_intro = float(data['expected_intro_week_price'])
+            except (ValueError, TypeError): expected_intro = -1
+            if abs(expected_intro - intro_week_price) > 0.001:
+                raise web.HTTPConflict(text=json.dumps({'error':'Условия первой оплаты изменились. Обновите тарифы и подтвердите новую сумму.', 'code':'CHECKOUT_OFFER_CHANGED', 'intro_eligible':intro_eligible, 'intro_ineligibility_reason':intro_reason}),content_type='application/json')
+
+        from app.services.consents import CURRENT_DOCUMENT_VERSIONS
+        accepted_payment_terms = next((
+            item for item in (data.get('payment_consents') or [])
+            if isinstance(item, dict)
+            and str(item.get('document_type') or '').strip().upper() == 'SUBSCRIPTION_TERMS'
+            and item.get('accepted') is True
+            and str(item.get('version') or '').strip() == CURRENT_DOCUMENT_VERSIONS.get('SUBSCRIPTION_TERMS', '2026.1')
+        ), None)
+        if not accepted_payment_terms:
+            raise web.HTTPBadRequest(text=json.dumps({
+                'error': 'Перед оплатой подтвердите условия первой оплачиваемой недели и автоматического продления на выбранный месяц или год.',
+                'code': 'SUBSCRIPTION_CONSENT_REQUIRED',
+                'document_type': 'SUBSCRIPTION_TERMS',
+                'document_version': CURRENT_DOCUMENT_VERSIONS.get('SUBSCRIPTION_TERMS', '2026.1'),
+            }), content_type='application/json')
+        consent_ver = str(accepted_payment_terms.get('version') or CURRENT_DOCUMENT_VERSIONS.get('SUBSCRIPTION_TERMS', '2026.1'))
+
         if billing_period == 'YEAR':
             from app.services.special_annual_pricing import is_eligible_for_special_annual, get_plan_annual_offer_detail
-            is_eligible = await is_eligible_for_special_annual(db, parent_id=p.id, child_id=cid)
+            is_eligible = intro_eligible and await is_eligible_for_special_annual(db, parent_id=p.id, child_id=cid)
             offer = get_plan_annual_offer_detail(plan_id, freq, is_eligible)
             special_first_year = offer['special_first_year']
             effective_price = offer['effective_price']
@@ -929,6 +1075,16 @@ async def subscription_checkout(request: web.Request) -> web.Response:
                     effective_price = promo_result.final_price
 
         from app.services.payment_provider import get_payment_provider
+        if retry_reservation:
+            # Retry the exact original agreement, including its locked annual
+            # discount. Recomputing acquisition prices changes the provider body
+            # under an existing idempotency key and breaks safe recovery.
+            effective_price = float(sub.current_plan_price or 0)
+            special_first_year = bool(sub.special_first_year)
+            standard_renewal_price = float(sub.standard_renewal_price or 0)
+        _validate_checkout_quote(data, plan_id=plan_id, version_id=selected_snapshot.version_id, period=billing_period,
+            currency=currency, price=effective_price, intro_price=intro_week_price,
+            renewal_price=standard_renewal_price if special_first_year else effective_price)
         provider = get_payment_provider(provider_name)
         if not provider.is_configured():
             return web.json_response({
@@ -939,18 +1095,58 @@ async def subscription_checkout(request: web.Request) -> web.Response:
                 'message': 'Провайдер PayPal Sandbox находится в режиме настройки. Укажите PAYPAL_CLIENT_ID и PAYPAL_CLIENT_SECRET в переменных окружения backend.',
             }, status=200)
 
+        # Persist the exact accepted price/renewal disclosure before creating
+        # an external billing agreement. If audit persistence fails, do not
+        # create a payment with unverifiable consent.
+        from app.services.consents import record_payment_consent
+        await record_payment_consent(
+            db,
+            parent_id=p.id,
+            plan_id=plan_id,
+            billing_period=billing_period,
+            effective_price=effective_price,
+            currency=currency,
+            intro_week_price=intro_week_price,
+            standard_renewal_price=standard_renewal_price,
+            special_first_year=special_first_year,
+            consent_version=consent_ver,
+            ip_address=str(request.remote or request.headers.get('X-Forwarded-For') or ''),
+            user_agent=request.headers.get('User-Agent'),
+            locale=str(data.get('locale') or 'ru'),
+        )
+
         app_base = settings.effective_webapp_base_url or _base(request)
         success_url = f"{app_base.rstrip('/')}/payment/success?child_id={cid}&course_id={course_id}&plan_id={plan_id}"
         cancel_url = f"{app_base.rstrip('/')}/payment/cancel?child_id={cid}&course_id={course_id}"
 
+        if intro_week_price > 0 and not retry_reservation:
+            try:
+                await reserve(db, p, request.headers, checkout_token)
+            except IntroOfferUnavailable as exc:
+                raise web.HTTPConflict(text=json.dumps({'error':'Пробная неделя уже используется или ожидает оплаты. Обновите тарифы.', 'code':str(exc)}),content_type='application/json')
+        if sub is None or sub.status in {'CANCELLED', 'EXPIRED'} or (sub.current_period_end and sub.current_period_end <= datetime.utcnow()):
+            sub = Subscription(child_id=cid, course_id=course_id, plan_id=plan_id, current_plan_id=plan_id,
+                current_plan_version_id=selected_snapshot.version_id, current_plan_price=effective_price,
+                billing_period=billing_period, lessons_per_week=freq, monthly_price=monthly_reference_price,
+                currency=currency, status='PENDING', test_mode=False, payment_provider=provider_name,
+                started_at=datetime.utcnow(), special_first_year=special_first_year,
+                standard_renewal_price=standard_renewal_price if special_first_year else None)
+            db.add(sub)
+        sub.checkout_token = checkout_token
+        sub.intro_week_price = intro_week_price
+        if intro_week_price > 0:
+            await bind(db, checkout_token, provider_name, f'creating:{checkout_token}')
+        # Commit the unique claims before the external call; concurrent accounts
+        # on the same device cannot create two discounted agreements.
+        await db.commit()
         checkout_res = await provider.create_subscription_checkout(
             child_id=cid,
             course_id=course_id,
             plan_id=plan_id,
-            plan_version_id=f"v77-{plan_id}-{billing_period.lower()}-{effective_price:.2f}",
+            plan_version_id=selected_snapshot.version_id,
             lessons_per_week=freq,
             monthly_price=effective_price,
-            currency="EUR",
+            currency=currency,
             billing_period=billing_period,
             special_first_year=special_first_year,
             standard_renewal_price=standard_renewal_price,
@@ -958,10 +1154,16 @@ async def subscription_checkout(request: web.Request) -> web.Response:
             success_url=success_url,
             cancel_url=cancel_url,
             promo_code=promo_code,
-            idempotency_key=f"checkout:{cid}:{course_id}:{plan_id}:{int(datetime.utcnow().timestamp())}",
+            idempotency_key=f"dome-checkout-{checkout_token}",
         )
 
         if not checkout_res.ok:
+            # Only a definitive rejection is safe to release. A timeout may
+            # have created an agreement remotely; retain token and retry it.
+            if checkout_res.details.get('definitive_failure', False) or not checkout_res.configured:
+                await release(db, checkout_token)
+                sub.status = 'CANCELLED'
+            await db.commit()
             return web.json_response({
                 'ok': False,
                 'error': checkout_res.error or 'CHECKOUT_FAILED',
@@ -969,20 +1171,19 @@ async def subscription_checkout(request: web.Request) -> web.Response:
                 'configured': checkout_res.configured,
             }, status=400 if checkout_res.configured else 200)
 
-        sub = await _subscription_for_child(db, cid, course_id)
-        if sub is None:
+        if sub is None or str(sub.status or '').upper() in {'CANCELLED','EXPIRED'} or (sub.current_period_end and sub.current_period_end <= datetime.utcnow()):
             sub = Subscription(
                 child_id=cid,
                 course_id=course_id,
                 plan_id=plan_id,
                 current_plan_id=plan_id,
-                current_plan_version_id=f"v77-{plan_id}-{billing_period.lower()}-{effective_price:.2f}",
+                current_plan_version_id=selected_snapshot.version_id,
                 current_plan_price=effective_price,
                 billing_period=billing_period,
                 provider_plan_id=checkout_res.provider_plan_id or None,
                 lessons_per_week=freq,
                 monthly_price=monthly_reference_price,
-                currency="EUR",
+                currency=currency,
                 status="PENDING",
                 test_mode=False,
                 payment_provider=provider_name,
@@ -990,44 +1191,42 @@ async def subscription_checkout(request: web.Request) -> web.Response:
                 started_at=datetime.utcnow(),
                 special_first_year=special_first_year,
                 standard_renewal_price=standard_renewal_price if special_first_year else None,
+                checkout_token=checkout_token, checkout_url=checkout_res.checkout_url, intro_week_price=intro_week_price,
             )
             db.add(sub)
         else:
-            sub.pending_plan_id = plan_id
-            sub.pending_plan_price = effective_price
-            sub.pending_plan_billing_period = billing_period
+            # Registration may have left a legacy REGISTERED placeholder.
+            # For an initial purchase, update the primary plan fields rather
+            # than storing the chosen plan as a pending change.
+            sub.plan_id = plan_id
+            sub.current_plan_id = plan_id
+            sub.current_plan_version_id = selected_snapshot.version_id
+            sub.current_plan_price = effective_price
+            sub.billing_period = billing_period
+            sub.lessons_per_week = freq
+            sub.monthly_price = monthly_reference_price
+            sub.currency = currency
+            sub.status = 'PENDING'
+            sub.payment_provider = provider_name
+            sub.provider_plan_id = checkout_res.provider_plan_id or sub.provider_plan_id
             sub.pending_provider_reference = checkout_res.subscription_id or None
-            sub.pending_provider_status = "APPROVAL_PENDING"
+            sub.pending_provider_status = 'APPROVAL_PENDING'
+            sub.started_at = datetime.utcnow()
             sub.special_first_year = special_first_year
+            sub.standard_renewal_price = standard_renewal_price if special_first_year else None
             if special_first_year:
                 sub.standard_renewal_price = standard_renewal_price
             if checkout_res.subscription_id and not sub.provider_subscription_id:
                 sub.provider_subscription_id = checkout_res.subscription_id
 
+        sub.checkout_token = checkout_token
+        sub.checkout_url = checkout_res.checkout_url
+        sub.intro_week_price = intro_week_price
+        if intro_week_price > 0:
+            await bind(db, checkout_token, provider_name, checkout_res.subscription_id)
+
         await db.commit()
         await db.refresh(sub)
-
-        # Record SUBSCRIPTION_TERMS consent with full payment context for audit trail
-        try:
-            from app.services.consents import record_payment_consent, CURRENT_DOCUMENT_VERSIONS
-            consent_ver = str(data.get('consent_version') or CURRENT_DOCUMENT_VERSIONS.get('SUBSCRIPTION_TERMS', '2026.1'))
-            await record_payment_consent(
-                db,
-                parent_id=p.id,
-                plan_id=plan_id,
-                billing_period=billing_period,
-                effective_price=effective_price,
-                currency='EUR',
-                intro_week_price=intro_week_price,
-                standard_renewal_price=standard_renewal_price if special_first_year else 0.0,
-                special_first_year=special_first_year,
-                consent_version=consent_ver,
-                ip_address=str(request.remote or request.headers.get('X-Forwarded-For') or ''),
-                user_agent=request.headers.get('User-Agent'),
-                locale=str(data.get('locale') or 'ru'),
-            )
-        except Exception as consent_err:
-            log.warning('Failed to record payment consent (non-blocking): %s', consent_err)
 
         return web.json_response({
             'ok': True,
@@ -1041,12 +1240,17 @@ async def subscription_checkout(request: web.Request) -> web.Response:
             'original_price': base_price,
             'effective_price': effective_price,
             'intro_week_price': intro_week_price,
+            'intro_eligible': intro_week_price > 0,
+            'intro_week_days': 7 if intro_week_price > 0 else 0,
             'special_first_year': special_first_year,
             'standard_renewal_price': standard_renewal_price if special_first_year else None,
-            'currency': 'EUR',
+            'currency': currency,
+            'first_charge_at': 'provider_approval',
+            'next_charge_after_days': 7 if intro_week_price > 0 else None,
+            'next_charge_price': effective_price,
             'promo_applied': bool(promo_result and promo_result.valid),
             'promo_details': promo_result.to_dict() if promo_result else None,
-            'consent_version': consent_ver if 'consent_ver' in dir() else '2026.1',
+            'consent_version': consent_ver,
             # Card checkout without PayPal account requires PayPal Advanced Card Payments (PPCP).
             # This requires merchant account approval and is not yet enabled for this account.
             # To enable: apply at https://www.paypal.com/us/enterprise/payment-processing
@@ -1083,16 +1287,62 @@ async def subscription_verify(request: web.Request) -> web.Response:
         if not target_sub_id and sub and sub.pending_provider_reference:
             target_sub_id = sub.pending_provider_reference
 
+        if target_sub_id and (sub is None or target_sub_id not in {
+            str(sub.provider_subscription_id or ''), str(sub.pending_provider_reference or ''),
+        }):
+            return web.json_response({'ok': False, 'error': 'SUBSCRIPTION_MISMATCH'}, status=403)
+
         from app.services.payment_provider import get_payment_provider
         provider = get_payment_provider(sub.payment_provider if sub else 'paypal')
         is_active = False
 
         if provider.is_configured() and target_sub_id:
             v_res = await provider.verify_subscription(target_sub_id)
-            if v_res.active or v_res.status in {'ACTIVE', 'APPROVED'}:
+            cancelled_paid = bool(sub and sub.cancel_at_period_end and (v_res.details.get('billing_info') or {}).get('last_payment'))
+            if v_res.ok and (v_res.active or cancelled_paid):
                 is_active = True
                 if sub:
-                    sub.status = 'ACTIVE'
+                    from app.services.paypal_adapter import _meta_from_provider_plan, _paypal_datetime, normalize_paypal_event
+                    plan_meta = _meta_from_provider_plan(str(v_res.details.get('plan_id') or sub.provider_plan_id or ''))
+                    if plan_meta or sub.checkout_token:
+                        # New paid-week agreements share exactly the webhook's
+                        # payment/period logic, including the annual transition.
+                        billing = v_res.details.get('billing_info') or {}
+                        last_payment = billing.get('last_payment') or {}
+                        if not _paypal_datetime(last_payment.get('time')) or float((last_payment.get('amount') or {}).get('value') or 0) <= 0:
+                            return web.json_response({'ok': True, 'active': False, 'status': sub.status, 'subscription': _subscription_json(sub)})
+                        from app.services.payment_lifecycle import apply_normalized_event
+                        snapshot = dict(v_res.details)
+                        snapshot.setdefault('plan_id', sub.provider_plan_id)
+                        payment_event = normalize_paypal_event({
+                            'id': f'verify:{target_sub_id}:{last_payment["time"]}',
+                            'event_type': 'PAYMENT.SALE.COMPLETED',
+                            'resource': {'billing_agreement_id': target_sub_id, 'create_time': last_payment['time'], 'amount': last_payment['amount']},
+                        }, snapshot)
+                        if (payment_event.child_id and payment_event.child_id != cid) or (payment_event.course_id and payment_event.course_id != course_id):
+                            return web.json_response({'ok': False, 'error': 'SUBSCRIPTION_MISMATCH'}, status=403)
+                        await apply_normalized_event(db, payment_event)
+                        is_active = str(sub.status or '').upper() == 'ACTIVE' and bool(sub.current_period_end and sub.current_period_end > datetime.utcnow())
+                        if not is_active:
+                            # An unchanged old payment cannot recover a failed
+                            # renewal, even if the provider agreement is ACTIVE.
+                            return web.json_response({'ok': True, 'active': False, 'status': sub.status, 'subscription': _subscription_json(sub)})
+                    else:
+                        # Preserve activation semantics for existing agreements
+                        # without a paid introductory week.
+                        was_active = str(sub.status or '').upper() == 'ACTIVE'
+                        activated_at = datetime.utcnow()
+                        sub.status = 'ACTIVE'
+                        if not was_active or not sub.started_at:
+                            sub.started_at = activated_at
+                        if not was_active and not sub.current_period_end:
+                            from app.services.subscription_plan_changes import record_successful_billing_period
+                            billing = v_res.details.get('billing_info') or {}
+                            last_payment = billing.get('last_payment') or {}
+                            paid_at = _paypal_datetime(last_payment.get('time')) or activated_at
+                            next_charge = _paypal_datetime(billing.get('next_billing_time'))
+                            sub.started_at = paid_at
+                            record_successful_billing_period(sub, period_start=paid_at, period_end=next_charge)
                     if not sub.provider_subscription_id:
                         sub.provider_subscription_id = target_sub_id
                     from app.db.models import CourseEnrollment
@@ -1129,9 +1379,9 @@ async def subscription_verify(request: web.Request) -> web.Response:
                     await db.refresh(sub)
 
                     from app.services.subscription_release import release_due_lessons
-                    await release_due_lessons(cid, course_id)
+                    await release_due_lessons(cid, course_id, session_factory=SessionLocal)
 
-        elif sub and sub.status == 'ACTIVE':
+        elif sub and sub.status == 'ACTIVE' and (not sub.current_period_end or sub.current_period_end > datetime.utcnow()):
             is_active = True
 
         return web.json_response({
@@ -1193,7 +1443,6 @@ async def register_full(request: web.Request) -> web.Response:
     parent_data = data.get("parent") or {}
     child_data = data.get("child") or {}
     consents = data.get("consents") or []
-    selected_plan = data.get("selected_plan") or {}
 
     email = _normalize_email(parent_data.get("email"))
     password = str(parent_data.get("password") or "")
@@ -1263,6 +1512,8 @@ async def register_full(request: web.Request) -> web.Response:
             parent.display_name = display_name
             parent.first_name = first_name
             parent.last_name = last_name
+            if parent.phone != phone:
+                parent.phone_verified = False
             parent.phone = phone
             parent.country = country
             parent.preferred_language = pref_lang
@@ -1303,37 +1554,6 @@ async def register_full(request: web.Request) -> web.Response:
             user_agent=user_agent,
             locale=pref_lang,
         )
-
-        # Store selected plan info if provided
-        plan_id = str(selected_plan.get("plan_id") or "smart").lower()
-        billing_period = str(selected_plan.get("billing_period") or "MONTH").upper()
-        legacy_map = {"start": "weekly1", "smart": "weekly2", "plus": "weekly3", "max": "weekly4"}
-        plan_code = legacy_map.get(plan_id, plan_id)
-
-        freq_map = {"weekly1": 1, "weekly2": 2, "weekly3": 3, "weekly4": 4}
-        price_map_m = {"weekly1": 39.0, "weekly2": 69.0, "weekly3": 99.0, "weekly4": 129.0}
-        price_map_y = {"weekly1": 399.0, "weekly2": 699.0, "weekly3": 999.0, "weekly4": 1299.0}
-        eff_price = price_map_y.get(plan_code, 699.0) if billing_period == "YEAR" else price_map_m.get(plan_code, 69.0)
-
-        existing_sub = await _subscription_for_child(db, child.id, "conversation")
-        if existing_sub is None:
-            new_sub = Subscription(
-                child_id=child.id,
-                course_id="conversation",
-                plan_id=plan_code,
-                current_plan_id=plan_code,
-                current_plan_version_id=f"v77-{plan_code}-{billing_period.lower()}-{eff_price:.2f}",
-                current_plan_price=eff_price,
-                billing_period=billing_period,
-                lessons_per_week=freq_map.get(plan_code, 2),
-                monthly_price=price_map_m.get(plan_code, 69.0),
-                currency="EUR",
-                status="REGISTERED",
-                test_mode=False,
-                payment_provider="paypal",
-                started_at=_utcnow(),
-            )
-            db.add(new_sub)
 
         await db.commit()
 
@@ -1401,18 +1621,32 @@ async def subscription_cancel(request: web.Request) -> web.Response:
         if sub is None:
             raise web.HTTPNotFound(text=json.dumps({"error": "Активная подписка не найдена"}), content_type="application/json")
 
-        sub.status = "CANCELLED"
-        sub.ended_at = _utcnow()
-        sub.pending_plan_id = None
-        sub.pending_provider_status = "CANCELLED"
+        from app.services.subscription_provider import cancel_provider_renewal
+        if not sub.cancel_at_period_end:
+            try:
+                await cancel_provider_renewal(sub)
+            except Exception as exc:
+                log.warning('SUBSCRIPTION_CANCELLATION_FAILED subscription=%s reason=%s', sub.id, exc)
+                raise web.HTTPConflict(text=json.dumps({'error':'Платёжный сервис пока не подтвердил отмену. Повторите попытку; автопродление ещё не считается отключённым.', 'code':'PROVIDER_CANCELLATION_NOT_CONFIRMED'}),content_type='application/json')
+        now = datetime.utcnow()
+        sub.cancel_at_period_end = True
+        sub.renewal_cancelled_at = sub.renewal_cancelled_at or now
+        sub.cancelled_at = sub.cancelled_at or now
+        sub.next_charge_at = None
+        sub.status = 'ACTIVE' if sub.current_period_end and sub.current_period_end > now and sub.lessons_allocated > 0 else 'CANCELLED'
+        if sub.pending_plan_id:
+            cancel_plan_change(db, sub, parent_id=p.id, now=now)
 
-        # Record audit event
+        # Keep the existing append-only audit schema and exact paid boundary.
         from app.db.models import SubscriptionAuditEvent
         audit = SubscriptionAuditEvent(
             subscription_id=sub.id,
-            action="SUBSCRIPTION_CANCELLED_BY_USER",
-            actor=f"parent:{p.id}",
-            details_json=json.dumps({"course_id": course_id, "child_id": cid, "ended_at": sub.ended_at.isoformat()}),
+            parent_id=p.id, child_id=cid, event_type="RENEWAL_CANCELLED_BY_USER",
+            old_plan_id=sub.current_plan_id, new_plan_id=sub.current_plan_id,
+            requested_at=now, effective_at=sub.current_period_end or now,
+            old_price=float(sub.current_plan_price or sub.monthly_price or 0), new_price=0,
+            currency=sub.currency, billing_period=sub.billing_period,
+            metadata_json=json.dumps({"course_id": course_id, "provider_confirmed":True}),
         )
         db.add(audit)
 
@@ -1421,15 +1655,79 @@ async def subscription_cancel(request: web.Request) -> web.Response:
 
         return web.json_response({
             "ok": True,
-            "status": "CANCELLED",
+            "status": _subscription_json(sub)['status'],
             "message": "Подписка отменена. Будущие автопродления отключены. Доступ остаётся активным до конца текущего периода.",
             "subscription": _subscription_json(sub),
         })
 
 
+async def subscription_checkout_abandon(request: web.Request) -> web.Response:
+    p = await _parent(request)
+    cid = int(request.match_info['child_id'])
+    await _owned_child(p.id, cid)
+    data = await request.json() if request.can_read_body else {}
+    async with SessionLocal() as db:
+        sub = await _subscription_for_child(db, cid, str(data.get('course_id') or 'conversation'))
+        if sub is None or sub.status != 'PENDING' or int(sub.lessons_allocated or 0) > 0:
+            raise web.HTTPConflict(text=json.dumps({'error':'Оплата уже изменена. Обновите состояние подписки.', 'code':'CHECKOUT_NOT_PENDING'}),content_type='application/json')
+        from app.services.subscription_provider import cancel_provider_renewal
+        try:
+            if sub.payment_provider != 'paypal' or not sub.provider_subscription_id:
+                raise RuntimeError('Pending provider agreement cannot be checked')
+            from app.services.paypal_adapter import get_paypal_subscription
+            before = await get_paypal_subscription(sub.provider_subscription_id)
+            before_payment = (before.get('billing_info') or {}).get('last_payment') or {}
+            already_paid = float((before_payment.get('amount') or {}).get('value') or 0) > 0
+            if already_paid or str(before.get('status') or '').upper() == 'ACTIVE':
+                # A stale local PENDING row is not permission to cancel a paid
+                # agreement. Refresh its payment first and leave renewal intact.
+                if already_paid:
+                    await _reconcile_checkout_payment(db, sub, before, before_payment)
+                    await db.commit()
+                raise web.HTTPConflict(text=json.dumps({'error':'Подписка уже активирована или оплачена. Обновите её состояние; автопродление не изменено.', 'code':'CHECKOUT_ALREADY_PAID'}),content_type='application/json')
+            snapshot = await cancel_provider_renewal(sub)
+        except web.HTTPException:
+            raise
+        except Exception as exc:
+            log.warning('CHECKOUT_ABANDON_FAILED subscription=%s reason=%s', sub.id, exc)
+            raise web.HTTPConflict(text=json.dumps({'error':'Не удалось подтвердить отмену незавершённой оплаты. Повторите проверку.', 'code':'CHECKOUT_CANCELLATION_UNCONFIRMED'}),content_type='application/json')
+        last_payment = (snapshot.get('billing_info') or {}).get('last_payment') or {}
+        if float((last_payment.get('amount') or {}).get('value') or 0) > 0:
+            # The payment may have raced the browser return. Never erase the
+            # one-use claim; verification/webhook will restore the paid period.
+            sub.cancel_at_period_end = True
+            sub.renewal_cancelled_at = datetime.utcnow()
+            await _reconcile_checkout_payment(db, sub, snapshot, last_payment)
+            await db.commit()
+            raise web.HTTPConflict(text=json.dumps({'error':'Оплата уже получена. Обновите подписку; автопродление отключено, оплаченный период сохранится.', 'code':'CHECKOUT_ALREADY_PAID'}),content_type='application/json')
+        from app.services.intro_offer import release
+        await release(db, str(sub.checkout_token or ''))
+        sub.status = 'CANCELLED'
+        sub.cancel_at_period_end = True
+        sub.renewal_cancelled_at = datetime.utcnow()
+        sub.checkout_url = None
+        await db.commit()
+        return web.json_response({'ok':True, 'message':'Незавершённая оплата отменена. Можно выбрать тариф заново.', 'subscription':_subscription_json(sub)})
+
+
+async def _reconcile_checkout_payment(db, sub, snapshot, last_payment):
+    from app.services.paypal_adapter import normalize_paypal_event
+    from app.services.payment_lifecycle import apply_normalized_event
+    snapshot.setdefault('plan_id', sub.provider_plan_id)
+    await apply_normalized_event(db, normalize_paypal_event({
+        'id':f'checkout-payment:{sub.provider_subscription_id}:{last_payment.get("time")}',
+        'event_type':'PAYMENT.SALE.COMPLETED',
+        'resource':{'billing_agreement_id':sub.provider_subscription_id, 'create_time':last_payment.get('time'), 'amount':last_payment.get('amount')},
+    }, snapshot))
+
+
 async def session_start(request:web.Request)->web.Response:
     p=await _parent(request);data=await request.json();cid=int(data.get('child_id'));lid=str(data.get('lesson_id') or 'demo_001');c=await _owned_child(p.id,cid);lesson_data=_load_mobile_lesson(lid);course=str(lesson_data.get('course_id') or 'conversation')
     version=lesson_content_version(lesson_data);step_ids=runtime_step_ids(lesson_data)
+    # Materialize slots for an already paid, active subscription before the
+    # access check. Pending/unpaid users never receive lesson access here.
+    from app.services.subscription_release import release_due_lessons
+    await release_due_lessons(cid, course, session_factory=SessionLocal)
     # Access is checked read-only before the capacity gate so production logs
     # always distinguish entitlement/progress failures from storage pressure.
     # The QA authorization audit is committed only after write capacity is safe.
@@ -2430,8 +2728,6 @@ async def verify_email(request:web.Request)->web.Response:
             raise web.HTTPBadRequest(text=json.dumps({'error':'Неверный код подтверждения'}),content_type='application/json')
         parent.email_verified=True;parent.email_verification_code_hash=None;parent.email_verification_expires_at=None
         children=(await db.scalars(select(Child).where(Child.parent_id==parent.id).order_by(Child.id))).all()
-        for ch in children:
-            await ensure_free_demo_entitlement(db,parent_id=parent.id,child_id=ch.id)
         await db.commit()
         err=account_access_error(parent)
         if err:
@@ -2469,9 +2765,6 @@ async def login(request:web.Request)->web.Response:
             code_err,msg=err
             raise web.HTTPForbidden(text=json.dumps({'error':msg,'code':code_err}),content_type='application/json')
         children=(await db.scalars(select(Child).where(Child.parent_id==parent.id).order_by(Child.id))).all()
-        for ch in children:
-            await ensure_free_demo_entitlement(db,parent_id=parent.id,child_id=ch.id)
-        await db.commit()
         token=issue_session_token(parent.id);children_payload=await _children_json(request,db,list(children))
         return web.json_response({'token':token,'parent':{'id':parent.id,'name':parent.display_name,'email':parent.email,'email_verified':True,'phone':parent.phone,'is_owner':is_owner_parent(parent),'account_status':account_status(parent)},'children':children_payload})
 
@@ -2777,6 +3070,7 @@ async def content_manifest(request: web.Request) -> web.Response:
 
 
 def register_mobile_routes(app:web.Application):
+    app.router.add_post('/api/mobile/child/{child_id}/subscription/checkout/abandon', subscription_checkout_abandon)
     app.router.add_post('/api/mobile/register',register);app.router.add_post('/api/mobile/verify-email',verify_email);app.router.add_post('/api/mobile/resend-verification',resend_verification);app.router.add_post('/api/mobile/login',login);app.router.add_post('/api/mobile/password-reset/request',request_password_reset);app.router.add_post('/api/mobile/password-reset/confirm',confirm_password_reset);app.router.add_get('/api/mobile/bootstrap',bootstrap);app.router.add_post('/api/mobile/children',create_child);app.router.add_get('/api/mobile/child/{child_id}/lessons',lesson_catalog);app.router.add_get('/api/mobile/child/{child_id}/progress',child_progress);app.router.add_get('/api/mobile/lesson/{lesson_id}/visual/{filename}',lesson_visual);app.router.add_get('/api/mobile/lesson/{lesson_id}/media/{filename}',lesson_media);app.router.add_get('/api/mobile/lesson/{lesson_id}',lesson);app.router.add_get('/api/mobile/lesson/{lesson_id}/homework',mobile_get_homework);app.router.add_get('/api/mobile/courses',mobile_courses);app.router.add_post('/api/mobile/child/{child_id}/homework/{lesson_id}/submit',mobile_submit_homework)
     app.router.add_get('/api/mobile/hero/file/{child_id}/{character_id}',hero_file);app.router.add_post('/api/mobile/child/{child_id}/hero/preset',hero_preset);app.router.add_post('/api/mobile/child/{child_id}/hero/upload',hero_upload);app.router.add_patch('/api/mobile/child/{child_id}/hero/{character_id}/geometry',hero_geometry_confirm)
     app.router.add_get('/api/mobile/child/{child_id}/subscription',subscription_overview);app.router.add_post('/api/mobile/child/{child_id}/promo/validate',mobile_validate_promo);app.router.add_post('/api/mobile/child/{child_id}/subscription/checkout',subscription_checkout);app.router.add_post('/api/mobile/child/{child_id}/subscription/verify',subscription_verify);app.router.add_get('/api/mobile/plans',mobile_list_plans);app.router.add_get('/api/mobile/legal/documents',mobile_get_legal_documents);app.router.add_post('/api/mobile/auth/register-full',register_full);app.router.add_post('/api/mobile/auth/verify-and-onboard',verify_and_onboard);app.router.add_post('/api/mobile/child/{child_id}/subscription/cancel',subscription_cancel);app.router.add_get('/api/mobile/child/{child_id}/payment/history',payment_history);app.router.add_post('/api/mobile/child/{child_id}/subscription/plan-change/preview',subscription_plan_change_preview);app.router.add_post('/api/mobile/child/{child_id}/subscription/plan-change',subscription_plan_change_confirm);app.router.add_delete('/api/mobile/child/{child_id}/subscription/plan-change',subscription_plan_change_cancel)

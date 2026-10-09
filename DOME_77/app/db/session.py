@@ -111,6 +111,7 @@ async def init_db() -> None:
             "email_verification_expires_at": "TIMESTAMP",
             "email_reports_enabled": "BOOLEAN NOT NULL DEFAULT FALSE",
             "phone": "VARCHAR(40)",
+            "phone_verified": "BOOLEAN NOT NULL DEFAULT FALSE",
             "first_name": "VARCHAR(80)",
             "last_name": "VARCHAR(80)",
             "country": "VARCHAR(80)",
@@ -165,6 +166,11 @@ async def init_db() -> None:
             "lessons_used": "INTEGER NOT NULL DEFAULT 0",
             "special_first_year": "BOOLEAN NOT NULL DEFAULT FALSE",
             "standard_renewal_price": "FLOAT",
+            "cancel_at_period_end": "BOOLEAN NOT NULL DEFAULT FALSE",
+            "renewal_cancelled_at": "TIMESTAMP",
+            "checkout_token": "VARCHAR(64)",
+            "checkout_url": "TEXT",
+            "intro_week_price": "FLOAT NOT NULL DEFAULT 0",
         })
         await conn.execute(text("UPDATE subscriptions SET current_plan_id=plan_id WHERE current_plan_id IS NULL OR current_plan_id=''"))
         await conn.execute(text("UPDATE subscriptions SET current_period_start=started_at WHERE current_period_start IS NULL"))

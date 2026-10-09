@@ -264,7 +264,7 @@ async def test_stale_lesson_version_starts_clean_session_without_deleting_answer
         db.add(parent);await db.flush()
         child = Child(parent_id=parent.id, display_name="Versioned Child", target_language="en", native_language="ru")
         db.add(child);await db.flush()
-        db.add(LessonEntitlement(child_id=child.id, lesson_id="demo_001", course_id="conversation", max_completed_runs=2, completed_runs=0, source="FREE_DEMO"))
+        db.add(LessonEntitlement(child_id=child.id, lesson_id="demo_001", course_id="conversation", max_completed_runs=2, completed_runs=0, source="SUBSCRIPTION"))
         stale = LessonSession(child_id=child.id, lesson_id="demo_001", status="IN_PROGRESS", current_step=14, current_step_id="slide_24", lesson_version="demo_001:legacy", completion_state="ACTIVE")
         db.add(stale);await db.flush()
         preserved = tmp_path / "preserved.wav";preserved.write_bytes(b"preserved child answer")
@@ -309,7 +309,7 @@ async def test_completion_and_movie_job_are_idempotent(monkeypatch, tmp_path):
         db.add(child);await db.flush()
         character = Character(child_id=child.id, original_path=str(hero), processed_path=str(hero), status="READY", source="CATALOG")
         db.add(character);await db.flush();child.active_character_id=character.id
-        entitlement = LessonEntitlement(child_id=child.id, lesson_id="demo_001", course_id="conversation", max_completed_runs=2, completed_runs=0, source="FREE_DEMO")
+        entitlement = LessonEntitlement(child_id=child.id, lesson_id="demo_001", course_id="conversation", max_completed_runs=2, completed_runs=0, source="SUBSCRIPTION")
         runtime_lesson = mobile_api._load_mobile_lesson("demo_001")
         version = lesson_content_version(runtime_lesson)
         route = runtime_step_ids(runtime_lesson)
@@ -383,7 +383,7 @@ async def test_scripted_mobile_demo_traverses_real_endpoints_and_reaches_ready_m
         parent=Parent(email="scripted-e2e@example.com",password_hash="hash",email_verified=True,email_reports_enabled=False);db.add(parent);await db.flush()
         child=Child(parent_id=parent.id,display_name="Scripted Child",target_language="en",native_language="ru",language_level="PRE_A1");db.add(child);await db.flush()
         character=Character(child_id=child.id,original_path=str(hero),processed_path=str(hero),status="READY",source="CATALOG");db.add(character);await db.flush();child.active_character_id=character.id
-        db.add(LessonEntitlement(child_id=child.id,lesson_id="demo_001",course_id="conversation",max_completed_runs=2,completed_runs=0,source="FREE_DEMO"));await db.commit();parent_id,child_id=parent.id,child.id
+        db.add(LessonEntitlement(child_id=child.id,lesson_id="demo_001",course_id="conversation",max_completed_runs=2,completed_runs=0,source="SUBSCRIPTION"));await db.commit();parent_id,child_id=parent.id,child.id
 
     def fake_activity(_path):return VoiceActivity(2.0,1.4,0.7,-24.0,-8.0,True,"SPEECH_DETECTED")
     def fake_prepare(_raw,wav,_max_sec):wav.write_bytes(b"RIFF"+b"child-voice"*200);return wav

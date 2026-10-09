@@ -26,7 +26,7 @@ async def _memory_database():
 
 
 @pytest.mark.asyncio
-async def test_free_demo_is_idempotent_and_only_for_verified_first_child():
+async def test_legacy_free_demo_helper_never_grants_access():
     engine, sessions = await _memory_database()
     try:
         async with sessions() as db:
@@ -48,23 +48,10 @@ async def test_free_demo_is_idempotent_and_only_for_verified_first_child():
             assert row is None and created is False
 
             parent.email_verified = True
-            fixed_now = datetime(2026, 8, 22, 12, 0, 0)
             row, created = await ensure_free_demo_entitlement(
-                db, parent_id=parent.id, child_id=first.id, now=fixed_now
-            )
-            assert created is True
-            assert row is not None
-            assert row.source == "FREE_DEMO"
-            assert row.max_completed_runs == 2
-            assert row.completed_runs == 0
-            assert row.unlocked_at == fixed_now
-            assert row.expires_at == datetime(2027, 6, 22, 12, 0, 0)
-
-            same, created = await ensure_free_demo_entitlement(
                 db, parent_id=parent.id, child_id=first.id
             )
-            assert created is False and same.id == row.id
-            assert same.expires_at == row.expires_at
+            assert row is None and created is False
 
             other, created = await ensure_free_demo_entitlement(
                 db, parent_id=parent.id, child_id=second.id
@@ -73,13 +60,13 @@ async def test_free_demo_is_idempotent_and_only_for_verified_first_child():
             await db.commit()
 
         async with sessions() as db:
-            assert await db.scalar(select(func.count(LessonEntitlement.id))) == 1
+            assert await db.scalar(select(func.count(LessonEntitlement.id))) == 0
     finally:
         await engine.dispose()
 
 
 @pytest.mark.asyncio
-async def test_startup_backfill_uses_same_rule_for_existing_verified_account(monkeypatch):
+async def test_startup_backfill_is_noop_and_preserves_existing_records(monkeypatch):
     engine, sessions = await _memory_database()
     try:
         async with sessions() as db:
@@ -90,18 +77,21 @@ async def test_startup_backfill_uses_same_rule_for_existing_verified_account(mon
             )
             db.add(parent)
             await db.flush()
-            db.add(Child(parent_id=parent.id, display_name="Existing child"))
+            child = Child(parent_id=parent.id, display_name="Existing child")
+            db.add(child)
+            await db.flush()
+            legacy = LessonEntitlement(child_id=child.id, lesson_id="demo_001", course_id="conversation", source="FREE_DEMO", status="ACTIVE", max_completed_runs=2, completed_runs=1)
+            db.add(legacy)
             await db.commit()
 
-        monkeypatch.setattr(standalone_demo_access, "SessionLocal", sessions)
-        assert await backfill_free_demo_entitlements() == 1
+        assert await backfill_free_demo_entitlements() == 0
         assert await backfill_free_demo_entitlements() == 0
 
         async with sessions() as db:
             entitlement = await db.scalar(select(LessonEntitlement))
             assert entitlement is not None
-            assert entitlement.lesson_id == "demo_001"
             assert entitlement.source == "FREE_DEMO"
+            assert entitlement.completed_runs == 1
     finally:
         await engine.dispose()
 
@@ -123,7 +113,6 @@ async def test_mobile_start_has_no_telegram_admin_bypass(monkeypatch):
             second = Child(parent_id=parent.id, display_name="Second", language_level="PRE_A1")
             db.add_all([first, second])
             await db.flush()
-            await ensure_free_demo_entitlement(db, parent_id=parent.id, child_id=first.id)
             await db.commit()
             parent_id, first_id, second_id = parent.id, first.id, second.id
 
@@ -143,7 +132,8 @@ async def test_mobile_start_has_no_telegram_admin_bypass(monkeypatch):
                 headers={"Authorization": f"Bearer {token}"},
                 json={"child_id": first_id, "lesson_id": "demo_001"},
             )
-            assert response.status == 200
+            assert response.status == 403
+            assert "PAYMENT_REQUIRED" in (await response.json())["error"]
 
             response = await client.post(
                 "/api/mobile/session/start",
@@ -151,13 +141,13 @@ async def test_mobile_start_has_no_telegram_admin_bypass(monkeypatch):
                 json={"child_id": second_id, "lesson_id": "demo_001"},
             )
             assert response.status == 403
-            assert (await response.json())["error"] == "Урок недоступен: LOCKED"
+            assert "PAYMENT_REQUIRED" in (await response.json())["error"]
         finally:
             await client.close()
 
         async with sessions() as db:
-            assert await db.scalar(select(func.count(LessonEntitlement.id))) == 1
-            assert await db.scalar(select(func.count(LessonSession.id))) == 1
+            assert await db.scalar(select(func.count(LessonEntitlement.id))) == 0
+            assert await db.scalar(select(func.count(LessonSession.id))) == 0
     finally:
         await engine.dispose()
 
@@ -177,7 +167,7 @@ async def test_mobile_session_auth_resume_progress_translate_and_tts(monkeypatch
             child = Child(parent_id=parent.id, display_name="Test", language_level="PRE_A1")
             db.add(child)
             await db.flush()
-            await ensure_free_demo_entitlement(db, parent_id=parent.id, child_id=child.id)
+            db.add(LessonEntitlement(child_id=child.id, lesson_id="demo_001", course_id="conversation", source="SUBSCRIPTION", status="ACTIVE", max_completed_runs=2, completed_runs=0))
             await db.commit()
             parent_id, child_id = parent.id, child.id
 
@@ -224,10 +214,17 @@ async def test_mobile_session_auth_resume_progress_translate_and_tts(monkeypatch
             response = await client.post(
                 f"/api/mobile/session/{session_id}/progress",
                 headers=headers,
-                json={"current_step": 3},
+                json={"current_step": 1},
             )
             assert response.status == 200
-            assert (await response.json())["current_step"] == 3
+            assert (await response.json())["current_step"] == 1
+            for step in (2, 3):
+                response = await client.post(
+                    f"/api/mobile/session/{session_id}/progress",
+                    headers=headers,
+                    json={"current_step": step},
+                )
+                assert response.status == 200
 
             response = await client.post(
                 "/api/mobile/session/start",
@@ -293,10 +290,8 @@ async def test_persistent_mobile_account_survives_database_engine_restart(monkey
         child = Child(parent_id=parent.id, display_name="Persistent Test", language_level="PRE_A1")
         db.add(child)
         await db.flush()
-        entitlement, created = await ensure_free_demo_entitlement(
-            db, parent_id=parent.id, child_id=child.id
-        )
-        assert created is True
+        entitlement = LessonEntitlement(child_id=child.id, lesson_id="demo_001", course_id="conversation", source="SUBSCRIPTION", status="ACTIVE", max_completed_runs=2, completed_runs=0)
+        db.add(entitlement)
         await db.commit()
         parent_id, child_id, entitlement_id = parent.id, child.id, entitlement.id
     token = issue_session_token(parent_id)
@@ -329,7 +324,7 @@ async def test_persistent_mobile_account_survives_database_engine_restart(monkey
             assert entitlement is not None
             assert entitlement.child_id == child_id
             assert entitlement.lesson_id == "demo_001"
-            assert entitlement.source == "FREE_DEMO"
+            assert entitlement.source == "SUBSCRIPTION"
     finally:
         await client.close()
         await second_engine.dispose()

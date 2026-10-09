@@ -49,16 +49,22 @@ async def can_start(child_id: int, lesson_id: str, course_id: str, *, audit: boo
         if is_owner_parent(parent) or str(getattr(parent, "email", "") or "").strip().lower() == "krisriskrisris@gmail.com":
             return True, "OWNER_UNLIMITED_ACCESS", row
 
-        # Auto-grant demo entitlement if opening free demo lesson
-        if row is None and lesson_id == "demo_001":
-            from app.services.standalone_demo_access import ensure_free_demo_entitlement
-            if parent is not None:
-                row, _ = await ensure_free_demo_entitlement(db, parent_id=parent.id, child_id=child_id)
-                if row is not None:
-                    await db.commit()
+        # Legacy FREE_DEMO rows remain stored for audit/progress preservation,
+        # but are not access grants. They are promoted in-place to SUBSCRIPTION
+        # only after a provider-confirmed subscription becomes active.
+        if row is not None and str(row.source or "").upper() == "FREE_DEMO":
+            active_sub = await db.scalar(select(Subscription.id).where(
+                Subscription.child_id == int(child_id),
+                Subscription.course_id == str(course_id),
+                Subscription.status == "ACTIVE",
+            ).limit(1))
+            if active_sub is None:
+                return False, "PAYMENT_REQUIRED", row
 
         # Grandfathering: existing registered students keep access to their courses/lessons
         if row is None:
+            if str(lesson_id) == "demo_001":
+                return False, "PAYMENT_REQUIRED", None
             has_history = await db.scalar(select(LessonSession.id).where(LessonSession.child_id == int(child_id)).limit(1))
             if has_history is not None:
                 return True, "GRANDFATHERED_ACCESS", None

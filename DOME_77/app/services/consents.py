@@ -15,8 +15,8 @@ log = logging.getLogger("dome.consents")
 
 CURRENT_DOCUMENT_VERSIONS: dict[str, str] = {
     "TERMS_OF_SERVICE": "2026.1",
-    "PRIVACY_POLICY": "2026.1",
-    "SUBSCRIPTION_TERMS": "2026.1",
+    "PRIVACY_POLICY": "2026.10.08",
+    "SUBSCRIPTION_TERMS": "2026.10.08",
     "CANCELLATION_POLICY": "2026.1",
     "REFUND_POLICY": "2026.1",
     "PARENT_LEGAL_REP": "2026.1",
@@ -37,7 +37,7 @@ DOCUMENT_METADATA = {
     "PRIVACY_POLICY": {
         "title": "Политика конфиденциальности",
         "title_en": "Privacy Policy",
-        "description": "Порядок обработки, защиты и хранения персональных данных пользователей платформы.",
+        "description": "Порядок обработки, защиты и хранения персональных данных пользователей платформы. Для однократной ознакомительной недели сервер использует аккаунт, подтверждённую почту, хеш ограниченного приложением идентификатора устройства и постоянный случайный идентификатор установки; номер телефона учитывается только после его независимого подтверждения. Сырые идентификаторы устройства не сохраняются. Это защита от повторного использования предложения, а не скрытый сбор контактов или рекламный fingerprint.",
         "required": True,
         "default_checked": False,
         "draft": False,
@@ -45,7 +45,7 @@ DOCUMENT_METADATA = {
     "SUBSCRIPTION_TERMS": {
         "title": "Условия подписки и автопродления",
         "title_en": "Subscription & Auto-Renewal Terms",
-        "description": "Условия оплаты, периодичность списаний, правила продления тарифов и управления подпиской.",
+        "description": "Одна ознакомительная неделя: €3 × число занятий выбранного тарифа. Если не понравилось, отключите автопродление до конца недели — следующий месяц или год не будет списан. После недели автоматически оплачивается выбранный месяц или год. При возвращении после использованной недели сразу оплачивается месяц или год с автопродлением. Отмена отключает будущие списания, сохраняя доступ до конца оплаченного периода. Уже внесённая плата обычно не возвращается; обязательные права по применимому законодательству сохраняются.",
         "required": True,
         "default_checked": False,
         "draft": False,
@@ -213,8 +213,16 @@ async def record_payment_consent(
         "effective_price": effective_price,
         "currency": currency,
         "intro_week_price": intro_week_price,
+        "intro_week_days": 7 if intro_week_price > 0 else 0,
+        "first_charge_price": intro_week_price if intro_week_price > 0 else effective_price,
+        "next_charge_after_days": 7 if intro_week_price > 0 else None,
+        "next_charge_price": effective_price,
         "standard_renewal_price": standard_renewal_price,
         "special_first_year": special_first_year,
+        "intro_once_per_verified_account_and_installation": True,
+        "cancel_renewal_preserves_paid_access": True,
+        "returning_customer_pays_regular_period_immediately": intro_week_price <= 0,
+        "mandatory_statutory_refund_rights_preserved": True,
         "consented_at": now.isoformat(),
     }
 

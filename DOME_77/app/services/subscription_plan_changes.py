@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
-from datetime import datetime
+from dataclasses import dataclass, replace
+from datetime import datetime, timedelta
 
 from dateutil.relativedelta import relativedelta
 from sqlalchemy import select
@@ -159,7 +159,7 @@ def current_plan_snapshot(sub: Subscription) -> PlanSnapshot:
 def next_billing_period_start(sub: Subscription, *, now: datetime | None = None) -> datetime:
     point = _now(now)
     explicit = sub.current_period_end or sub.next_charge_at
-    if explicit and explicit > point:
+    if explicit and explicit >= point:
         return explicit
     anchor = sub.current_period_start or sub.started_at or point
     delta = relativedelta(years=1) if normalize_billing_period(sub.billing_period or MONTH) == YEAR else relativedelta(months=1)
@@ -181,6 +181,8 @@ async def preview_plan_change(
 ) -> PlanChangePreview:
     if str(sub.status or "").upper() not in {"ACTIVE", "TRIALING"}:
         raise PlanChangeError("Изменить тариф можно только у активной подписки")
+    if getattr(sub, "cancel_at_period_end", False):
+        raise PlanChangeError("Автопродление отключено. После окончания оплаченного периода выберите новую подписку.")
     current = current_plan_snapshot(sub)
     requested = await plan_snapshot_for_child(
         db,
@@ -194,7 +196,9 @@ async def preview_plan_change(
     if requested.plan_id == current.plan_id and requested.billing_period == current.billing_period and not sub.pending_plan_id:
         raise PlanChangeError("Этот тариф уже действует")
     point=_now(now)
-    effective_at = sub.pending_plan_effective_at if sub.pending_plan_effective_at and sub.pending_plan_effective_at > point else next_billing_period_start(sub, now=point)
+    effective_at = sub.pending_plan_effective_at if sub.pending_plan_effective_at and sub.pending_plan_effective_at >= point else next_billing_period_start(sub, now=point)
+    if sub.current_period_end and sub.current_period_end > effective_at:
+        effective_at = sub.current_period_end
     return PlanChangePreview(
         subscription_id=sub.id,
         current=current,
@@ -380,11 +384,34 @@ def record_successful_billing_period(
 ) -> None:
     period = normalize_billing_period(sub.billing_period or MONTH)
     end = period_end or (period_start + (relativedelta(years=1) if period == YEAR else relativedelta(months=1)))
+    if sub.current_period_end and int(sub.lessons_allocated or 0) > 0 and period_start < sub.current_period_end:
+        return
+    if sub.current_period_start == period_start and sub.current_period_end == end and int(sub.lessons_allocated or 0) > 0:
+        return
     sub.current_period_start = period_start
     sub.current_period_end = end
     sub.next_charge_at = end
-    sub.lessons_allocated = max(1, int(sub.lessons_per_week or 1)) * _billing_weeks(period)
+    # The initial paid week buys only that week's lessons, even when the
+    # agreement's recurring billing period is a full year.
+    paid_weeks = 1 if 0 < (end - period_start).total_seconds() <= 7 * 86400 else _billing_weeks(period)
+    sub.lessons_allocated = max(1, int(sub.lessons_per_week or 1)) * paid_weeks
     sub.lessons_used = 0
+
+
+def plan_identity_matches(
+    plan: PlanSnapshot,
+    *,
+    plan_id: str = "",
+    version_id: str = "",
+    provider_plan_id: str = "",
+    billing_period: str = "",
+) -> bool:
+    identities = ((plan_id, plan.plan_id), (version_id, plan.version_id), (provider_plan_id, plan.provider_plan_id))
+    if not any(actual and expected and actual == expected for actual, expected in identities):
+        return False
+    if any(actual and expected and actual != expected for actual, expected in identities):
+        return False
+    return not billing_period or normalize_billing_period(billing_period) == plan.billing_period
 
 
 def activate_pending_after_successful_payment(
@@ -396,27 +423,78 @@ def activate_pending_after_successful_payment(
     charged_plan_id: str = "",
     charged_plan_version_id: str = "",
     charged_provider_plan_id: str = "",
+    charged_billing_period: str = "",
+    charged_currency: str = "",
     charged_amount: float = 0.0,
     period_end: datetime | None = None,
+    allow_pending_snapshot_for_current_payment: bool = False,
 ) -> bool:
     effective_at = sub.pending_plan_effective_at
-    if not sub.pending_plan_id or not effective_at or paid_at < effective_at:
+    if not sub.pending_plan_id:
         record_successful_billing_period(sub, period_start=paid_at, period_end=period_end)
         return False
-    if charged_plan_id and charged_plan_id != str(sub.pending_plan_id):
-        record_successful_billing_period(sub, period_start=paid_at, period_end=period_end)
-        sub.pending_plan_effective_at=sub.current_period_end
-        return False
-    if charged_plan_version_id and sub.pending_plan_version_id and charged_plan_version_id != str(sub.pending_plan_version_id):
-        record_successful_billing_period(sub, period_start=paid_at, period_end=period_end)
-        sub.pending_plan_effective_at=sub.current_period_end
-        return False
-    expected_price = round(float(sub.pending_plan_price or 0.0), 2)
-    if charged_amount > 0 and expected_price > 0 and abs(round(charged_amount, 2) - expected_price) > 0.01:
-        record_successful_billing_period(sub, period_start=paid_at, period_end=period_end)
-        sub.pending_plan_effective_at=sub.current_period_end
+    # An early snapshot cannot shorten the paid period or replenish its quota.
+    if not effective_at or paid_at < effective_at or (sub.current_period_end and paid_at < sub.current_period_end):
         return False
     current = current_plan_snapshot(sub)
+    pending = PlanSnapshot(
+        plan_id=str(sub.pending_plan_id),
+        version_id=str(sub.pending_plan_version_id or ""),
+        lessons_per_week=max(1, int(sub.pending_lessons_per_week or sub.lessons_per_week or 1)),
+        price=round(float(sub.pending_plan_price or 0.0), 2),
+        currency=str(sub.pending_plan_currency or sub.currency or "EUR").upper(),
+        billing_period=normalize_billing_period(sub.pending_plan_billing_period or MONTH),
+        provider_plan_id=str(sub.pending_provider_plan_id or ""),
+    )
+
+    def matches_amount(plan: PlanSnapshot) -> bool:
+        return (
+            charged_amount > 0 and plan.price > 0 and round(charged_amount, 2) == plan.price
+            and (not charged_currency or charged_currency.upper() == plan.currency)
+        )
+
+    def matches_identity(plan: PlanSnapshot) -> bool:
+        return plan_identity_matches(plan, plan_id=charged_plan_id, version_id=charged_plan_version_id,
+                                     provider_plan_id=charged_provider_plan_id, billing_period=charged_billing_period)
+
+    def matches_payment(plan: PlanSnapshot) -> bool:
+        return matches_identity(plan) and matches_amount(plan)
+
+    if not matches_payment(pending):
+        # A confirmed renewal of the old tariff buys another old-tariff period.
+        # Unknown, underpaid or mismatched payments buy no assumed period.
+        pending_snapshot = bool(
+            allow_pending_snapshot_for_current_payment and matches_identity(pending)
+            and pending.provider_plan_id and charged_provider_plan_id == pending.provider_plan_id
+            and charged_currency and round(charged_amount, 2) != pending.price
+        )
+        if not pending_snapshot and period_end and period_end <= paid_at + timedelta(days=7):
+            return False
+
+        def matches_old_payment(plan: PlanSnapshot) -> bool:
+            return matches_payment(plan) or (pending_snapshot and matches_amount(plan))
+
+        renews_current = matches_old_payment(current)
+        if (
+            not renews_current and current.billing_period == YEAR and sub.special_first_year
+            and float(sub.standard_renewal_price or 0.0) > 0
+            and sub.current_period_start and sub.current_period_end
+            and sub.current_period_end > sub.current_period_start + timedelta(days=7)
+        ):
+            standard = replace(current, price=round(float(sub.standard_renewal_price), 2))
+            if matches_old_payment(standard):
+                sub.current_plan_price = sub.monthly_price = standard.price
+                sub.special_first_year = False
+                renews_current = True
+        if renews_current:
+            # A later provider snapshot can describe the newly approved plan,
+            # while this payment bought the old interval. Use its stored term.
+            record_successful_billing_period(sub, period_start=paid_at, period_end=None if pending_snapshot else period_end)
+            sub.pending_plan_effective_at = sub.current_period_end
+        return False
+    if period_end and period_end <= paid_at + timedelta(days=7):
+        return False  # A tariff revision starts a regular month/year, never another intro week.
+    expected_price = pending.price
     requested_at = sub.pending_plan_created_at or paid_at
     new_plan = str(sub.pending_plan_id)
     new_lessons = max(1, int(sub.pending_lessons_per_week or sub.lessons_per_week or 1))
@@ -451,6 +529,8 @@ def activate_pending_after_successful_payment(
     sub.lessons_per_week = new_lessons
     sub.monthly_price = expected_price
     sub.currency = new_currency
+    sub.special_first_year = False
+    sub.standard_renewal_price = None
     sub.started_at = paid_at
     _clear_pending(sub)
     record_successful_billing_period(sub, period_start=paid_at, period_end=period_end)

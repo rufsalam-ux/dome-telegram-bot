@@ -163,7 +163,7 @@ def get_plan_annual_offer_detail(plan_id: str, lessons_per_week: int, is_eligibl
         has_special = False
 
     disclosure = (
-        f"Первый год: €{int(first_year) if first_year.is_integer() else first_year:.2f}. "
+        f"Первая неделя: €{intro_price:.2f}. Через 7 дней — €{effective_price:.2f} за первый год. "
         f"Затем подписка автоматически продлевается за €{int(std_renewal) if std_renewal.is_integer() else std_renewal:.2f} в год до отмены."
     )
 

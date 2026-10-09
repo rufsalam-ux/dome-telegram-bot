@@ -19,6 +19,8 @@ class Parent(Base):
     email_verification_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     email_reports_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     phone: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    # Set only by a trusted phone-verification integration, never registration input.
+    phone_verified: Mapped[bool] = mapped_column(Boolean, default=False)
     first_name: Mapped[str | None] = mapped_column(String(80), nullable=True)
     last_name: Mapped[str | None] = mapped_column(String(80), nullable=True)
     country: Mapped[str | None] = mapped_column(String(80), nullable=True)
@@ -320,6 +322,26 @@ class Subscription(Base):
     release_baseline_count: Mapped[int] = mapped_column(Integer, default=0)
     special_first_year: Mapped[bool] = mapped_column(Boolean, default=False)
     standard_renewal_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    cancel_at_period_end: Mapped[bool] = mapped_column(Boolean, default=False)
+    renewal_cancelled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    checkout_token: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    checkout_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    intro_week_price: Mapped[float] = mapped_column(Float, default=0.0)
+
+
+class IntroOfferClaim(Base):
+    """Durable one-use introductory-offer identities; no raw device identifiers."""
+    __tablename__ = "intro_offer_claims"
+    identity_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    scope: Mapped[str] = mapped_column(String(20))
+    parent_id: Mapped[int] = mapped_column(ForeignKey("parents.id"), index=True)
+    checkout_token: Mapped[str] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(String(20), default="RESERVED")
+    reserved_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    provider: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    provider_subscription_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
 class SubscriptionAuditEvent(Base):

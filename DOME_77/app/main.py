@@ -12,7 +12,6 @@ from app.services.lesson_loader import validate_lesson_revision
 from app.services.lesson_reminders import due_now, mark_sent
 from app.db.session import SessionLocal
 from app.db.models import Child, Parent, Subscription
-from app.services.standalone_demo_access import backfill_free_demo_entitlements
 from app.services.mobile_lesson_movie import recover_interrupted_mobile_movie_jobs
 from app.services.pricing_versions import ensure_versioned_pricing_config
 from app.services.subscription_price_migrations import backfill_subscription_provider_plan_ids
@@ -77,8 +76,6 @@ async def main():
     pricing=ensure_versioned_pricing_config(); log.info('Versioned pricing ready: schema %s',pricing.get('schema_version'))
     provider_plans=await backfill_subscription_provider_plan_ids(); log.info('Subscription provider plan ids backfilled: %s',provider_plans)
     await recover_interrupted_mobile_movie_jobs()
-    free_demo_created=await backfill_free_demo_entitlements()
-    log.info('Standalone free demo entitlements created: %s',free_demo_created)
     qa_bootstrap=await bootstrap_qa_access_grants()
     log.info('Explicit QA access bootstrap: %s',qa_bootstrap)
     orders = validate_lesson_revision('demo_001')

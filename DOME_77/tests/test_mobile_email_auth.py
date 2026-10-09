@@ -324,10 +324,8 @@ async def test_mobile_register_resend_verify_and_login_flow(monkeypatch):
         response = await client.post("/api/mobile/session/start", headers={
             "Authorization": f"Bearer {verified['token']}",
         }, json={"child_id": created_child["id"], "lesson_id": "demo_001"})
-        assert response.status == 200
-        started = await response.json()
-        assert started["resumed"] is False
-        assert started["current_step"] == 0
+        assert response.status == 403
+        assert "PAYMENT_REQUIRED" in (await response.json())["error"]
 
         async with sessions() as db:
             parent = await db.scalar(select(Parent))
@@ -337,14 +335,7 @@ async def test_mobile_register_resend_verify_and_login_flow(monkeypatch):
             assert parent.email_verification_code_hash is None
             assert parent.email_verification_expires_at is None
             assert child is not None and child.parent_id == parent.id
-            assert entitlement is not None
-            assert entitlement.child_id == child.id
-            assert entitlement.lesson_id == "demo_001"
-            assert entitlement.course_id == "conversation"
-            assert entitlement.source == "FREE_DEMO"
-            assert entitlement.completed_runs == 0
-            assert entitlement.max_completed_runs == 2
-            assert entitlement.expires_at > entitlement.unlocked_at
+            assert entitlement is None
 
         response = await client.post("/api/mobile/login", json={
             "email": "PARENT@EXAMPLE.COM",

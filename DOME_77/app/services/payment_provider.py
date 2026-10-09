@@ -136,6 +136,7 @@ class PayPalPaymentProvider:
                 configured=True,
                 error=str(exc),
                 message=f"Ошибка создания подписки PayPal: {exc}",
+                details={"definitive_failure": bool(__import__('re').search(r'PayPal HTTP 4(?:00|01|03|04|22):', str(exc)))},
             )
 
     async def verify_subscription(self, provider_subscription_id: str) -> VerifyResult:
@@ -147,12 +148,18 @@ class PayPalPaymentProvider:
                 provider=self.name,
                 message="PayPal не настроен",
             )
-        from app.services.paypal_adapter import get_paypal_subscription
+        from app.services.paypal_adapter import get_paypal_subscription, _meta_from_provider_plan
 
         try:
             sub = await get_paypal_subscription(provider_subscription_id)
             raw_status = str(sub.get("status") or "").upper()
-            is_active = raw_status in {"ACTIVE", "APPROVED"}
+            is_active = raw_status == "ACTIVE"
+            plan_meta = _meta_from_provider_plan(str(sub.get("plan_id") or ""))
+            if raw_status == "ACTIVE":
+                # Approval creates the agreement; a successful payment buys access.
+                last_payment = (sub.get("billing_info") or {}).get("last_payment") or {}
+                amount = last_payment.get("amount") or {}
+                is_active = raw_status == "ACTIVE" and bool(last_payment.get("time")) and float(amount.get("value") or 0) > 0
             return VerifyResult(
                 ok=True,
                 status=raw_status,
