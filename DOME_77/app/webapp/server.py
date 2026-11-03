@@ -337,6 +337,8 @@ async def start_webapp_server():
     from app.webapp.content_studio import register_content_studio_routes
     register_mobile_routes(app)
     register_content_studio_routes(app)
+    from app.services.school_runtime import install_school_runtime
+    install_school_runtime(app, settings.storage_root)
     static = Path(__file__).parent / "static"
     app.router.add_get("/health", health)
     app.router.add_get("/payment/success", payment_success)

@@ -28,7 +28,7 @@ class SchoolTelegramLinks:
         token = secrets.token_urlsafe(32)
         digest = hashlib.sha256(token.encode()).hexdigest()
         with self.ledger._transaction() as db:
-            db.execute('UPDATE school_telegram_tokens SET used=1 WHERE member_id=?', (member_id,))
+            db.execute('DELETE FROM school_telegram_tokens WHERE member_id=? OR expires_at<=?', (member_id, now))
             db.execute('INSERT INTO school_telegram_tokens VALUES (?,?,?,0)', (digest, member_id, now + 600))
         return 'school_' + token
 
