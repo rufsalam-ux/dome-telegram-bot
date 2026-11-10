@@ -41,6 +41,26 @@ class SchoolRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_expected_bot_starts_and_closes_cleanly(self):
         self.assertTrue(await self.exercise())
 
+    def test_missing_school_configuration_does_not_break_existing_app(self):
+        for env in [{'SCHOOL_ENABLED':'true'}, {'SCHOOL_ENABLED':'true', 'SCHOOL_BOT_TOKEN':'x'}]:
+            app = web.Application()
+            with self.assertLogs('school', level='ERROR'):
+                self.assertFalse(install_school_runtime(app, '.', env=env))
+            self.assertEqual(len(list(app.router.routes())), 0)
+
+    async def test_invalid_token_does_not_break_existing_app_startup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            app = web.Application()
+            install_school_runtime(app, directory, env={'SCHOOL_ENABLED':'true',
+                'SCHOOL_BOT_TOKEN':'invalid', 'SCHOOL_BRIDGE_KEY':'x'*43})
+            with patch('app.services.school_runtime.Bot', side_effect=ValueError('sensitive detail')), self.assertLogs('school',level='ERROR') as logs:
+                context = app.cleanup_ctx[0](app)
+                await anext(context)
+                await asyncio.sleep(0)
+                with self.assertRaises(StopAsyncIteration):
+                    await anext(context)
+            self.assertNotIn('sensitive detail', '\n'.join(logs.output))
+
     async def test_other_bot_or_existing_webhook_never_started(self):
         self.assertFalse(await self.exercise(username='BilingvadomLessons_Bot'))
         self.assertFalse(await self.exercise(webhook='https://existing.example/webhook'))

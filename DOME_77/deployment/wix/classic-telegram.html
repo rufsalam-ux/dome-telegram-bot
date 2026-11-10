@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="ru">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+*{box-sizing:border-box}body{margin:0;background:#faf8f3;color:#233a35;font:16px/1.55 Arial,sans-serif}main{max-width:680px;margin:auto;padding:28px}h1{font-size:28px;line-height:1.2;margin:0 0 16px}.card{background:white;border:1px solid #dce5dc;border-radius:18px;padding:24px}p{margin:12px 0}.muted{color:#56675e;font-size:14px}.actions{display:flex;gap:12px;flex-wrap:wrap;margin:20px 0}button,a.button{font:inherit;border:0;border-radius:10px;padding:12px 18px;background:#27634f;color:#fff;cursor:pointer;text-decoration:none}button.secondary{color:#27634f;background:#edf3ee}button:disabled{opacity:.5;cursor:wait}[hidden]{display:none!important}#status{font-weight:bold}#notice{min-height:48px}button:focus-visible,a:focus-visible{outline:3px solid #e69d32;outline-offset:3px}@media(max-width:400px){main{padding:16px}.card{padding:18px}h1{font-size:24px}.actions>*{width:100%;text-align:center}}
+</style></head>
+<body><main><h1>Личные сообщения в Telegram</h1><div class="card">
+<p>Свяжите свой кабинет с <strong>@BilingvaDom_bot</strong>.</p>
+<p class="muted">Сообщения из кабинета будут адресованы вашему личному чату с ботом. Ссылку подключения нельзя передавать другому человеку.</p>
+<p id="status" role="status">Проверяем подключение…</p>
+<div class="actions"><button id="connect" disabled>Подключить Telegram</button><button id="refresh" class="secondary" disabled>Проверить подключение</button><button id="disconnect" class="secondary" hidden>Отключить Telegram</button></div>
+<div id="linkBox" hidden><a id="botLink" class="button" target="_blank" rel="noopener noreferrer">Открыть бота</a><p class="muted">Нажмите «Старт» в Telegram, затем вернитесь сюда и нажмите «Проверить подключение». Ссылка действует 10 минут.</p></div>
+<p id="notice" aria-live="polite"></p>
+</div></main><script>
+const channel='school-telegram-v1';
+const $=id=>document.getElementById(id);
+let busy=false, expiry;
+function lock(value){busy=value;for(const id of ['connect','refresh','disconnect'])$(id).disabled=value;}
+function clearLink(){$('linkBox').hidden=true;$('botLink').removeAttribute('href');clearTimeout(expiry);}
+function request(action){if(busy)return;lock(true);$('notice').textContent='';parent.postMessage({channel,action},'*');}
+window.addEventListener('message',event=>{
+ if(event.source!==parent||event.data?.channel!==channel)return;
+ const data=event.data;
+ if(!['error','result'].includes(data.type))return;
+ lock(false);
+ if(data.type==='error'){clearLink();$('status').textContent='Не удалось проверить подключение';$('notice').textContent=data.message;return;}
+ if(data.action==='connect'){
+  if(!/^https:\/\/t\.me\/BilingvaDom_bot\?start=school_[A-Za-z0-9_-]{43}$/.test(data.url||'')){clearLink();$('notice').textContent='Не удалось получить ссылку. Попробуйте снова.';return;}
+  clearLink();$('botLink').href=data.url;$('linkBox').hidden=false;
+  expiry=setTimeout(()=>{clearLink();$('notice').textContent='Ссылка истекла. Нажмите «Подключить Telegram» ещё раз.';},600000);
+ }else if(typeof data.linked==='boolean'){
+  clearLink();$('status').textContent=data.linked?'Telegram подключён':'Telegram не подключён';
+  $('connect').hidden=data.linked;$('disconnect').hidden=!data.linked;
+  if(data.action==='disconnect')$('notice').textContent='Связь с Telegram отключена. Для получения новых сообщений подключите бот снова.';
+ }
+});
+$('connect').onclick=()=>request('connect');$('refresh').onclick=()=>request('status');
+$('disconnect').onclick=()=>{if(confirm('Отключить личные сообщения из кабинета в Telegram?'))request('disconnect');};
+request('status');
+setTimeout(()=>{if(busy){lock(false);$('status').textContent='Подключение ещё не проверено';$('notice').textContent='Нажмите «Проверить подключение». Если ответ не появляется, обновите страницу кабинета.';}},15000);
+</script></body></html>

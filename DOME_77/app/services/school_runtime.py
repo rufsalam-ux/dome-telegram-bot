@@ -19,7 +19,8 @@ def install_school_runtime(app, storage_root, *, env=None):
         return False
     token, bridge_key = env.get('SCHOOL_BOT_TOKEN', ''), env.get('SCHOOL_BRIDGE_KEY', '')
     if not token or len(bridge_key) < 43:
-        raise ValueError('School runtime configuration is incomplete')
+        logging.getLogger('school').error('School runtime configuration is incomplete')
+        return False
     directory = Path(storage_root)
     directory.mkdir(parents=True, exist_ok=True)
     links = SchoolTelegramLinks(SchoolLedger(directory / 'school.db'))
@@ -28,7 +29,7 @@ def install_school_runtime(app, storage_root, *, env=None):
     register_school_routes(app, links, bridge_key, lambda: state['ready'])
 
     async def lifecycle(_app):
-        bot = Bot(token)
+        bot = None
         dispatcher = Dispatcher()
 
         @dispatcher.message(CommandStart())
@@ -54,8 +55,10 @@ def install_school_runtime(app, storage_root, *, env=None):
                 await asyncio.sleep(1)
 
         async def run():
+            nonlocal bot
             workers = []
             try:
+                bot = Bot(token)
                 me = await bot.get_me()
                 if (me.username or '').lower() != 'bilingvadom_bot':
                     raise ValueError('SCHOOL_BOT_IDENTITY_MISMATCH')
@@ -77,7 +80,8 @@ def install_school_runtime(app, storage_root, *, env=None):
                 for task in workers:
                     task.cancel()
                 await asyncio.gather(*workers, return_exceptions=True)
-                await bot.session.close()
+                if bot is not None:
+                    await bot.session.close()
 
         task = asyncio.create_task(run())
         yield

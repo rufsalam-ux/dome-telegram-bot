@@ -12,7 +12,7 @@ function fixture({member = {_id:'real-member', status:'APPROVED'}, response = {l
     elevate: fn => fn,
     fetch: async (url, options) => {calls.push({url,options}); return {ok,json:async()=>response};}
   };
-  const source = fs.readFileSync(new URL('./schoolTelegram.web.js', import.meta.url),'utf8')
+  const source = fs.readFileSync(new URL('./classic-schoolTelegram.web.js', import.meta.url),'utf8')
     .replace(/^import .*;\r?\n/gm,'').replace(/export const /g,'var ');
   vm.createContext(context); vm.runInContext(source,context);
   return {context,calls};
