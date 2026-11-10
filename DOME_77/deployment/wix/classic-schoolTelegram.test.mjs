@@ -21,7 +21,7 @@ test('member comes from Wix session, not caller input',async()=>{
   const {context,calls}=fixture();
   await context.getTelegramStatus({memberId:'someone-else'});
   assert.equal(JSON.parse(calls[0].options.body).memberId,'real-member');
-  assert.equal(calls[0].url,'https://admin.bilinguadom.com/school/telegram/status');
+  assert.equal(calls[0].url,'https://dome-telegram-bot-production-e6f6.up.railway.app/school/telegram/status');
 });
 test('anonymous or blocked members never call Railway',async()=>{
   for(const member of [null,{_id:'x',status:'BLOCKED'}]){

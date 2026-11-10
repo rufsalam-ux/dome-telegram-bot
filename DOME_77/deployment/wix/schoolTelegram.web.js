@@ -5,7 +5,7 @@ import { elevate } from 'wix-auth';
 import { fetch } from 'wix-fetch';
 
 // Exact school endpoint; callers cannot supply a URL, member ID, or chat ID.
-const ENDPOINT = 'https://admin.bilinguadom.com/school/telegram/';
+const ENDPOINT = 'https://dome-telegram-bot-production-e6f6.up.railway.app/school/telegram/';
 async function request(action) {
   const member = await currentMember.getMember({ fieldsets: ['FULL'] });
   if (!member?._id || member.status !== 'APPROVED') throw new Error('AUTH_REQUIRED');
